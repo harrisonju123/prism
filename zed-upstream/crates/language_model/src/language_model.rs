@@ -14,7 +14,6 @@ use anthropic::{AnthropicError, parse_prompt_too_long};
 use anyhow::{Result, anyhow};
 use client::Client;
 use client::UserStore;
-use cloud_llm_client::CompletionRequestStatus;
 use futures::FutureExt;
 use futures::{StreamExt, future::BoxFuture, stream::BoxStream};
 use gpui::{AnyView, App, AsyncApp, Entity, SharedString, Task, Window};
@@ -62,9 +61,8 @@ pub const ZED_CLOUD_PROVIDER_ID: LanguageModelProviderId = LanguageModelProvider
 pub const ZED_CLOUD_PROVIDER_NAME: LanguageModelProviderName =
     LanguageModelProviderName::new("Zed");
 
-pub fn init(user_store: Entity<UserStore>, client: Arc<Client>, cx: &mut App) {
+pub fn init(_user_store: Entity<UserStore>, _client: Arc<Client>, cx: &mut App) {
     init_settings(cx);
-    RefreshLlmTokenListener::register(client, user_store, cx);
 }
 
 pub fn init_settings(cx: &mut App) {
@@ -101,31 +99,6 @@ pub enum LanguageModelCompletionEvent {
     UsageUpdate(TokenUsage),
 }
 
-impl LanguageModelCompletionEvent {
-    pub fn from_completion_request_status(
-        status: CompletionRequestStatus,
-        upstream_provider: LanguageModelProviderName,
-    ) -> Result<Option<Self>, LanguageModelCompletionError> {
-        match status {
-            CompletionRequestStatus::Queued { position } => {
-                Ok(Some(LanguageModelCompletionEvent::Queued { position }))
-            }
-            CompletionRequestStatus::Started => Ok(Some(LanguageModelCompletionEvent::Started)),
-            CompletionRequestStatus::Unknown | CompletionRequestStatus::StreamEnded => Ok(None),
-            CompletionRequestStatus::Failed {
-                code,
-                message,
-                request_id: _,
-                retry_after,
-            } => Err(LanguageModelCompletionError::from_cloud_failure(
-                upstream_provider,
-                code,
-                message,
-                retry_after.map(Duration::from_secs_f64),
-            )),
-        }
-    }
-}
 
 #[derive(Error, Debug)]
 pub enum LanguageModelCompletionError {

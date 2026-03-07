@@ -8,7 +8,7 @@ use crate::{
 use acp_thread::Diff;
 use agent_client_protocol::{self as acp, ToolCallLocation, ToolCallUpdateFields};
 use anyhow::{Context as _, Result};
-use cloud_llm_client::CompletionIntent;
+use language_model::CompletionIntent;
 use collections::HashSet;
 use futures::{FutureExt as _, StreamExt as _};
 use gpui::{App, AppContext, AsyncApp, Entity, Task, WeakEntity};

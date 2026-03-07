@@ -7,7 +7,7 @@ use agent_client_protocol::{self as acp};
 use agent_settings::AgentProfileId;
 use anyhow::Result;
 use client::{Client, UserStore};
-use cloud_llm_client::CompletionIntent;
+use language_model::CompletionIntent;
 use collections::IndexMap;
 use context_server::{ContextServer, ContextServerCommand, ContextServerId};
 use feature_flags::FeatureFlagAppExt as _;

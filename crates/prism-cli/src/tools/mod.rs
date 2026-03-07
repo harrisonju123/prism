@@ -1,6 +1,7 @@
 mod files;
 mod search;
 mod shell;
+mod web;
 
 use prism_types::{Tool, ToolFunction};
 use serde_json::json;
@@ -9,8 +10,12 @@ pub fn tool_definitions() -> Vec<Tool> {
     vec![
         make_tool(
             "read_file",
-            "Read file contents",
-            json!({ "type": "object", "properties": { "path": { "type": "string" } }, "required": ["path"] }),
+            "Read file contents. Use offset (1-based line number) and limit to read a section of a large file.",
+            json!({ "type": "object", "properties": {
+                "path":   { "type": "string" },
+                "offset": { "type": "integer", "description": "1-based line number to start reading from" },
+                "limit":  { "type": "integer", "description": "maximum number of lines to read" }
+            }, "required": ["path"] }),
         ),
         make_tool(
             "write_file",
@@ -31,6 +36,15 @@ pub fn tool_definitions() -> Vec<Tool> {
             json!({ "type": "object", "properties": {
                 "command":      { "type": "string" },
                 "args":         { "type": "array", "items": { "type": "string" } },
+                "timeout_secs": { "type": "integer" },
+                "cwd":          { "type": "string", "description": "working directory for the command (default: current dir)" }
+            }, "required": ["command"] }),
+        ),
+        make_tool(
+            "bash",
+            "Run a shell command string via sh -c. Returns {exit_code, stdout, stderr}. Default timeout 30s (max 120s).",
+            json!({ "type": "object", "properties": {
+                "command":      { "type": "string", "description": "shell command to run via sh -c" },
                 "timeout_secs": { "type": "integer" },
                 "cwd":          { "type": "string", "description": "working directory for the command (default: current dir)" }
             }, "required": ["command"] }),
@@ -63,12 +77,23 @@ pub fn tool_definitions() -> Vec<Tool> {
                 "max_results": { "type": "integer" }
             }, "required": ["pattern"] }),
         ),
+        make_tool(
+            "web_fetch",
+            "Fetch a URL and return its text content (HTML tags stripped). Use for documentation, APIs, or any publicly accessible page.",
+            json!({ "type": "object", "properties": {
+                "url": { "type": "string", "description": "fully qualified URL to fetch" }
+            }, "required": ["url"] }),
+        ),
     ]
 }
 
 pub async fn dispatch(name: &str, args: &serde_json::Value) -> String {
     match name {
-        "read_file" => files::read_file(args["path"].as_str().unwrap_or("")).await,
+        "read_file" => {
+            let offset = args["offset"].as_u64().map(|n| n as usize);
+            let limit  = args["limit"].as_u64().map(|n| n as usize);
+            files::read_file(args["path"].as_str().unwrap_or(""), offset, limit).await
+        }
         "write_file" => {
             files::write_file(
                 args["path"].as_str().unwrap_or(""),
@@ -86,6 +111,12 @@ pub async fn dispatch(name: &str, args: &serde_json::Value) -> String {
             let timeout = args["timeout_secs"].as_u64().unwrap_or(30).min(120);
             let cwd = args["cwd"].as_str();
             shell::run_command(cmd, &raw_args, timeout, cwd).await
+        }
+        "bash" => {
+            let cmd = args["command"].as_str().unwrap_or("");
+            let timeout = args["timeout_secs"].as_u64().unwrap_or(30).min(120);
+            let cwd = args["cwd"].as_str();
+            shell::bash(cmd, timeout, cwd).await
         }
         "edit_file" => {
             let path       = args["path"].as_str().unwrap_or("");
@@ -105,6 +136,10 @@ pub async fn dispatch(name: &str, args: &serde_json::Value) -> String {
             let file_glob = args["file_glob"].as_str();
             let max_results = args["max_results"].as_u64().unwrap_or(50) as usize;
             search::grep_files(pattern, dir, file_glob, max_results)
+        }
+        "web_fetch" => {
+            let url = args["url"].as_str().unwrap_or("");
+            web::web_fetch(url).await
         }
         other => format!("unknown tool: {other}"),
     }

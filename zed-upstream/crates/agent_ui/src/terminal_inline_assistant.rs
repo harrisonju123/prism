@@ -10,7 +10,7 @@ use agent::ThreadStore;
 use agent_settings::AgentSettings;
 use anyhow::{Context as _, Result};
 
-use cloud_llm_client::CompletionIntent;
+use language_model::CompletionIntent;
 use collections::{HashMap, VecDeque};
 use editor::{MultiBuffer, actions::SelectAll};
 use fs::Fs;

@@ -3,7 +3,7 @@ use std::str::FromStr as _;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use cloud_llm_client::CompletionIntent;
+use language_model::CompletionIntent;
 use collections::HashMap;
 use copilot::{GlobalCopilotAuth, Status};
 use copilot_chat::responses as copilot_responses;

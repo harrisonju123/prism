@@ -12,7 +12,7 @@ use crate::{
 use agent_settings::AgentSettings;
 use anyhow::Context as _;
 use askpass::AskPassDelegate;
-use cloud_llm_client::CompletionIntent;
+use language_model::CompletionIntent;
 use collections::{BTreeMap, HashMap, HashSet};
 use db::kvp::KEY_VALUE_STORE;
 use editor::{

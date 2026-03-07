@@ -3,7 +3,7 @@ use agent_settings::AgentSettings;
 use anyhow::{Context as _, Result};
 use uuid::Uuid;
 
-use cloud_llm_client::CompletionIntent;
+use language_model::CompletionIntent;
 use collections::HashSet;
 use editor::{Anchor, AnchorRangeExt, MultiBuffer, MultiBufferSnapshot, ToOffset as _, ToPoint};
 use futures::{

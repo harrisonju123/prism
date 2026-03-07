@@ -8,6 +8,7 @@ pub struct Config {
     pub max_turns: u32,
     pub max_cost_usd: Option<f64>,
     pub max_tool_output: usize,
+    pub system_prompt: Option<String>,
 }
 
 impl Config {
@@ -35,6 +36,8 @@ impl Config {
             .and_then(|s| s.parse().ok())
             .unwrap_or(32_768);
 
+        let system_prompt = std::env::var("PRISM_SYSTEM_PROMPT").ok();
+
         Ok(Self {
             prism_url,
             prism_api_key,
@@ -42,6 +45,7 @@ impl Config {
             max_turns,
             max_cost_usd,
             max_tool_output,
+            system_prompt,
         })
     }
 }

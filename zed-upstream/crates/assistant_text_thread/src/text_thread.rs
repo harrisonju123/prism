@@ -6,7 +6,7 @@ use assistant_slash_command::{
 };
 use client::{self, proto};
 use clock::ReplicaId;
-use cloud_llm_client::CompletionIntent;
+use language_model::CompletionIntent;
 use collections::{HashMap, HashSet};
 use fs::{Fs, RenameOptions};
 

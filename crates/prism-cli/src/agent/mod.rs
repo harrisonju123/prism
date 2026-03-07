@@ -12,8 +12,36 @@ use uuid::Uuid;
 use crate::config::Config;
 use crate::tools;
 
-const SYSTEM_PROMPT: &str = "You are PrisM Code Agent. Use tools to complete the coding task. \
-When done, provide a clear summary.";
+const SYSTEM_PROMPT: &str = "\
+You are PrisM Code Agent, an autonomous coding assistant. \
+You have access to tools to read, edit, and run code. \
+Complete the task fully — don't stop to ask for confirmation unless truly stuck.
+
+## Available tools
+
+- **read_file** path [offset] [limit]: Read a file. Use offset/limit (1-based line numbers) \
+  to read a section of a large file instead of the whole thing.
+- **write_file** path content: Write (or overwrite) a file. Creates parent dirs automatically.
+- **edit_file** path old_string new_string: Replace an exact string in a file. \
+  Fails if old_string is not found or appears more than once — add more surrounding context.
+- **list_dir** path: List directory contents.
+- **bash** command [timeout_secs] [cwd]: Run a shell command. Returns {exit_code, stdout, stderr}. \
+  Prefer this for builds, tests, git operations, and multi-step shell pipelines.
+- **run_command** command args [timeout_secs] [cwd]: Run a command with separate args array. \
+  Same output as bash. Use bash for most cases.
+- **glob_files** pattern [dir]: Find files matching a glob (e.g. '**/*.rs').
+- **grep_files** pattern [dir] [file_glob]: Search file contents by regex.
+- **web_fetch** url: Fetch a URL and return its text (HTML stripped). \
+  Use for documentation, crate pages, or any web resource.
+
+## Guidelines
+
+- Read before editing — understand the file first.
+- Use bash for compiling, testing, and running programs.
+- Use grep_files + glob_files to navigate unfamiliar codebases before reading individual files.
+- Use read_file with offset+limit for large files — avoid reading thousands of lines you don't need.
+- When done, provide a concise summary of what was changed and why.
+";
 
 struct ToolCallBuilder {
     id: String,
@@ -42,9 +70,15 @@ impl Agent {
     pub async fn run(&mut self, task: &str) -> Result<()> {
         tracing::info!(episode_id = %self.episode_id, model = %self.config.prism_model, "starting agent session");
 
+        let system_prompt = self
+            .config
+            .system_prompt
+            .as_deref()
+            .unwrap_or(SYSTEM_PROMPT);
+
         self.messages.push(Message {
             role: "system".into(),
-            content: Some(json!(SYSTEM_PROMPT)),
+            content: Some(json!(system_prompt)),
             name: None,
             tool_calls: None,
             tool_call_id: None,
@@ -323,9 +357,9 @@ fn truncate_tool_output(tool_name: &str, output: &str, limit: usize) -> String {
         return output.to_string();
     }
 
-    // run_command returns {"exit_code":N,"stdout":"...","stderr":"..."}
+    // run_command and bash return {"exit_code":N,"stdout":"...","stderr":"..."}
     // Truncate the two text fields individually so the JSON stays valid.
-    if tool_name == "run_command" {
+    if tool_name == "run_command" || tool_name == "bash" {
         if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(output) {
             let field_limit = limit / 2;
             for field in ["stdout", "stderr"] {

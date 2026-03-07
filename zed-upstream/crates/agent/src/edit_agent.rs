@@ -8,7 +8,7 @@ pub mod streaming_fuzzy_matcher;
 use crate::{Template, Templates};
 use action_log::ActionLog;
 use anyhow::Result;
-use cloud_llm_client::CompletionIntent;
+use language_model::CompletionIntent;
 use create_file_parser::{CreateFileParser, CreateFileParserEvent};
 pub use edit_parser::EditFormat;
 use edit_parser::{EditParser, EditParserEvent, EditParserMetrics};

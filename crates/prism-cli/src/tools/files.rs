@@ -1,9 +1,29 @@
 use std::path::Path;
 
-pub async fn read_file(path: &str) -> String {
-    match tokio::fs::read_to_string(path).await {
-        Ok(contents) => contents,
-        Err(e) => format!("error reading {path}: {e}"),
+pub async fn read_file(path: &str, offset: Option<usize>, limit: Option<usize>) -> String {
+    let contents = match tokio::fs::read_to_string(path).await {
+        Ok(c) => c,
+        Err(e) => return format!("error reading {path}: {e}"),
+    };
+
+    match (offset, limit) {
+        (None, None) => contents,
+        _ => {
+            let start = offset.unwrap_or(1).saturating_sub(1); // 0-indexed
+            let lines: Vec<&str> = contents.lines().collect();
+            let slice = if let Some(n) = limit {
+                &lines[start.min(lines.len())..lines.len().min(start + n)]
+            } else {
+                &lines[start.min(lines.len())..]
+            };
+            // Prefix with line numbers like cat -n
+            slice
+                .iter()
+                .enumerate()
+                .map(|(i, l)| format!("{:>6}\t{l}", start + i + 1))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
     }
 }
 

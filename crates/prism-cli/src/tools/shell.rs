@@ -2,6 +2,10 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
 
+pub async fn bash(command: &str, timeout_secs: u64, cwd: Option<&str>) -> String {
+    run_command("sh", &["-c".to_string(), command.to_string()], timeout_secs, cwd).await
+}
+
 pub async fn run_command(command: &str, args: &[String], timeout_secs: u64, cwd: Option<&str>) -> String {
     let timeout_secs = timeout_secs.min(120);
 
