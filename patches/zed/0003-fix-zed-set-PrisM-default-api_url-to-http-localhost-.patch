@@ -1,0 +1,31 @@
+From 9d64fb283c615e20777c7fe739161ede6dbee154 Mon Sep 17 00:00:00 2001
+From: Harrison Ju <harrisonju@gmail.com>
+Date: Sat, 7 Mar 2026 03:12:36 -0500
+Subject: [PATCH 3/6] fix(zed): set PrisM default api_url to
+ http://localhost:9100/v1
+
+PrisM binds on port 9100 (config.rs default, docker-compose.yml).
+The /v1 suffix is required because open_ai::stream_completion appends
+/chat/completions directly to the base URL.
+
+Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+---
+ zed-upstream/assets/settings/default.json | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/zed-upstream/assets/settings/default.json b/zed-upstream/assets/settings/default.json
+index 58c8714..8231374 100644
+--- a/zed-upstream/assets/settings/default.json
++++ b/zed-upstream/assets/settings/default.json
+@@ -2215,7 +2215,7 @@
+     },
+     "openai_compatible": {},
+     "prism": {
+-      "api_url": "http://localhost:3000",
++      "api_url": "http://localhost:9100/v1",
+     },
+     "open_router": {
+       "api_url": "https://openrouter.ai/api/v1",
+-- 
+2.49.0
+

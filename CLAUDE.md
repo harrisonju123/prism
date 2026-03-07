@@ -224,6 +224,36 @@ uh handoff <task-id> --summary "..." [--findings --blockers --next-steps]
 
 Config: `.uglyhat.json` discovered by walking up from `$CWD`. `UH_AGENT_NAME` env sets agent name for handoffs.
 
+## Syncing Zed Upstream
+
+`zed-upstream/` tracks `harrisonju123/zed` (our Zed fork). It was imported as a flat directory snapshot at baseline `5c481c6` — **not** a git submodule or subtree. PrisM patches are stored in `patches/zed/` and documented in `patches/zed/PATCHES.md`.
+
+To pull in new Zed upstream changes:
+
+```bash
+# 1. Preview what changed (no write)
+./scripts/sync-zed-upstream.sh --dry-run
+
+# 2. Apply upstream delta + list patches to re-verify
+./scripts/sync-zed-upstream.sh
+
+# 3. Resolve any conflict markers in zed-upstream/
+# 4. Verify compilation
+cargo check -p zed
+
+# 5. Update baseline
+echo '<new-sha>' > patches/zed/BASELINE
+
+# 6. Regenerate patch files
+git format-patch <old-baseline>..HEAD \
+  --output-directory patches/zed/ -- zed-upstream/
+
+# 7. Commit
+git add zed-upstream/ patches/zed/ && git commit -m "chore(zed): sync upstream to <sha>"
+```
+
+See `patches/zed/PATCHES.md` for per-file risk notes and what to watch for during conflict resolution.
+
 ## Known Issues
 
 - `classify_summarization` test is flaky (classifies as Documentation instead of Summarization) — pre-existing Phase 2 issue. Keyword-based classifier is brittle; agents don't use textbook phrasing.
