@@ -151,7 +151,7 @@ fn register_openai_compatible_providers(
 
 fn register_language_model_providers(
     registry: &mut LanguageModelRegistry,
-    user_store: Entity<UserStore>,
+    _user_store: Entity<UserStore>,
     client: Arc<Client>,
     cx: &mut Context<LanguageModelRegistry>,
 ) {

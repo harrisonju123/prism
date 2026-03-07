@@ -1,4 +1,5 @@
 mod api_key;
+mod llm_token;
 mod model;
 mod rate_limiter;
 mod registry;
@@ -32,7 +33,9 @@ use thiserror::Error;
 use util::serde::is_default;
 
 pub use crate::api_key::{ApiKey, ApiKeyState};
-pub use crate::model::*;
+pub use crate::llm_token::{
+    LlmApiToken, NeedsLlmTokenRefresh, RefreshLlmTokenEvent, RefreshLlmTokenListener,
+};
 pub use crate::rate_limiter::*;
 pub use crate::registry::*;
 pub use crate::request::*;
@@ -60,6 +63,18 @@ pub const X_AI_PROVIDER_NAME: LanguageModelProviderName = LanguageModelProviderN
 pub const ZED_CLOUD_PROVIDER_ID: LanguageModelProviderId = LanguageModelProviderId::new("zed.dev");
 pub const ZED_CLOUD_PROVIDER_NAME: LanguageModelProviderName =
     LanguageModelProviderName::new("Zed");
+
+#[derive(Error, Debug)]
+pub struct PaymentRequiredError;
+
+impl fmt::Display for PaymentRequiredError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "Payment required to use this language model. Please upgrade your account."
+        )
+    }
+}
 
 pub fn init(_user_store: Entity<UserStore>, _client: Arc<Client>, cx: &mut App) {
     init_settings(cx);
