@@ -19,6 +19,7 @@ pub struct EmbeddedGateway {
     addr: SocketAddr,
     cancel: CancellationToken,
     _task: tokio::task::JoinHandle<()>,
+    session_cost: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl EmbeddedGateway {
@@ -30,6 +31,11 @@ impl EmbeddedGateway {
     /// Base URL for the OpenAI-compatible API, e.g. `http://127.0.0.1:PORT/v1`.
     pub fn api_url(&self) -> String {
         format!("http://127.0.0.1:{}/v1", self.addr.port())
+    }
+
+    /// Access to the embedded gateway's session cost counter.
+    pub fn session_cost_usd(&self) -> Arc<std::sync::atomic::AtomicU64> {
+        self.session_cost.clone()
     }
 }
 
@@ -119,6 +125,7 @@ pub async fn start_embedded_with(
         .map_err(|e| PrismError::Internal(e.to_string()))?,
     );
 
+    let session_cost = state.session_cost_usd.clone();
     let router = crate::server::router::build(state);
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -141,5 +148,6 @@ pub async fn start_embedded_with(
         addr,
         cancel,
         _task: task,
+        session_cost,
     })
 }

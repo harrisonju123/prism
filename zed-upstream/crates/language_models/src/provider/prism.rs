@@ -1,8 +1,15 @@
 use anyhow::{Context as _, Result};
+use edit_prediction::cursor_excerpt;
+use edit_prediction_types::{
+    EditPrediction, EditPredictionDelegate, EditPredictionDiscardReason, EditPredictionIconSet,
+};
 use futures::{AsyncReadExt, FutureExt, StreamExt, future::BoxFuture};
-use gpui::{AnyView, App, AsyncApp, Context, Entity, SharedString, Task, Window};
+use gpui::{AnyView, App, AsyncApp, Context, Entity, Global, SharedString, Task, WeakEntity, Window};
 use http_client::{AsyncBody, HttpClient, Method, Request as HttpRequest};
+use ui::IconName;
+use language::{Anchor, Buffer, BufferSnapshot, EditPreview, OffsetRangeExt, ToOffset, ToPoint};
 use std::collections::HashMap;
+use std::ops::Range;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use language_model::{
@@ -42,6 +49,19 @@ pub struct PrismSettings {
     pub available_models: Vec<AvailableModel>,
 }
 
+struct GlobalPrismState(WeakEntity<State>);
+
+impl Global for GlobalPrismState {}
+
+/// Returns the effective API key and API URL for PrisM.
+/// Falls back to `"embedded"` / `DEFAULT_API_URL` when running embedded.
+pub fn prism_api_key_and_url(cx: &App) -> Option<(Arc<str>, String)> {
+    let state = cx.try_global::<GlobalPrismState>()?.0.upgrade()?;
+    let state = state.read(cx);
+    let key = state.effective_api_key()?;
+    Some((key, state.settings.api_url.clone()))
+}
+
 pub struct PrismLanguageModelProvider {
     http_client: Arc<dyn HttpClient>,
     state: Entity<State>,
@@ -63,6 +83,7 @@ pub struct State {
     embedded: Option<Arc<prism::EmbeddedGateway>>,
     sidecar_status: SidecarStatus,
     session_cost_usd: f64,
+    embedded_session_cost: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 
 impl State {
@@ -166,11 +187,19 @@ impl State {
             return;
         }
         let providers = collect_provider_configs();
+        let session_cost = Arc::new(std::sync::atomic::AtomicU64::new(0));
         cx.spawn(async move |this, cx| {
-            match prism::start_embedded_with(providers, |b| b).await {
+            let cost_for_builder = session_cost.clone();
+            match prism::start_embedded_with(
+                providers,
+                move |b| b.with_session_cost_usd(cost_for_builder),
+            )
+            .await
+            {
                 Ok(gateway) => {
                     this.update(cx, |state, cx| {
                         state.settings.api_url = gateway.api_url();
+                        state.embedded_session_cost = Some(session_cost);
                         state.embedded = Some(Arc::new(gateway));
                         state.sidecar_status = SidecarStatus::Embedded;
                         state.restart_fetch_models_task(cx);
@@ -252,11 +281,14 @@ impl PrismLanguageModelProvider {
                     embedded: None,
                     sidecar_status: SidecarStatus::Unknown,
                     session_cost_usd: 0.0,
+                    embedded_session_cost: None,
                 };
                 state.start_embedded_if_needed(cx);
                 state
             }
         });
+
+        cx.set_global(GlobalPrismState(state.downgrade()));
 
         Self {
             http_client,
@@ -756,7 +788,13 @@ impl Render for ConfigurationView {
 
         let sidecar_status_label = match sidecar_status {
             SidecarStatus::Embedded => {
-                let cost = state.session_cost_usd;
+                let cost = state
+                    .embedded_session_cost
+                    .as_ref()
+                    .map(|arc| {
+                        arc.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0
+                    })
+                    .unwrap_or(state.session_cost_usd);
                 let cost_label = if cost > 0.0 {
                     format!("PrisM running (embedded) — session cost: ${cost:.6}")
                 } else {
@@ -854,4 +892,272 @@ struct PrismModelsResponse {
 #[derive(serde::Deserialize)]
 struct PrismModelEntry {
     id: String,
+}
+
+// ---------------------------------------------------------------------------
+// Edit prediction delegate
+// ---------------------------------------------------------------------------
+
+const EDIT_PREDICTION_DEBOUNCE: Duration = Duration::from_millis(150);
+const MAX_CONTEXT_TOKENS: usize = 150;
+const MAX_REWRITE_TOKENS: usize = 350;
+
+#[derive(Clone)]
+struct CurrentPrismCompletion {
+    snapshot: BufferSnapshot,
+    edits: Arc<[(Range<Anchor>, Arc<str>)]>,
+    edit_preview: EditPreview,
+}
+
+impl CurrentPrismCompletion {
+    fn interpolate(
+        &self,
+        new_snapshot: &BufferSnapshot,
+    ) -> Option<Vec<(Range<Anchor>, Arc<str>)>> {
+        edit_prediction_types::interpolate_edits(&self.snapshot, new_snapshot, &self.edits)
+    }
+}
+
+pub struct PrismEditPredictionDelegate {
+    http_client: Arc<dyn HttpClient>,
+    pending_request: Option<Task<Result<()>>>,
+    current_completion: Option<CurrentPrismCompletion>,
+}
+
+impl PrismEditPredictionDelegate {
+    pub fn new(http_client: Arc<dyn HttpClient>) -> Self {
+        Self {
+            http_client,
+            pending_request: None,
+            current_completion: None,
+        }
+    }
+
+    async fn fetch_completion(
+        http_client: Arc<dyn HttpClient>,
+        api_key: Arc<str>,
+        api_url: String,
+        model: String,
+        fim_string: String,
+    ) -> Result<String> {
+        #[derive(serde::Serialize)]
+        struct PrismEditRequest {
+            model: String,
+            prompt: String,
+            max_tokens: u32,
+            #[serde(skip_serializing_if = "Vec::is_empty")]
+            stop: Vec<String>,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct PrismEditResponse {
+            choices: Vec<PrismEditChoice>,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct PrismEditChoice {
+            text: String,
+        }
+
+        let endpoint = format!("{}/edit_predictions", api_url.trim_end_matches('/'));
+
+        let body = serde_json::to_string(&PrismEditRequest {
+            model,
+            prompt: fim_string,
+            max_tokens: 350,
+            stop: vec![
+                "<fim_prefix>".to_string(),
+                "<fim_suffix>".to_string(),
+                "<fim_middle>".to_string(),
+            ],
+        })?;
+
+        let request = HttpRequest::builder()
+            .method(Method::POST)
+            .uri(endpoint)
+            .header("Content-Type", "application/json")
+            .header("Authorization", format!("Bearer {}", api_key))
+            .body(AsyncBody::from(body))?;
+
+        let mut response = http_client.send(request).await?;
+        let status = response.status();
+
+        if !status.is_success() {
+            let mut error_body = String::new();
+            response.body_mut().read_to_string(&mut error_body).await?;
+            return Err(anyhow::anyhow!(
+                "PrisM edit prediction API error: {} - {}",
+                status,
+                error_body
+            ));
+        }
+
+        let mut response_body = String::new();
+        response.body_mut().read_to_string(&mut response_body).await?;
+
+        let parsed: PrismEditResponse = serde_json::from_str(&response_body)?;
+        parsed
+            .choices
+            .into_iter()
+            .next()
+            .map(|c| c.text)
+            .ok_or_else(|| anyhow::anyhow!("PrisM edit prediction returned no choices"))
+    }
+}
+
+impl EditPredictionDelegate for PrismEditPredictionDelegate {
+    fn name() -> &'static str {
+        "prism"
+    }
+
+    fn display_name() -> &'static str {
+        "PrisM"
+    }
+
+    fn show_predictions_in_menu() -> bool {
+        true
+    }
+
+    fn icons(&self, _cx: &App) -> EditPredictionIconSet {
+        EditPredictionIconSet::new(IconName::AiAnthropic)
+    }
+
+    fn is_enabled(&self, _buffer: &Entity<Buffer>, _cursor_position: Anchor, cx: &App) -> bool {
+        prism_api_key_and_url(cx).is_some()
+    }
+
+    fn is_refreshing(&self, _cx: &App) -> bool {
+        self.pending_request.is_some()
+    }
+
+    fn refresh(
+        &mut self,
+        buffer: Entity<Buffer>,
+        cursor_position: Anchor,
+        debounce: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((api_key, api_url)) = prism_api_key_and_url(cx) else {
+            return;
+        };
+
+        let model = std::env::var("PRISM_EDIT_PREDICTION_MODEL")
+            .unwrap_or_else(|_| "claude-haiku-4-5-20251001".to_string());
+
+        let snapshot = buffer.read(cx).snapshot();
+
+        if let Some(current) = self.current_completion.as_ref() {
+            if current.interpolate(&snapshot).is_some() {
+                return;
+            }
+        }
+
+        let http_client = self.http_client.clone();
+
+        self.pending_request = Some(cx.spawn(async move |this, cx| {
+            if debounce {
+                cx.background_executor()
+                    .timer(EDIT_PREDICTION_DEBOUNCE)
+                    .await;
+            }
+
+            let cursor_offset = cursor_position.to_offset(&snapshot);
+            let cursor_point = cursor_offset.to_point(&snapshot);
+
+            let (_, context_range) =
+                cursor_excerpt::editable_and_context_ranges_for_cursor_position(
+                    cursor_point,
+                    &snapshot,
+                    MAX_REWRITE_TOKENS,
+                    MAX_CONTEXT_TOKENS,
+                );
+
+            let context_range = context_range.to_offset(&snapshot);
+            let excerpt_text = snapshot
+                .text_for_range(context_range.clone())
+                .collect::<String>();
+            let cursor_within_excerpt = cursor_offset
+                .saturating_sub(context_range.start)
+                .min(excerpt_text.len());
+            let prompt = excerpt_text[..cursor_within_excerpt].to_string();
+            let suffix = excerpt_text[cursor_within_excerpt..].to_string();
+            let fim_string = format!("{prompt}<fim_suffix>{suffix}<fim_middle>");
+
+            let completion_text = match Self::fetch_completion(
+                http_client,
+                api_key,
+                api_url,
+                model,
+                fim_string,
+            )
+            .await
+            {
+                Ok(text) => text,
+                Err(e) => {
+                    log::error!("PrisM edit prediction fetch failed: {}", e);
+                    this.update(cx, |this, cx| {
+                        this.pending_request = None;
+                        cx.notify();
+                    })?;
+                    return Err(e);
+                }
+            };
+
+            if completion_text.trim().is_empty() {
+                this.update(cx, |this, cx| {
+                    this.pending_request = None;
+                    cx.notify();
+                })?;
+                return Ok(());
+            }
+
+            let edits: Arc<[(Range<Anchor>, Arc<str>)]> =
+                vec![(cursor_position..cursor_position, completion_text.into())].into();
+            let edit_preview = buffer
+                .read_with(cx, |buffer, cx| buffer.preview_edits(edits.clone(), cx))
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.current_completion = Some(CurrentPrismCompletion {
+                    snapshot,
+                    edits,
+                    edit_preview,
+                });
+                this.pending_request = None;
+                cx.notify();
+            })?;
+
+            Ok(())
+        }));
+    }
+
+    fn accept(&mut self, _cx: &mut Context<Self>) {
+        self.pending_request = None;
+        self.current_completion = None;
+    }
+
+    fn discard(&mut self, _reason: EditPredictionDiscardReason, _cx: &mut Context<Self>) {
+        self.pending_request = None;
+        self.current_completion = None;
+    }
+
+    fn suggest(
+        &mut self,
+        buffer: &Entity<Buffer>,
+        _cursor_position: Anchor,
+        cx: &mut Context<Self>,
+    ) -> Option<EditPrediction> {
+        let current = self.current_completion.as_ref()?;
+        let buffer = buffer.read(cx);
+        let edits = current.interpolate(&buffer.snapshot())?;
+        if edits.is_empty() {
+            return None;
+        }
+        Some(EditPrediction::Local {
+            id: None,
+            edits,
+            cursor_position: None,
+            edit_preview: Some(current.edit_preview.clone()),
+        })
+    }
 }

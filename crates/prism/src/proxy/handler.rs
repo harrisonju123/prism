@@ -860,7 +860,7 @@ pub(crate) fn resolve_model(config: &Config, model: &str) -> Result<(String, Str
 }
 
 /// Resolve a model to its primary provider + any fallback providers.
-fn resolve_model_with_fallbacks(
+pub(crate) fn resolve_model_with_fallbacks(
     config: &Config,
     model: &str,
 ) -> Result<(String, String, Vec<(String, String)>)> {
@@ -905,19 +905,19 @@ fn hash_string(s: &str) -> String {
 }
 
 /// Contextual data for building inference events (avoids too-many-arguments).
-struct EventContext {
-    trace_id: Option<String>,
-    span_id: Option<String>,
-    parent_span_id: Option<String>,
-    agent_framework: Option<String>,
-    tool_calls_json: Option<String>,
-    ttft_ms: Option<u32>,
-    session_id: Option<String>,
-    provider_attempted: Option<String>,
+pub(crate) struct EventContext {
+    pub(crate) trace_id: Option<String>,
+    pub(crate) span_id: Option<String>,
+    pub(crate) parent_span_id: Option<String>,
+    pub(crate) agent_framework: Option<String>,
+    pub(crate) tool_calls_json: Option<String>,
+    pub(crate) ttft_ms: Option<u32>,
+    pub(crate) session_id: Option<String>,
+    pub(crate) provider_attempted: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_event(
+pub(crate) fn build_event(
     provider: &str,
     model: &str,
     status: EventStatus,
@@ -1171,6 +1171,7 @@ pub struct AppState {
     pub config: Config,
     pub providers: Arc<ProviderRegistry>,
     pub event_tx: tokio::sync::mpsc::Sender<InferenceEvent>,
+    pub http_client: reqwest::Client,
     pub fitness_cache: FitnessCache,
     pub routing_policy: RoutingPolicy,
     pub key_service: Option<Arc<KeyService>>,

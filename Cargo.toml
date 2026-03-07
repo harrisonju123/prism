@@ -8,6 +8,7 @@ members = [
     "crates/prism-client",
     "crates/prism-cli",
     "crates/uglyhat-panel",
+    "crates/prism-dashboard",
     # Zed crates
     "zed-upstream/crates/acp_thread",
     "zed-upstream/crates/acp_tools",
@@ -258,6 +259,7 @@ prism = { path = "crates/prism", default-features = false, features = ["embedded
 prism-types = { path = "crates/prism-types" }
 prism-client = { path = "crates/prism-client" }
 uglyhat-panel = { path = "crates/uglyhat-panel" }
+prism-dashboard = { path = "crates/prism-dashboard" }
 
 #
 # Zed internal crates (paths prefixed with zed-upstream/)

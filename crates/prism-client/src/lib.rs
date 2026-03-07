@@ -3,7 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 
 // Re-export prism-types for consumers
-pub use prism_types::{ChatCompletionRequest, ChatCompletionResponse, Choice, Message, Usage};
+pub use prism_types::{
+    ChatCompletionRequest, ChatCompletionResponse, Choice, Message, PolicyResponse,
+    SummaryResponse, TaskTypeStatsResponse, Usage, WasteScoreResponse,
+};
 
 // --- Error ---
 
@@ -193,5 +196,60 @@ impl PrismClient {
     pub async fn health_check(&self) -> Result<bool> {
         let resp = self.request(reqwest::Method::GET, "/health").send().await?;
         Ok(resp.status().is_success())
+    }
+
+    async fn handle_response<T: serde::de::DeserializeOwned>(
+        resp: reqwest::Response,
+    ) -> Result<T> {
+        let status = resp.status().as_u16();
+        if !resp.status().is_success() {
+            let msg = resp.text().await.unwrap_or_default();
+            return Err(ClientError::Api {
+                status,
+                message: msg,
+            });
+        }
+        Ok(resp.json().await?)
+    }
+
+    pub async fn stats_summary(&self, period_days: u32) -> Result<SummaryResponse> {
+        let resp = self
+            .request(
+                reqwest::Method::GET,
+                &format!("/api/v1/stats/summary?period_days={period_days}"),
+            )
+            .send()
+            .await?;
+        Self::handle_response(resp).await
+    }
+
+    pub async fn stats_waste_score(&self, period_days: u32) -> Result<WasteScoreResponse> {
+        let resp = self
+            .request(
+                reqwest::Method::GET,
+                &format!("/api/v1/stats/waste-score?period_days={period_days}"),
+            )
+            .send()
+            .await?;
+        Self::handle_response(resp).await
+    }
+
+    pub async fn stats_task_types(&self, period_days: u32) -> Result<TaskTypeStatsResponse> {
+        let resp = self
+            .request(
+                reqwest::Method::GET,
+                &format!("/api/v1/stats/task-types?period_days={period_days}"),
+            )
+            .send()
+            .await?;
+        Self::handle_response(resp).await
+    }
+
+    pub async fn routing_policy(&self) -> Result<PolicyResponse> {
+        let resp = self
+            .request(reqwest::Method::GET, "/api/v1/routing/policy")
+            .send()
+            .await?;
+        Self::handle_response(resp).await
     }
 }

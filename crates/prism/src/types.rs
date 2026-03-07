@@ -198,6 +198,7 @@ pub enum TaskType {
     Documentation,
     Testing,
     ToolSelection,
+    FillInTheMiddle,
     Unknown,
 }
 
@@ -240,6 +241,41 @@ impl std::fmt::Display for TaskType {
             .unwrap_or_else(|| "unknown".into());
         f.write_str(&s)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Text completion types (OpenAI legacy completions, used for FIM / edit predictions)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct TextCompletionRequest {
+    pub model: String,
+    pub prompt: String,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    #[serde(default)]
+    pub stop: Vec<String>,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TextCompletionResponse {
+    pub id: String,
+    pub object: String,
+    pub created: u64,
+    pub model: String,
+    pub choices: Vec<TextCompletionChoice>,
+    pub usage: Usage,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TextCompletionChoice {
+    pub text: String,
+    pub index: u32,
+    pub finish_reason: Option<String>,
 }
 
 /// A captured inference event, written to ClickHouse.

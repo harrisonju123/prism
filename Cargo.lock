@@ -10212,6 +10212,8 @@ dependencies = [
  "copilot_ui",
  "credentials_provider",
  "deepseek",
+ "edit_prediction",
+ "edit_prediction_types",
  "editor",
  "extension",
  "extension_host",
@@ -13970,6 +13972,7 @@ dependencies = [
  "opentelemetry_sdk",
  "petgraph 0.7.1",
  "pin-project-lite",
+ "prism-types",
  "rand 0.9.2",
  "redis",
  "regex",
@@ -14031,6 +14034,23 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "prism-dashboard"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "db",
+ "gpui",
+ "prism-client",
+ "prism-types",
+ "serde",
+ "serde_json",
+ "settings",
+ "ui",
+ "util",
+ "workspace",
 ]
 
 [[package]]
@@ -23555,6 +23575,7 @@ dependencies = [
  "picker",
  "pkg-config",
  "pretty_assertions",
+ "prism-dashboard",
  "profiling",
  "project",
  "project_panel",

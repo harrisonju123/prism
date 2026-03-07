@@ -54,6 +54,7 @@ pub fn request_prediction(
         settings::EditPredictionProvider::OpenAiCompatibleApi => {
             settings.open_ai_compatible_api.clone()
         }
+        settings::EditPredictionProvider::Prism => settings.prism.clone(),
         _ => None,
     }) else {
         return Task::ready(Err(anyhow!("Unsupported edit prediction provider for FIM")));

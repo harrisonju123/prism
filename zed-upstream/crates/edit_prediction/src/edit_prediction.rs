@@ -1955,7 +1955,8 @@ fn is_ep_store_provider(provider: EditPredictionProvider) -> bool {
         | EditPredictionProvider::Experimental(_) => true,
         EditPredictionProvider::None
         | EditPredictionProvider::Copilot
-        | EditPredictionProvider::Codestral => false,
+        | EditPredictionProvider::Codestral
+        | EditPredictionProvider::Prism => false,
     }
 }
 
@@ -1995,7 +1996,8 @@ impl EditPredictionStore {
                 EditPredictionProvider::OpenAiCompatibleApi => (false, 2),
                 EditPredictionProvider::None
                 | EditPredictionProvider::Copilot
-                | EditPredictionProvider::Codestral => {
+                | EditPredictionProvider::Codestral
+                | EditPredictionProvider::Prism => {
                     log::error!("queue_prediction_refresh called with non-store provider");
                     return;
                 }

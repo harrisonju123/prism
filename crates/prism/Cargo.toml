@@ -27,6 +27,8 @@ postgres          = ["dep:sqlx"]
 jwt               = ["dep:jsonwebtoken", "dep:hmac"]
 
 [dependencies]
+prism-types = { workspace = true }
+
 # HTTP server
 axum = { workspace = true }
 axum-extra = { version = "0.10", features = ["typed-header"] }

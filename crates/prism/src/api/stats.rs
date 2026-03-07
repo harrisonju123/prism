@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{PrismError, Result};
 use crate::proxy::handler::AppState;
+use prism_types::{StatGroup, SummaryResponse, TaskTypeStat, TaskTypeStatsResponse, WasteScoreResponse};
 
 // ---------------------------------------------------------------------------
 // Query params
@@ -71,29 +72,6 @@ fn default_limit() -> u32 {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize)]
-pub struct SummaryResponse {
-    pub period_days: u32,
-    pub total_requests: u64,
-    pub total_cost_usd: f64,
-    pub total_tokens: u64,
-    pub failure_rate: f64,
-    pub groups: Vec<StatGroup>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct StatGroup {
-    pub key: String,
-    pub request_count: u64,
-    pub total_cost_usd: f64,
-    pub avg_latency_ms: f64,
-    pub p95_latency_ms: f64,
-    pub avg_cost_per_request_usd: f64,
-    pub total_prompt_tokens: u64,
-    pub total_completion_tokens: u64,
-    pub failure_count: u64,
-}
-
-#[derive(Debug, Serialize)]
 pub struct TimeseriesResponse {
     pub metric: String,
     pub interval: String,
@@ -120,14 +98,6 @@ pub struct TraceInfo {
     pub event_count: u64,
     pub models_used: Vec<String>,
     pub agent_framework: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct WasteScoreResponse {
-    pub period_days: u32,
-    pub waste_score: f64,
-    pub total_cost_usd: f64,
-    pub estimated_waste_usd: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -439,28 +409,13 @@ pub async fn top_traces(
 }
 
 // ---------------------------------------------------------------------------
-// Task type stats response
+// Task type stats
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 pub struct TaskTypeParams {
     #[serde(default = "default_period_days")]
     pub period_days: u32,
-}
-
-#[derive(Debug, Serialize)]
-pub struct TaskTypeStatsResponse {
-    pub period_days: u32,
-    pub task_types: Vec<TaskTypeStat>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct TaskTypeStat {
-    pub task_type: String,
-    pub request_count: u64,
-    pub total_cost_usd: f64,
-    pub avg_latency_ms: f64,
-    pub p95_latency_ms: f64,
 }
 
 /// GET /api/v1/stats/task-types

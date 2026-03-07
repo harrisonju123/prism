@@ -37,7 +37,7 @@ pub async fn resolve(
         .iter()
         .enumerate()
         .find(|(_, r)| r.task_type == task_str || r.task_type == "*")
-        .map(|(i, r)| (i, r.clone()))?;
+        .map(|(i, r): (usize, &RoutingRule)| (i, r.clone()))?;
 
     // Step 3: tier-1 preservation
     let is_hard = HARD_TASKS.contains(&task_type);
@@ -98,7 +98,7 @@ pub async fn resolve(
         })
     } else {
         // Step 6: fallback
-        rule.fallback.as_ref().map(|fb| RoutingDecision {
+        rule.fallback.as_ref().map(|fb: &String| RoutingDecision {
             selected_model: fb.clone(),
             reason: "fallback: no candidate met constraints".into(),
             was_overridden: fb != requested_model,

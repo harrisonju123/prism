@@ -1,0 +1,24 @@
+[package]
+name = "prism-dashboard"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/prism_dashboard.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+db.workspace = true
+gpui.workspace = true
+prism-client = { workspace = true }
+prism-types = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+settings.workspace = true
+ui.workspace = true
+util.workspace = true
+workspace.workspace = true

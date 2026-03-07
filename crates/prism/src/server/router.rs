@@ -32,6 +32,10 @@ pub fn build(state: Arc<AppState>) -> Router {
             "/v1/messages",
             post(crate::proxy::anthropic_handler::anthropic_messages),
         )
+        .route(
+            "/v1/edit_predictions",
+            post(crate::proxy::predict_edits::predict_edits),
+        )
         .route("/v1/models", get(api::models::list_models))
         .route("/api/v1/feedback", post(feedback::submit_feedback));
 

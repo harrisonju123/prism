@@ -87,6 +87,7 @@ pub enum EditPredictionProvider {
     OpenAiCompatibleApi,
     Sweep,
     Mercury,
+    Prism,
     Experimental(&'static str),
 }
 
@@ -108,6 +109,7 @@ impl<'de> Deserialize<'de> for EditPredictionProvider {
             OpenAiCompatibleApi,
             Sweep,
             Mercury,
+            Prism,
             Experimental(String),
         }
 
@@ -120,6 +122,7 @@ impl<'de> Deserialize<'de> for EditPredictionProvider {
             Content::OpenAiCompatibleApi => EditPredictionProvider::OpenAiCompatibleApi,
             Content::Sweep => EditPredictionProvider::Sweep,
             Content::Mercury => EditPredictionProvider::Mercury,
+            Content::Prism => EditPredictionProvider::Prism,
             Content::Experimental(name)
                 if name == EXPERIMENTAL_ZETA2_EDIT_PREDICTION_PROVIDER_NAME =>
             {
@@ -146,6 +149,7 @@ impl EditPredictionProvider {
             | EditPredictionProvider::OpenAiCompatibleApi
             | EditPredictionProvider::Sweep
             | EditPredictionProvider::Mercury
+            | EditPredictionProvider::Prism
             | EditPredictionProvider::Experimental(_) => false,
         }
     }
@@ -157,6 +161,7 @@ impl EditPredictionProvider {
             EditPredictionProvider::Codestral => Some("Codestral"),
             EditPredictionProvider::Sweep => Some("Sweep"),
             EditPredictionProvider::Mercury => Some("Mercury"),
+            EditPredictionProvider::Prism => Some("PrisM"),
             EditPredictionProvider::Experimental(_) | EditPredictionProvider::None => None,
             EditPredictionProvider::Ollama => Some("Ollama"),
             EditPredictionProvider::OpenAiCompatibleApi => Some("OpenAI-Compatible API"),
@@ -187,11 +192,34 @@ pub struct EditPredictionSettingsContent {
     pub ollama: Option<OllamaEditPredictionSettingsContent>,
     /// Settings specific to using custom OpenAI-compatible servers for edit prediction.
     pub open_ai_compatible_api: Option<CustomEditPredictionProviderSettingsContent>,
+    /// Settings specific to routing edit predictions through a local PrisM gateway.
+    pub prism: Option<PrismEditPredictionSettingsContent>,
     /// Whether edit predictions are enabled in the assistant prompt editor.
     /// This has no effect if globally disabled.
     pub enabled_in_text_threads: Option<bool>,
     /// The directory where manually captured edit prediction examples are stored.
     pub examples_dir: Option<Arc<Path>>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema, MergeFrom, PartialEq)]
+pub struct PrismEditPredictionSettingsContent {
+    /// The PrisM completions URL. Defaults to the embedded gateway.
+    ///
+    /// Default: "http://localhost:9100/v1/completions"
+    pub api_url: Option<String>,
+    /// The prompt format to use. Set to `""` to have the format be derived from the model name.
+    ///
+    /// Default: ""
+    pub prompt_format: Option<EditPredictionPromptFormat>,
+    /// The FIM-capable model name to request from PrisM.
+    ///
+    /// Default: ""
+    pub model: Option<String>,
+    /// Maximum tokens for the FIM completion.
+    ///
+    /// Default: 256
+    pub max_output_tokens: Option<u32>,
 }
 
 #[with_fallible_options]

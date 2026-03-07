@@ -1,43 +1,11 @@
 use crate::types::TaskType;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-/// How to select from candidate models.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SelectionCriteria {
-    CheapestAboveQuality,
-    FastestAboveQuality,
-    HighestQualityUnderCost,
-    BestValue,
-}
-
-impl Default for SelectionCriteria {
-    fn default() -> Self {
-        Self::CheapestAboveQuality
-    }
-}
-
-/// A single routing rule from config.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RoutingRule {
-    /// Task type to match, or "*" for catch-all
-    pub task_type: String,
-    #[serde(default)]
-    pub criteria: SelectionCriteria,
-    /// Minimum quality score (0.0-1.0)
-    #[serde(default = "default_min_quality")]
-    pub min_quality: f64,
-    pub max_cost_per_1k: Option<f64>,
-    pub max_latency_ms: Option<u32>,
-    pub fallback: Option<String>,
-}
-
-fn default_min_quality() -> f64 {
-    0.55
-}
+// Re-export shared types from prism-types
+pub use prism_types::{RoutingRule, SelectionCriteria};
 
 /// A set of routing rules.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, serde::Deserialize)]
 pub struct RoutingPolicy {
     pub rules: Vec<RoutingRule>,
     #[serde(default)]
@@ -56,7 +24,7 @@ pub struct RoutingDecision {
 }
 
 /// Fitness data for a model on a specific task type.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct FitnessEntry {
     pub task_type: TaskType,
     pub model: String,

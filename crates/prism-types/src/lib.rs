@@ -196,6 +196,7 @@ pub enum TaskType {
     Documentation,
     Testing,
     ToolSelection,
+    FillInTheMiddle,
     Unknown,
 }
 
@@ -236,6 +237,113 @@ impl std::fmt::Display for TaskType {
         f.write_str(&s)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Stats API response types (shared between server and client)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SummaryResponse {
+    pub period_days: u32,
+    pub total_requests: u64,
+    pub total_cost_usd: f64,
+    pub total_tokens: u64,
+    pub failure_rate: f64,
+    pub groups: Vec<StatGroup>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatGroup {
+    pub key: String,
+    pub request_count: u64,
+    pub total_cost_usd: f64,
+    pub avg_latency_ms: f64,
+    pub p95_latency_ms: f64,
+    pub avg_cost_per_request_usd: f64,
+    pub total_prompt_tokens: u64,
+    pub total_completion_tokens: u64,
+    pub failure_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasteScoreResponse {
+    pub period_days: u32,
+    pub waste_score: f64,
+    pub total_cost_usd: f64,
+    pub estimated_waste_usd: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskTypeStatsResponse {
+    pub period_days: u32,
+    pub task_types: Vec<TaskTypeStat>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskTypeStat {
+    pub task_type: String,
+    pub request_count: u64,
+    pub total_cost_usd: f64,
+    pub avg_latency_ms: f64,
+    pub p95_latency_ms: f64,
+}
+
+// ---------------------------------------------------------------------------
+// Routing types (shared between server and client)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectionCriteria {
+    CheapestAboveQuality,
+    FastestAboveQuality,
+    HighestQualityUnderCost,
+    BestValue,
+}
+
+impl Default for SelectionCriteria {
+    fn default() -> Self {
+        Self::CheapestAboveQuality
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutingRule {
+    pub task_type: String,
+    #[serde(default)]
+    pub criteria: SelectionCriteria,
+    #[serde(default = "default_min_quality")]
+    pub min_quality: f64,
+    pub max_cost_per_1k: Option<f64>,
+    pub max_latency_ms: Option<u32>,
+    pub fallback: Option<String>,
+}
+
+fn default_min_quality() -> f64 {
+    0.55
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyResponse {
+    pub version: u32,
+    pub rule_count: usize,
+    pub rules: Vec<RoutingRule>,
+    pub valid: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FitnessEntry {
+    pub task_type: TaskType,
+    pub model: String,
+    pub avg_quality: f64,
+    pub avg_cost_per_1k: f64,
+    pub avg_latency_ms: f64,
+    pub sample_size: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Internal event types
+// ---------------------------------------------------------------------------
 
 /// A captured inference event.
 #[derive(Debug, Clone, Serialize, Deserialize)]

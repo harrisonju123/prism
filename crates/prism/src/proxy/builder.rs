@@ -57,6 +57,7 @@ pub struct AppStateBuilder {
     interop_bridge: Option<Arc<DiscoveryBridge>>,
     interop_metering: Option<Arc<MeteringStore>>,
     metrics: Option<Arc<MetricsCollector>>,
+    session_cost_usd: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 
 impl AppStateBuilder {
@@ -83,6 +84,7 @@ impl AppStateBuilder {
             interop_bridge: None,
             interop_metering: None,
             metrics: None,
+            session_cost_usd: None,
         }
     }
 
@@ -293,6 +295,11 @@ impl AppStateBuilder {
         self
     }
 
+    pub fn with_session_cost_usd(mut self, cost: Arc<std::sync::atomic::AtomicU64>) -> Self {
+        self.session_cost_usd = Some(cost);
+        self
+    }
+
     // --- build() ---
 
     pub fn build(self) -> Result<AppState, AppStateBuildError> {
@@ -322,6 +329,7 @@ impl AppStateBuilder {
             config: self.config,
             providers,
             event_tx,
+            http_client: reqwest::Client::new(),
             fitness_cache,
             routing_policy,
             rate_limiter,
@@ -340,7 +348,9 @@ impl AppStateBuilder {
             interop_bridge: self.interop_bridge,
             interop_metering: self.interop_metering,
             metrics: self.metrics,
-            session_cost_usd: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            session_cost_usd: self
+                .session_cost_usd
+                .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicU64::new(0))),
         })
     }
 }

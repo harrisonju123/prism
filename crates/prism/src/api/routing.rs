@@ -9,6 +9,7 @@ use crate::error::{PrismError, Result};
 use crate::proxy::handler::AppState;
 use crate::routing::policy::{parse_policy_yaml, validate_policy};
 use crate::routing::types::RoutingDecision;
+use prism_types::PolicyResponse;
 
 /// POST /api/v1/routing/dry-run — simulate a routing decision.
 pub async fn dry_run(
@@ -95,10 +96,3 @@ pub struct ValidateResponse {
     pub version: u32,
 }
 
-#[derive(Debug, Serialize)]
-pub struct PolicyResponse {
-    pub version: u32,
-    pub rule_count: usize,
-    pub rules: Vec<crate::routing::types::RoutingRule>,
-    pub valid: bool,
-}

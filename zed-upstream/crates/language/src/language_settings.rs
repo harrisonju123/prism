@@ -416,6 +416,7 @@ pub struct EditPredictionSettings {
     /// Settings specific to Ollama.
     pub ollama: Option<OpenAiCompatibleEditPredictionSettings>,
     pub open_ai_compatible_api: Option<OpenAiCompatibleEditPredictionSettings>,
+    pub prism: Option<OpenAiCompatibleEditPredictionSettings>,
     /// Whether edit predictions are enabled in the assistant panel.
     /// This setting has no effect if globally disabled.
     pub enabled_in_text_threads: bool,
@@ -745,6 +746,25 @@ impl settings::Settings for AllLanguageSettings {
                 prompt_format: openai_compatible_settings.prompt_format.unwrap(),
             });
 
+        let prism_content = edit_predictions.prism.unwrap();
+        let prism_model = prism_content.model;
+        let prism_api_url = prism_content.api_url;
+        let prism_max_tokens = prism_content.max_output_tokens;
+        let prism_prompt_format = prism_content.prompt_format;
+        let prism_settings = prism_model
+            .filter(|model| !model.is_empty())
+            .map(|model| {
+                let api_url = prism_api_url
+                    .filter(|u| !u.is_empty())
+                    .unwrap_or_else(|| "http://localhost:9100/v1/completions".to_string());
+                OpenAiCompatibleEditPredictionSettings {
+                    model,
+                    max_output_tokens: prism_max_tokens.unwrap(),
+                    api_url: api_url.into(),
+                    prompt_format: prism_prompt_format.unwrap(),
+                }
+            });
+
         let enabled_in_text_threads = edit_predictions.enabled_in_text_threads.unwrap();
 
         let mut file_types: FxHashMap<Arc<str>, (GlobSet, Vec<String>)> = FxHashMap::default();
@@ -785,6 +805,7 @@ impl settings::Settings for AllLanguageSettings {
                 sweep: sweep_settings,
                 ollama: ollama_settings,
                 open_ai_compatible_api: openai_compatible_settings,
+                prism: prism_settings,
                 enabled_in_text_threads,
                 examples_dir: edit_predictions.examples_dir,
             },

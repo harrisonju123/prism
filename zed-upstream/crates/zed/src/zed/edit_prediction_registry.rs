@@ -6,6 +6,7 @@ use edit_prediction::{EditPredictionModel, ZedEditPredictionDelegate};
 use editor::Editor;
 use gpui::{AnyWindowHandle, App, AppContext as _, Context, Entity, WeakEntity};
 use language::language_settings::{EditPredictionProvider, all_language_settings};
+use language_models::provider::prism::PrismEditPredictionDelegate;
 
 use settings::{EditPredictionPromptFormat, SettingsStore};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
@@ -113,6 +114,7 @@ fn edit_prediction_provider_config_for_settings(cx: &App) -> Option<EditPredicti
             Some(EditPredictionProviderConfig::Zed(EditPredictionModel::Zeta))
         }
         EditPredictionProvider::Codestral => Some(EditPredictionProviderConfig::Codestral),
+        EditPredictionProvider::Prism => Some(EditPredictionProviderConfig::Prism),
         EditPredictionProvider::Ollama | EditPredictionProvider::OpenAiCompatibleApi => {
             let custom_settings = if provider == EditPredictionProvider::Ollama {
                 settings.ollama.as_ref()?
@@ -147,6 +149,27 @@ fn edit_prediction_provider_config_for_settings(cx: &App) -> Option<EditPredicti
         EditPredictionProvider::Mercury => Some(EditPredictionProviderConfig::Zed(
             EditPredictionModel::Mercury,
         )),
+        EditPredictionProvider::Prism => {
+            let prism_settings = settings.prism.as_ref()?;
+            let mut format = prism_settings.prompt_format;
+            if format == EditPredictionPromptFormat::Infer {
+                if let Some(inferred_format) = infer_prompt_format(&prism_settings.model) {
+                    format = inferred_format;
+                } else {
+                    return None;
+                }
+            }
+            if matches!(
+                format,
+                EditPredictionPromptFormat::Zeta | EditPredictionPromptFormat::Zeta2
+            ) {
+                Some(EditPredictionProviderConfig::Zed(EditPredictionModel::Zeta))
+            } else {
+                Some(EditPredictionProviderConfig::Zed(
+                    EditPredictionModel::Fim { format },
+                ))
+            }
+        }
         EditPredictionProvider::Experimental(_) => None,
     }
 }
@@ -172,6 +195,7 @@ fn infer_prompt_format(model: &str) -> Option<EditPredictionPromptFormat> {
 enum EditPredictionProviderConfig {
     Copilot,
     Codestral,
+    Prism,
     Zed(EditPredictionModel),
 }
 
@@ -180,6 +204,7 @@ impl EditPredictionProviderConfig {
         match self {
             EditPredictionProviderConfig::Copilot => "Copilot",
             EditPredictionProviderConfig::Codestral => "Codestral",
+            EditPredictionProviderConfig::Prism => "PrisM",
             EditPredictionProviderConfig::Zed(model) => match model {
                 EditPredictionModel::Zeta => "Zeta",
                 EditPredictionModel::Fim { .. } => "FIM",
@@ -273,6 +298,11 @@ fn assign_edit_prediction_provider(
         Some(EditPredictionProviderConfig::Codestral) => {
             let http_client = client.http_client();
             let provider = cx.new(|_| CodestralEditPredictionDelegate::new(http_client));
+            editor.set_edit_prediction_provider(Some(provider), window, cx);
+        }
+        Some(EditPredictionProviderConfig::Prism) => {
+            let http_client = client.http_client();
+            let provider = cx.new(|_| PrismEditPredictionDelegate::new(http_client));
             editor.set_edit_prediction_provider(Some(provider), window, cx);
         }
         Some(EditPredictionProviderConfig::Zed(model)) => {
