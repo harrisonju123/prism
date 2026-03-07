@@ -73,6 +73,13 @@ impl SqliteStore {
             .await
             .map_err(|e| crate::error::Error::Internal(format!("apply schema: {e}")))?;
 
+        // Best-effort migration for current_task_id column
+        let _ = sqlx::query(
+            "ALTER TABLE agents ADD COLUMN current_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL"
+        )
+        .execute(&pool)
+        .await;
+
         Ok(Self { pool })
     }
 }
@@ -464,6 +471,14 @@ impl Store for SqliteStore {
 
     async fn list_agents(&self, workspace_id: Uuid) -> Result<Vec<Agent>> {
         self.list_agents_impl(workspace_id).await
+    }
+
+    async fn list_agent_statuses(&self, workspace_id: Uuid) -> Result<Vec<AgentStatus>> {
+        self.list_agent_statuses_impl(workspace_id).await
+    }
+
+    async fn claim_task(&self, workspace_id: Uuid, task_id: Uuid, agent_name: &str) -> Result<Task> {
+        self.claim_task_impl(workspace_id, task_id, agent_name).await
     }
 
     async fn create_handoff(

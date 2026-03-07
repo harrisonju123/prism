@@ -1,34 +1,52 @@
 # PrisM — LLM Gateway + uglyhat Monorepo
 
-## Project Management with uglyhat
+## Agent Workflow (multi-agent parallel execution)
 
-This project uses uglyhat (`uh`) for task tracking. A workspace is initialized at `.uglyhat.json` / `.uglyhat.db` in the repo root.
+Each Claude Code session is an agent. Sessions auto checkin/checkout via hooks — no manual action needed at startup/shutdown.
 
-**When starting work on any non-trivial task:**
+**Set your agent name for the worktree you're in (once per shell):**
 ```bash
-uh next                              # find the highest-priority unblocked task
-uh task claim <id> --name claude     # claim it
-uh task update <id> --status in_progress
+export UH_AGENT_NAME=claude-zed-surface   # matches your track/worktree branch
+```
+Default name if unset: `claude`.
+
+**Checkin happens automatically on first prompt. To do it manually:**
+```bash
+uh checkin --name $UH_AGENT_NAME --capabilities rust,api,zed
+# → shows your assigned tasks, other agents' current work, activity since last session
 ```
 
-**When done:**
+**Before starting any task:**
+```bash
+uh next                                    # unblocked, unclaimed tasks (excludes in_progress)
+uh task claim <id> --name $UH_AGENT_NAME  # claim it — sets assignee + marks your current task
+```
+`uh next` filters out `in_progress` tasks. Claim before you start so other agents see it taken.
+
+**When done with a task:**
 ```bash
 uh task update <id> --status done
-uh checkout --name claude --summary "what was done"
-```
-
-**When discovering new work:**
-```bash
-uh task create "<title>" --epic <epic-id> --priority high
+# checkout fires automatically on session end, or manually:
+uh checkout --name $UH_AGENT_NAME --summary "what was done"
 ```
 
 **When blocked:**
 ```bash
 uh task block <blocking-id> <blocked-id>
-uh report "<issue title>" --desc "..."   # file in system epic
+uh report "<issue title>" --desc "..."
+uh handoff <task-id> --summary "..." --findings "..." --next-steps "..."
 ```
 
-Always check `uh next` before starting new work, and update task status as you go.
+**Discovering new work:**
+```bash
+uh task create "<title>" --epic <epic-id> --priority high
+```
+
+**See what all agents are doing:**
+```bash
+uh agents          # roster: name, session open/idle, current task
+uh context         # full workspace overview including active agents
+```
 
 ---
 

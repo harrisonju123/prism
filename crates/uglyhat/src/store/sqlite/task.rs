@@ -293,6 +293,47 @@ impl SqliteStore {
         rows.iter().map(row_to_task).collect()
     }
 
+    pub(crate) async fn claim_task_impl(
+        &self,
+        workspace_id: Uuid,
+        task_id: Uuid,
+        agent_name: &str,
+    ) -> Result<Task> {
+        let now = now_rfc3339();
+        let mut tx = self.pool.begin().await?;
+
+        let result = sqlx::query(
+            "UPDATE tasks SET assignee = $1, status = 'in_progress', updated_at = $2
+             WHERE id = $3 AND workspace_id = $4",
+        )
+        .bind(agent_name)
+        .bind(&now)
+        .bind(task_id.to_string())
+        .bind(workspace_id.to_string())
+        .execute(&mut *tx)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(Error::NotFound(format!("task {task_id} not found")));
+        }
+
+        // Best-effort: update agent's current_task_id
+        let _ = sqlx::query(
+            "UPDATE agents SET current_task_id = $1, updated_at = $2
+             WHERE workspace_id = $3 AND name = $4",
+        )
+        .bind(task_id.to_string())
+        .bind(&now)
+        .bind(workspace_id.to_string())
+        .bind(agent_name)
+        .execute(&mut *tx)
+        .await;
+
+        tx.commit().await?;
+
+        self.get_task_impl(task_id).await
+    }
+
     pub(crate) async fn fetch_task_by_id(&self, id: &str) -> Result<Task> {
         let query = format!("SELECT {TASK_SELECT_COLS} {TASK_JOINS} WHERE t.id = $1");
         let row = sqlx::query(&query).bind(id).fetch_one(&self.pool).await?;

@@ -22,6 +22,7 @@ impl SqliteStore {
             by_status,
             by_priority,
             blocked_tasks_count,
+            active_agents,
         ) = tokio::try_join!(
             self.get_workspace_impl(workspace_id),
             self.fetch_initiatives_with_counts(&ws_str),
@@ -52,6 +53,7 @@ impl SqliteStore {
             self.fetch_status_counts(&ws_str),
             self.fetch_priority_counts(&ws_str),
             self.fetch_blocked_count(&ws_str),
+            self.list_agent_statuses_impl(workspace_id),
         )?;
 
         Ok(WorkspaceContext {
@@ -63,6 +65,7 @@ impl SqliteStore {
             tasks_by_status: by_status,
             tasks_by_priority: by_priority,
             blocked_tasks_count,
+            active_agents,
         })
     }
 
@@ -209,7 +212,7 @@ impl SqliteStore {
              JOIN initiatives i ON i.id = t.initiative_id
              WHERE t.workspace_id = $1
                AND t.assignee = ''
-               AND t.status NOT IN ('done', 'cancelled')
+               AND t.status IN ('backlog', 'todo')
                AND NOT EXISTS (
                    SELECT 1 FROM task_dependencies td
                    JOIN tasks bt ON bt.id = td.blocking_task_id

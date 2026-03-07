@@ -206,6 +206,8 @@ pub struct WorkspaceContext {
     pub tasks_by_status: Vec<StatusCount>,
     pub tasks_by_priority: Vec<PriorityCount>,
     pub blocked_tasks_count: i64,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub active_agents: Vec<AgentStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -251,6 +253,17 @@ pub struct Agent {
     pub last_checkin: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentStatus {
+    pub name: String,
+    pub session_open: bool,
+    pub current_task_id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_task_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_checkin: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

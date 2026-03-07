@@ -164,6 +164,7 @@ CREATE TABLE IF NOT EXISTS agents (
     workspace_id  TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     name          TEXT NOT NULL,
     capabilities  TEXT NOT NULL DEFAULT '[]',
+    current_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
     last_checkin  TEXT,
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL,

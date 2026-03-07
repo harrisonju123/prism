@@ -244,6 +244,8 @@ pub trait Store: Send + Sync {
         summary: &str,
     ) -> Result<AgentSession>;
     async fn list_agents(&self, workspace_id: Uuid) -> Result<Vec<Agent>>;
+    async fn list_agent_statuses(&self, workspace_id: Uuid) -> Result<Vec<AgentStatus>>;
+    async fn claim_task(&self, workspace_id: Uuid, task_id: Uuid, agent_name: &str) -> Result<Task>;
 
     // --- Handoff ---
     async fn create_handoff(

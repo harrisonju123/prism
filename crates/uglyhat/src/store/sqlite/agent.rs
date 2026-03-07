@@ -163,7 +163,48 @@ impl SqliteStore {
         .bind(&session_id)
         .fetch_one(&self.pool)
         .await?;
+
+        // Clear current_task_id on checkout
+        sqlx::query(
+            "UPDATE agents SET current_task_id = NULL, updated_at = $1
+             WHERE workspace_id = $2 AND name = $3",
+        )
+        .bind(&now)
+        .bind(workspace_id.to_string())
+        .bind(agent_name)
+        .execute(&self.pool)
+        .await?;
+
         row_to_agent_session(&row)
+    }
+
+    pub(crate) async fn list_agent_statuses_impl(&self, workspace_id: Uuid) -> Result<Vec<AgentStatus>> {
+        let rows = sqlx::query(
+            "SELECT a.name, a.current_task_id, a.last_checkin,
+                    COALESCE(t.name, '') AS current_task_name,
+                    EXISTS(SELECT 1 FROM agent_sessions s WHERE s.agent_id = a.id AND s.ended_at IS NULL) AS session_open
+             FROM agents a
+             LEFT JOIN tasks t ON t.id = a.current_task_id
+             WHERE a.workspace_id = $1
+             ORDER BY a.name",
+        )
+        .bind(workspace_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.iter().map(|row| {
+            let task_id_str: Option<String> = row.try_get("current_task_id")?;
+            let task_name: String = row.try_get("current_task_name")?;
+            let checkin_str: Option<String> = row.try_get("last_checkin")?;
+            let session_open: bool = row.try_get("session_open")?;
+            Ok(AgentStatus {
+                name: row.try_get("name")?,
+                session_open,
+                current_task_id: task_id_str.as_deref().and_then(|s| s.parse::<Uuid>().ok()),
+                current_task_name: if task_name.is_empty() { None } else { Some(task_name) },
+                last_checkin: parse_opt_time(checkin_str)?,
+            })
+        }).collect()
     }
 
     pub(crate) async fn list_agents_impl(&self, workspace_id: Uuid) -> Result<Vec<Agent>> {

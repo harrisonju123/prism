@@ -193,6 +193,8 @@ enum Commands {
         #[arg(long, default_value = "")]
         summary: String,
     },
+    /// List agents and their current tasks
+    Agents,
     /// Create a structured handoff
     Handoff {
         /// Task ID
@@ -565,18 +567,8 @@ async fn run_command(cmd: Commands, store: &SqliteStore, ws_id: Uuid) -> Result<
             }
             TaskAction::Claim { id, name } => {
                 let task_id: Uuid = id.parse().map_err(|e| format!("invalid task ID: {e}"))?;
-                let current = store.get_task(task_id).await.map_err(|e| e.to_string())?;
                 let result = store
-                    .update_task(
-                        task_id,
-                        &current.name,
-                        &current.description,
-                        TaskStatus::InProgress,
-                        current.priority.clone(),
-                        &name,
-                        current.domain_tags.clone(),
-                        current.metadata.clone(),
-                    )
+                    .claim_task(ws_id, task_id, &name)
                     .await
                     .map_err(|e| e.to_string())?;
                 print_json(&result);
@@ -723,6 +715,10 @@ async fn run_command(cmd: Commands, store: &SqliteStore, ws_id: Uuid) -> Result<
                 .await
                 .map_err(|e| e.to_string())?;
             print_json(&result);
+        }
+        Commands::Agents => {
+            let statuses = store.list_agent_statuses(ws_id).await.map_err(|e| e.to_string())?;
+            print_json(&statuses);
         }
         Commands::Checkin { name, capabilities } => {
             let caps = split_csv(capabilities);
