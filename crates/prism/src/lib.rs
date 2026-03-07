@@ -1,5 +1,7 @@
 pub mod alerts;
 pub mod api;
+
+pub use server::embedded::{EmbeddedGateway, start_embedded};
 pub mod benchmark;
 pub mod billing;
 pub mod cache;

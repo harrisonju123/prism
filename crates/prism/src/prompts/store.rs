@@ -12,6 +12,7 @@ use super::types::PromptTemplate;
 
 pub enum PromptStore {
     InMemory(InMemoryPromptStore),
+    #[cfg(feature = "postgres")]
     Postgres(PostgresPromptStore),
 }
 
@@ -20,6 +21,7 @@ impl PromptStore {
         Self::InMemory(InMemoryPromptStore::new())
     }
 
+    #[cfg(feature = "postgres")]
     pub fn new_postgres(pool: sqlx::PgPool) -> Self {
         Self::Postgres(PostgresPromptStore::new(pool))
     }
@@ -33,6 +35,7 @@ impl PromptStore {
     ) -> PromptTemplate {
         match self {
             Self::InMemory(store) => store.create(name, content, model_hint, metadata),
+            #[cfg(feature = "postgres")]
             Self::Postgres(_) => {
                 // Sync create for Postgres uses a blocking fallback
                 // In practice, use create_async
@@ -44,6 +47,7 @@ impl PromptStore {
     pub fn get_latest(&self, name: &str) -> Option<PromptTemplate> {
         match self {
             Self::InMemory(store) => store.get_latest(name),
+            #[cfg(feature = "postgres")]
             Self::Postgres(_) => None, // Use get_latest_async
         }
     }
@@ -51,6 +55,7 @@ impl PromptStore {
     pub fn get_version(&self, name: &str, version: u32) -> Option<PromptTemplate> {
         match self {
             Self::InMemory(store) => store.get_version(name, version),
+            #[cfg(feature = "postgres")]
             Self::Postgres(_) => None,
         }
     }
@@ -58,6 +63,7 @@ impl PromptStore {
     pub fn list(&self) -> Vec<PromptTemplate> {
         match self {
             Self::InMemory(store) => store.list(),
+            #[cfg(feature = "postgres")]
             Self::Postgres(_) => Vec::new(),
         }
     }
@@ -73,6 +79,7 @@ impl PromptStore {
     ) -> Result<PromptTemplate, String> {
         match self {
             Self::InMemory(store) => Ok(store.create(name, content, model_hint, metadata)),
+            #[cfg(feature = "postgres")]
             Self::Postgres(store) => store.create(name, content, model_hint, metadata).await,
         }
     }
@@ -80,6 +87,7 @@ impl PromptStore {
     pub async fn get_latest_async(&self, name: &str) -> Option<PromptTemplate> {
         match self {
             Self::InMemory(store) => store.get_latest(name),
+            #[cfg(feature = "postgres")]
             Self::Postgres(store) => store.get_latest(name).await,
         }
     }
@@ -87,6 +95,7 @@ impl PromptStore {
     pub async fn get_version_async(&self, name: &str, version: u32) -> Option<PromptTemplate> {
         match self {
             Self::InMemory(store) => store.get_version(name, version),
+            #[cfg(feature = "postgres")]
             Self::Postgres(store) => store.get_version(name, version).await,
         }
     }
@@ -94,6 +103,7 @@ impl PromptStore {
     pub async fn list_async(&self) -> Vec<PromptTemplate> {
         match self {
             Self::InMemory(store) => store.list(),
+            #[cfg(feature = "postgres")]
             Self::Postgres(store) => store.list().await,
         }
     }
@@ -101,6 +111,7 @@ impl PromptStore {
     pub async fn get_versions_async(&self, name: &str) -> Vec<PromptTemplate> {
         match self {
             Self::InMemory(store) => store.get_all_versions(name),
+            #[cfg(feature = "postgres")]
             Self::Postgres(store) => store.get_versions(name).await,
         }
     }
@@ -110,6 +121,7 @@ impl PromptStore {
             Self::InMemory(store) => store
                 .get_version(name, version)
                 .ok_or_else(|| format!("version {version} not found for '{name}'")),
+            #[cfg(feature = "postgres")]
             Self::Postgres(store) => store.rollback(name, version).await,
         }
     }
@@ -188,10 +200,12 @@ impl InMemoryPromptStore {
 // Postgres backend
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "postgres")]
 pub struct PostgresPromptStore {
     pool: sqlx::PgPool,
 }
 
+#[cfg(feature = "postgres")]
 impl PostgresPromptStore {
     pub fn new(pool: sqlx::PgPool) -> Self {
         Self { pool }
@@ -317,6 +331,7 @@ impl PostgresPromptStore {
     }
 }
 
+#[cfg(feature = "postgres")]
 #[derive(Debug, sqlx::FromRow)]
 struct PromptTemplateRow {
     id: Uuid,
@@ -329,6 +344,7 @@ struct PromptTemplateRow {
     active: bool,
 }
 
+#[cfg(feature = "postgres")]
 impl From<PromptTemplateRow> for PromptTemplate {
     fn from(row: PromptTemplateRow) -> Self {
         Self {

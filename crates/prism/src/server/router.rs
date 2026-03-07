@@ -12,6 +12,7 @@ use crate::keys::MasterKey;
 use crate::proxy::batch;
 use crate::proxy::handler::{self, AppState};
 use crate::server::middleware;
+#[cfg(feature = "full")]
 use crate::waste;
 
 /// Build the axum router with all routes and middleware.
@@ -78,6 +79,14 @@ pub fn build(state: Arc<AppState>) -> Router {
 }
 
 /// Build management routes — key CRUD endpoints authenticated with master key.
+/// Only available in full builds; returns an empty router in embedded/lean builds.
+#[cfg(not(feature = "full"))]
+fn build_management_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
+    let _ = state;
+    Router::new()
+}
+
+#[cfg(feature = "full")]
 fn build_management_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
     if !state.config.keys.enabled {
         return Router::new();

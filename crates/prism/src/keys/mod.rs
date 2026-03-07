@@ -1,4 +1,5 @@
 pub mod budget;
+#[cfg(feature = "jwt")]
 pub mod jwt;
 pub mod rate_limit;
 pub mod virtual_key;
@@ -173,11 +174,13 @@ pub struct MasterKey(pub String);
 // KeyService — coordinates cache + repository
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "postgres")]
 pub struct KeyService {
     cache: KeyCache,
     repo: KeyRepository,
 }
 
+#[cfg(feature = "postgres")]
 impl KeyService {
     pub fn new(repo: KeyRepository, cache_capacity: usize) -> Self {
         Self {
@@ -215,6 +218,20 @@ impl KeyService {
     pub fn repo(&self) -> &KeyRepository {
         &self.repo
     }
+}
+
+/// Stub KeyService used in non-Postgres (embedded) builds.
+/// No-ops for all operations; key auth is disabled in embedded mode.
+#[cfg(not(feature = "postgres"))]
+pub struct KeyService;
+
+#[cfg(not(feature = "postgres"))]
+impl KeyService {
+    pub async fn validate_key(&self, _key_hash: &str) -> anyhow::Result<Option<VirtualKey>> {
+        Ok(None)
+    }
+
+    pub async fn invalidate_cache(&self, _key_hash: &str) {}
 }
 
 // ---------------------------------------------------------------------------

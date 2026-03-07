@@ -82,6 +82,7 @@ pub async fn readiness(State(state): State<Arc<AppState>>) -> Response {
     let timeout = Duration::from_secs(2);
 
     // Check Postgres
+    #[cfg(feature = "postgres")]
     let pg_check = if let Some(ref ks) = state.key_service {
         let pool = ks.repo().pool();
         match tokio::time::timeout(timeout, sqlx::query("SELECT 1").execute(pool)).await {
@@ -92,6 +93,8 @@ pub async fn readiness(State(state): State<Arc<AppState>>) -> Response {
     } else {
         CheckResult::not_configured()
     };
+    #[cfg(not(feature = "postgres"))]
+    let pg_check = CheckResult::not_configured();
 
     // Check ClickHouse
     let ch_check = {
@@ -108,6 +111,7 @@ pub async fn readiness(State(state): State<Arc<AppState>>) -> Response {
     };
 
     // Check Redis
+    #[cfg(feature = "redis-backend")]
     let redis_check =
         if state.config.rate_limit.backend == "redis" || state.config.cache.backend == "redis" {
             let url = state
@@ -124,6 +128,8 @@ pub async fn readiness(State(state): State<Arc<AppState>>) -> Response {
         } else {
             CheckResult::not_configured()
         };
+    #[cfg(not(feature = "redis-backend"))]
+    let redis_check = CheckResult::not_configured();
 
     // Determine overall status
     let pg_critical = state.key_service.is_some() && pg_check.status != "ok";
@@ -150,6 +156,7 @@ pub async fn readiness(State(state): State<Arc<AppState>>) -> Response {
     (http_status, Json(body)).into_response()
 }
 
+#[cfg(feature = "redis-backend")]
 async fn check_redis(url: &str) -> std::result::Result<(), String> {
     let client = redis::Client::open(url).map_err(|e| e.to_string())?;
     let mut conn = client

@@ -96,6 +96,7 @@ fn format_email_body(rule: &AlertRule, event: &AlertEvent) -> String {
     lines.join("\n")
 }
 
+#[cfg(feature = "smtp")]
 fn send_email_blocking(
     to: &str,
     subject: &str,
@@ -119,6 +120,7 @@ fn send_email_blocking(
     Ok(())
 }
 
+#[cfg(feature = "smtp")]
 async fn send_email(
     to: &str,
     rule: &AlertRule,
@@ -180,21 +182,26 @@ pub async fn dispatch_alert(
             }
         }
         AlertChannel::Email => {
-            if let Some(ref to) = rule.email_to {
-                if let Some(smtp) = smtp_config {
-                    if let Err(e) = send_email(to, rule, event, smtp).await {
-                        tracing::warn!(
-                            rule_id = %rule.id,
-                            error = %e,
-                            "email dispatch failed"
-                        );
+            #[cfg(feature = "smtp")]
+            {
+                if let Some(ref to) = rule.email_to {
+                    if let Some(smtp) = smtp_config {
+                        if let Err(e) = send_email(to, rule, event, smtp).await {
+                            tracing::warn!(
+                                rule_id = %rule.id,
+                                error = %e,
+                                "email dispatch failed"
+                            );
+                        }
+                    } else {
+                        tracing::warn!(rule_id = %rule.id, "email channel but no SMTP config");
                     }
                 } else {
-                    tracing::warn!(rule_id = %rule.id, "email channel but no SMTP config");
+                    tracing::warn!(rule_id = %rule.id, "email channel but no recipient configured");
                 }
-            } else {
-                tracing::warn!(rule_id = %rule.id, "email channel but no recipient configured");
             }
+            #[cfg(not(feature = "smtp"))]
+            tracing::warn!(rule_id = %rule.id, "email channel but smtp feature not enabled");
         }
     }
 }

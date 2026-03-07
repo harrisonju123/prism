@@ -303,6 +303,7 @@ pub struct BudgetHierarchy {
     pub ancestors: Vec<BudgetNode>,
 }
 
+#[cfg(feature = "postgres")]
 impl BudgetHierarchy {
     pub async fn load_for_key(
         pool: &sqlx::PgPool,
@@ -335,6 +336,7 @@ impl BudgetHierarchy {
     }
 }
 
+#[cfg(feature = "postgres")]
 #[derive(Debug, sqlx::FromRow)]
 struct BudgetNodeRow {
     id: uuid::Uuid,
@@ -346,6 +348,7 @@ struct BudgetNodeRow {
     budget_action: String,
 }
 
+#[cfg(feature = "postgres")]
 impl From<BudgetNodeRow> for BudgetNode {
     fn from(row: BudgetNodeRow) -> Self {
         Self {
