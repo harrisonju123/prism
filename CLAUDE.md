@@ -4,6 +4,17 @@
 
 Each Claude Code session is an agent. Sessions auto checkin/checkout via hooks — no manual action needed at startup/shutdown.
 
+> **IMPORTANT — use the right `uh` binary.**
+> `/opt/homebrew/bin/uh` is the old Go CLI that requires a running HTTP server and will return 401 errors.
+> Always use `~/.cargo/bin/uh` (the Rust rewrite, talks directly to SQLite).
+> Either prepend PATH or use the full path:
+> ```bash
+> export PATH="$HOME/.cargo/bin:$PATH"
+> # or alias for the session:
+> alias uh="$HOME/.cargo/bin/uh"
+> ```
+> The Claude Code hooks already do this automatically. If you see 401 / "invalid api key" errors, your shell PATH is wrong.
+
 **Set your agent name for the worktree you're in (once per shell):**
 ```bash
 export UH_AGENT_NAME=claude-zed-surface   # matches your track/worktree branch
@@ -12,40 +23,40 @@ Default name if unset: `claude`.
 
 **Checkin happens automatically on first prompt. To do it manually:**
 ```bash
-uh checkin --name $UH_AGENT_NAME --capabilities rust,api,zed
+~/.cargo/bin/uh checkin --name $UH_AGENT_NAME --capabilities rust,api,zed
 # → shows your assigned tasks, other agents' current work, activity since last session
 ```
 
 **Before starting any task:**
 ```bash
-uh next                                    # unblocked, unclaimed tasks (excludes in_progress)
-uh task claim <id> --name $UH_AGENT_NAME  # claim it — sets assignee + marks your current task
+~/.cargo/bin/uh next                                    # unblocked, unclaimed tasks (excludes in_progress)
+~/.cargo/bin/uh task claim <id> --name $UH_AGENT_NAME  # claim it — sets assignee + marks your current task
 ```
 `uh next` filters out `in_progress` tasks. Claim before you start so other agents see it taken.
 
 **When done with a task:**
 ```bash
-uh task update <id> --status done
+~/.cargo/bin/uh task update <id> --status done
 # checkout fires automatically on session end, or manually:
-uh checkout --name $UH_AGENT_NAME --summary "what was done"
+~/.cargo/bin/uh checkout --name $UH_AGENT_NAME --summary "what was done"
 ```
 
 **When blocked:**
 ```bash
-uh task block <blocking-id> <blocked-id>
-uh report "<issue title>" --desc "..."
-uh handoff <task-id> --summary "..." --findings "..." --next-steps "..."
+~/.cargo/bin/uh task block <blocking-id> <blocked-id>
+~/.cargo/bin/uh report "<issue title>" --desc "..."
+~/.cargo/bin/uh handoff <task-id> --summary "..." --findings "..." --next-steps "..."
 ```
 
 **Discovering new work:**
 ```bash
-uh task create "<title>" --epic <epic-id> --priority high
+~/.cargo/bin/uh task create "<title>" --epic <epic-id> --priority high
 ```
 
 **See what all agents are doing:**
 ```bash
-uh agents          # roster: name, session open/idle, current task
-uh context         # full workspace overview including active agents
+~/.cargo/bin/uh agents          # roster: name, session open/idle, current task
+~/.cargo/bin/uh context         # full workspace overview including active agents
 ```
 
 ---
@@ -194,7 +205,8 @@ Store trait has ~45 async methods — requires `#[async_trait]`. `RETURNING` cla
 
 ## uglyhat CLI (uh)
 
-The `uh` binary operates in **local mode** (direct SQLite, no server) by default.
+The `uh` binary (`~/.cargo/bin/uh`) operates in **local mode** (direct SQLite, no server) by default.
+**Always use `~/.cargo/bin/uh`** — the Homebrew `uh` at `/opt/homebrew/bin/uh` is an unrelated Go binary.
 
 ```bash
 uh init "Project Name"                    # bootstrap workspace → .uglyhat.json + .uglyhat.db
