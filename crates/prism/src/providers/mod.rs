@@ -1,5 +1,6 @@
 pub mod anthropic;
 pub mod azure_openai;
+#[cfg(feature = "aws")]
 pub mod bedrock;
 pub mod google;
 pub mod groq;
@@ -176,6 +177,7 @@ impl ProviderRegistry {
                             )))
                         }
                     }
+                    #[cfg(feature = "aws")]
                     "bedrock" | "aws_bedrock" => {
                         let region = config.region.clone();
                         let provider = tokio::task::block_in_place(|| {

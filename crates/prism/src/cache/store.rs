@@ -12,7 +12,9 @@ use crate::types::ChatCompletionResponse;
 
 pub enum ResponseCache {
     InMemory(InMemoryCache),
+    #[cfg(feature = "redis-backend")]
     Redis(RedisCacheBackend),
+    #[cfg(feature = "aws")]
     S3(S3CacheBackend),
 }
 
@@ -21,10 +23,12 @@ impl ResponseCache {
         Self::InMemory(InMemoryCache::new(max_size, ttl_secs))
     }
 
+    #[cfg(feature = "redis-backend")]
     pub async fn new_redis(redis_url: &str, ttl_secs: u64) -> Self {
         Self::Redis(RedisCacheBackend::new(redis_url, ttl_secs).await)
     }
 
+    #[cfg(feature = "aws")]
     pub async fn new_s3(bucket: &str, prefix: &str, ttl_secs: u64) -> Self {
         Self::S3(S3CacheBackend::new(bucket, prefix, ttl_secs).await)
     }
@@ -54,7 +58,9 @@ impl ResponseCache {
     pub async fn get(&self, key: &str) -> Option<ChatCompletionResponse> {
         match self {
             Self::InMemory(inner) => inner.get(key),
+            #[cfg(feature = "redis-backend")]
             Self::Redis(inner) => inner.get(key).await,
+            #[cfg(feature = "aws")]
             Self::S3(inner) => inner.get(key).await,
         }
     }
@@ -62,7 +68,9 @@ impl ResponseCache {
     pub async fn insert(&self, key: String, response: ChatCompletionResponse) {
         match self {
             Self::InMemory(inner) => inner.insert(key, response),
+            #[cfg(feature = "redis-backend")]
             Self::Redis(inner) => inner.insert(key, response).await,
+            #[cfg(feature = "aws")]
             Self::S3(inner) => inner.insert(key, response).await,
         }
     }
@@ -70,7 +78,9 @@ impl ResponseCache {
     pub fn prune_expired(&self) {
         match self {
             Self::InMemory(inner) => inner.prune_expired(),
+            #[cfg(feature = "redis-backend")]
             Self::Redis(_) => {} // Redis handles TTL
+            #[cfg(feature = "aws")]
             Self::S3(_) => {}    // S3 doesn't need pruning
         }
     }
@@ -155,12 +165,14 @@ impl InMemoryCache {
 // Redis cache backend
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "redis-backend")]
 pub struct RedisCacheBackend {
     conn: Option<redis::aio::MultiplexedConnection>,
     ttl_secs: u64,
     fallback: InMemoryCache,
 }
 
+#[cfg(feature = "redis-backend")]
 impl RedisCacheBackend {
     pub async fn new(redis_url: &str, ttl_secs: u64) -> Self {
         let conn = match redis::Client::open(redis_url) {
@@ -243,6 +255,7 @@ impl RedisCacheBackend {
 // S3 cache backend
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "aws")]
 pub struct S3CacheBackend {
     client: Option<aws_sdk_s3::Client>,
     bucket: String,
@@ -251,6 +264,7 @@ pub struct S3CacheBackend {
     fallback: InMemoryCache,
 }
 
+#[cfg(feature = "aws")]
 impl S3CacheBackend {
     pub async fn new(bucket: &str, prefix: &str, ttl_secs: u64) -> Self {
         let client = match tokio::time::timeout(
@@ -497,6 +511,7 @@ mod tests {
         cache.prune_expired();
     }
 
+    #[cfg(feature = "redis-backend")]
     #[tokio::test]
     async fn redis_backend_fallback() {
         let cache = ResponseCache::new_redis("redis://localhost:1", 3600).await;
@@ -506,6 +521,7 @@ mod tests {
         assert!(cache.get("key1").await.is_some());
     }
 
+    #[cfg(feature = "aws")]
     #[tokio::test]
     async fn s3_backend_fallback() {
         let cache = ResponseCache::new_s3("test-bucket", "cache/", 3600).await;
@@ -525,6 +541,7 @@ mod tests {
         assert_eq!(deserialized.choices.len(), resp.choices.len());
     }
 
+    #[cfg(feature = "aws")]
     #[test]
     fn s3_key_format() {
         let backend = S3CacheBackend {

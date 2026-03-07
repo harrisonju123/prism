@@ -13,14 +13,17 @@ use uuid::Uuid;
 
 use crate::error::PrismError;
 
-use self::virtual_key::{KeyCache, KeyRepository};
+use self::virtual_key::KeyCache;
+#[cfg(feature = "postgres")]
+use self::virtual_key::KeyRepository;
 
 // ---------------------------------------------------------------------------
 // Domain model
 // ---------------------------------------------------------------------------
 
 /// A virtual API key (domain model, mapped from Postgres rows).
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "postgres", derive(sqlx::FromRow))]
 pub struct VirtualKey {
     pub id: Uuid,
     pub name: String,

@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -9,6 +10,7 @@ pub struct Config {
     pub max_cost_usd: Option<f64>,
     pub max_tool_output: usize,
     pub system_prompt: Option<String>,
+    pub sessions_dir: PathBuf,
 }
 
 impl Config {
@@ -38,6 +40,14 @@ impl Config {
 
         let system_prompt = std::env::var("PRISM_SYSTEM_PROMPT").ok();
 
+        let sessions_dir = std::env::var("PRISM_SESSIONS_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                dirs::home_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join(".prism/sessions")
+            });
+
         Ok(Self {
             prism_url,
             prism_api_key,
@@ -46,6 +56,7 @@ impl Config {
             max_cost_usd,
             max_tool_output,
             system_prompt,
+            sessions_dir,
         })
     }
 }

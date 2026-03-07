@@ -13998,7 +13998,9 @@ name = "prism-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
+ "dirs 4.0.0",
  "futures 0.3.32",
  "globset",
  "prism-client",

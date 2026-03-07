@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
+#[cfg(feature = "postgres")]
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -101,11 +102,13 @@ impl KeyCache {
 // Postgres Repository
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "postgres")]
 pub struct KeyRepository {
     pool: PgPool,
 }
 
 /// Parameters for creating a new virtual key.
+#[cfg(feature = "postgres")]
 #[derive(Debug)]
 pub struct CreateKeyParams {
     pub name: String,
@@ -123,6 +126,7 @@ pub struct CreateKeyParams {
 }
 
 /// Parameters for updating an existing virtual key.
+#[cfg(feature = "postgres")]
 #[derive(Debug, Default)]
 pub struct UpdateKeyParams {
     pub name: Option<String>,
@@ -137,6 +141,7 @@ pub struct UpdateKeyParams {
     pub expires_at: Option<Option<DateTime<Utc>>>,
 }
 
+#[cfg(feature = "postgres")]
 impl KeyRepository {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }

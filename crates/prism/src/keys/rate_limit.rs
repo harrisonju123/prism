@@ -17,6 +17,7 @@ const WINDOW_SECS: u64 = 60;
 
 pub enum RateLimiter {
     InMemory(InMemoryRateLimiter),
+    #[cfg(feature = "redis-backend")]
     Redis(RedisRateLimiter),
 }
 
@@ -25,6 +26,7 @@ impl RateLimiter {
         Self::InMemory(InMemoryRateLimiter::new())
     }
 
+    #[cfg(feature = "redis-backend")]
     pub async fn new_redis(redis_url: &str) -> Self {
         Self::Redis(RedisRateLimiter::new(redis_url).await)
     }
@@ -32,6 +34,7 @@ impl RateLimiter {
     pub async fn check_rpm(&self, key_hash: &str, limit: u32) -> RateLimitResult {
         match self {
             Self::InMemory(inner) => inner.check_rpm(key_hash, limit),
+            #[cfg(feature = "redis-backend")]
             Self::Redis(inner) => inner.check_rpm(key_hash, limit).await,
         }
     }
@@ -39,6 +42,7 @@ impl RateLimiter {
     pub async fn check_tpm(&self, key_hash: &str, limit: u32) -> RateLimitResult {
         match self {
             Self::InMemory(inner) => inner.check_tpm(key_hash, limit),
+            #[cfg(feature = "redis-backend")]
             Self::Redis(inner) => inner.check_tpm(key_hash, limit).await,
         }
     }
@@ -46,6 +50,7 @@ impl RateLimiter {
     pub async fn record_request(&self, key_hash: &str) {
         match self {
             Self::InMemory(inner) => inner.record_request(key_hash),
+            #[cfg(feature = "redis-backend")]
             Self::Redis(inner) => inner.record_request(key_hash).await,
         }
     }
@@ -53,6 +58,7 @@ impl RateLimiter {
     pub async fn record_tokens(&self, key_hash: &str, count: u32) {
         match self {
             Self::InMemory(inner) => inner.record_tokens(key_hash, count),
+            #[cfg(feature = "redis-backend")]
             Self::Redis(inner) => inner.record_tokens(key_hash, count).await,
         }
     }
@@ -60,6 +66,7 @@ impl RateLimiter {
     pub fn prune_expired(&self) {
         match self {
             Self::InMemory(inner) => inner.prune_expired(),
+            #[cfg(feature = "redis-backend")]
             Self::Redis(_) => {} // Redis handles TTL automatically
         }
     }
@@ -171,11 +178,13 @@ impl InMemoryRateLimiter {
 // Redis backend — uses sorted sets for sliding window per key hash
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "redis-backend")]
 pub struct RedisRateLimiter {
     conn: Option<redis::aio::MultiplexedConnection>,
     fallback: InMemoryRateLimiter,
 }
 
+#[cfg(feature = "redis-backend")]
 impl RedisRateLimiter {
     pub async fn new(redis_url: &str) -> Self {
         let conn = match redis::Client::open(redis_url) {
@@ -486,6 +495,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "redis-backend")]
     #[tokio::test]
     async fn redis_fallback_works() {
         // With no Redis available, should fall back gracefully

@@ -10,6 +10,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::config::Config;
+use crate::session::Session;
 use crate::tools;
 
 const SYSTEM_PROMPT: &str = "\
@@ -53,22 +54,34 @@ struct ToolCallBuilder {
 pub struct Agent {
     client: PrismClient,
     config: Config,
-    episode_id: Uuid,
+    session: Session,
     messages: Vec<Message>,
 }
 
 impl Agent {
-    pub fn new(client: PrismClient, config: Config) -> Self {
+    pub fn new(client: PrismClient, config: Config, task: &str) -> Self {
+        let episode_id = Uuid::new_v4();
+        let session = Session::new(episode_id, task, &config.prism_model);
         Self {
             client,
             config,
-            episode_id: Uuid::new_v4(),
+            session,
             messages: Vec::new(),
         }
     }
 
+    pub fn from_session(client: PrismClient, config: Config, session: Session) -> Self {
+        let messages = session.messages.clone();
+        Self {
+            client,
+            config,
+            session,
+            messages,
+        }
+    }
+
     pub async fn run(&mut self, task: &str) -> Result<()> {
-        tracing::info!(episode_id = %self.episode_id, model = %self.config.prism_model, "starting agent session");
+        tracing::info!(episode_id = %self.session.episode_id, model = %self.config.prism_model, "starting agent session");
 
         let system_prompt = self
             .config
@@ -92,6 +105,34 @@ impl Agent {
             tool_call_id: None,
             extra: Default::default(),
         });
+
+        self.inner_run().await
+    }
+
+    pub async fn resume(&mut self, task: &str) -> Result<()> {
+        tracing::info!(
+            episode_id = %self.session.episode_id,
+            model = %self.config.prism_model,
+            turns_so_far = %self.session.turns,
+            "resuming agent session"
+        );
+
+        // If task is non-empty, push it as a new user message
+        if !task.is_empty() {
+            self.messages.push(Message {
+                role: "user".into(),
+                content: Some(json!(task)),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                extra: Default::default(),
+            });
+        }
+
+        self.inner_run().await
+    }
+
+    async fn inner_run(&mut self) -> Result<()> {
 
         // SIGINT handler
         let interrupted = Arc::new(AtomicBool::new(false));
@@ -258,6 +299,14 @@ impl Agent {
                 extra: Default::default(),
             });
 
+            // Update session and save after each turn
+            self.session.messages = self.messages.clone();
+            self.session.turns = turns;
+            self.session.updated_at = chrono::Utc::now().to_rfc3339();
+            if let Err(e) = self.session.save(&self.config.sessions_dir) {
+                tracing::warn!("failed to save session: {e}");
+            }
+
             // Check cost cap
             if let Some(cap) = self.config.max_cost_usd {
                 if total_cost_usd >= cap {
@@ -343,6 +392,19 @@ impl Agent {
             "[session] {}  {} turns  {} in / {} out tokens{}",
             model_name, turns, total_prompt, total_completion, cost_str
         );
+        eprintln!("[session] episode {}", self.session.episode_id.to_string()[..8].to_string());
+
+        // Final session update
+        self.session.messages = self.messages.clone();
+        self.session.turns = turns;
+        self.session.total_prompt_tokens = total_prompt;
+        self.session.total_completion_tokens = total_completion;
+        self.session.total_cost_usd = total_cost_usd;
+        self.session.stop_reason = stop_reason.clone();
+        self.session.updated_at = chrono::Utc::now().to_rfc3339();
+        if let Err(e) = self.session.save(&self.config.sessions_dir) {
+            tracing::warn!("failed to save session: {e}");
+        }
 
         match stop_reason.as_deref() {
             Some("cost_cap") | Some("interrupt") | Some("stop") => Ok(()),
