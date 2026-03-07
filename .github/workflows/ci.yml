@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  prism:
+    name: PrisM (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: prism-linux
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Cargo check
+        run: cargo check -p prism -p uglyhat -p prism-types -p prism-client
+
+      - name: Clippy
+        run: cargo clippy -p prism -p uglyhat -p prism-types -p prism-client -- -W clippy::all
+
+      - name: Tests
+        run: cargo test -p prism -p uglyhat -p prism-types -p prism-client
+
+  zed:
+    name: Zed (macOS)
+    runs-on: macos-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: zed-macos
+
+      - name: Reconcile Cargo.toml
+        run: ./scripts/reconcile-cargo.sh
+
+      - name: Cargo check (zed)
+        run: cargo check -p zed
+
+      - name: Verify PrisM patches
+        run: make verify-patches

@@ -1,0 +1,90 @@
+name: Upstream Sync Check
+
+on:
+  schedule:
+    # Daily at 09:00 UTC
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+jobs:
+  drift-check:
+    name: Check Zed upstream drift
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check upstream drift
+        id: drift
+        run: bash scripts/check-upstream-drift.sh
+
+      - name: Check for existing open drift issue
+        if: steps.drift.outputs.UP_TO_DATE == 'false'
+        id: existing_issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          OPEN=$(gh issue list \
+            --label "upstream-sync" \
+            --state open \
+            --json number \
+            --jq 'length')
+          echo "count=$OPEN" >> "$GITHUB_OUTPUT"
+
+      - name: Create drift issue
+        if: steps.drift.outputs.UP_TO_DATE == 'false' && steps.existing_issue.outputs.count == '0'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASELINE: ${{ steps.drift.outputs.BASELINE }}
+          NEW_SHA: ${{ steps.drift.outputs.NEW_SHA }}
+          CHANGED_FILES: ${{ steps.drift.outputs.CHANGED_FILES }}
+        run: |
+          SHORT_BASE="${BASELINE:0:7}"
+          SHORT_NEW="${NEW_SHA:0:7}"
+          gh issue create \
+            --title "chore(zed): upstream drift detected — sync required ($SHORT_BASE → $SHORT_NEW)" \
+            --label "upstream-sync" \
+            --body "$(cat <<EOF
+## Zed Upstream Drift Detected
+
+The daily drift check found that \`harrisonju123/zed\` has advanced past our baseline.
+
+| | SHA |
+|---|---|
+| **Baseline** | \`$BASELINE\` |
+| **Upstream HEAD** | \`$NEW_SHA\` |
+| **Files changed** | $CHANGED_FILES |
+
+## Steps to sync
+
+\`\`\`bash
+# Preview changes
+make sync-zed-dry
+
+# Apply upstream delta
+make sync-zed
+
+# If conflicts: resolve them, then verify
+make check-zed
+make verify-patches
+make reconcile-cargo
+
+# Update baseline and regenerate patches
+echo '<new-sha>' > patches/zed/BASELINE
+make regenerate-patches
+
+# Commit
+git add zed-upstream/ patches/zed/ && git commit -m "chore(zed): sync upstream to <sha>"
+\`\`\`
+
+See \`patches/zed/PATCHES.md\` for per-patch risk notes.
+
+---
+*Auto-created by the [Upstream Sync Check](.github/workflows/upstream-sync-check.yml) workflow.*
+EOF
+)"
