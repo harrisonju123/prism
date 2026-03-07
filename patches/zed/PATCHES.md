@@ -84,6 +84,16 @@ Disables telemetry by default and stubs out `send_event()`. The `settings_conten
 
 ---
 
+## Audit Log
+
+### 2026-03-07 — Audit vs upstream HEAD (already up to date)
+
+`./scripts/sync-zed-upstream.sh --dry-run` confirmed `harrisonju123/zed main` has not
+advanced past baseline `5c481c686a7eb542047ed231c1b95c15bdc95b8b`. No upstream delta to
+apply. All 10 patched files are unchanged upstream; risk ratings remain as documented above.
+
+---
+
 ## After Each Sync
 
 1. Run `cargo check -p zed` to verify all patches applied cleanly
