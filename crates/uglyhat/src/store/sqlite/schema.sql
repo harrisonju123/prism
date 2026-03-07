@@ -183,6 +183,7 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent ON agent_sessions(agent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_workspace ON agent_sessions(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_open ON agent_sessions(agent_id) WHERE ended_at IS NULL;
 
 -- Handoffs
 CREATE TABLE IF NOT EXISTS handoffs (

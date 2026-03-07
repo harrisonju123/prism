@@ -1,8 +1,6 @@
-use sqlx::Row;
 use uuid::Uuid;
 
 use super::SqliteStore;
-use super::types::*;
 use crate::error::Result;
 use crate::model::*;
 
@@ -129,26 +127,6 @@ impl SqliteStore {
         .fetch_all(&self.pool)
         .await?;
 
-        rows.iter()
-            .map(|row| {
-                let id_str: String = row.try_get("id")?;
-                let ws_str: String = row.try_get("workspace_id")?;
-                let entity_id_str: String = row.try_get("entity_id")?;
-                let det_str: Option<String> = row.try_get("detail")?;
-                let created_str: String = row.try_get("created_at")?;
-
-                Ok(ActivityEntry {
-                    id: parse_uuid(&id_str)?,
-                    workspace_id: parse_uuid(&ws_str)?,
-                    actor: row.try_get("actor")?,
-                    action: row.try_get("action")?,
-                    entity_type: row.try_get("entity_type")?,
-                    entity_id: parse_uuid(&entity_id_str)?,
-                    summary: row.try_get("summary")?,
-                    detail: str_to_opt_value(det_str),
-                    created_at: parse_time(&created_str)?,
-                })
-            })
-            .collect()
+        rows.iter().map(super::activity::row_to_activity_entry).collect()
     }
 }

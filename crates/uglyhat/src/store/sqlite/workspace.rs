@@ -93,7 +93,7 @@ impl SqliteStore {
         .bind(&now)
         .fetch_one(&mut *tx)
         .await?;
-        let api_key = row_to_api_key(&row)?;
+        let api_key = super::apikey::row_to_api_key(&row)?;
 
         tx.commit().await?;
 
@@ -227,17 +227,3 @@ fn row_to_workspace(row: &sqlx::sqlite::SqliteRow) -> Result<Workspace> {
     })
 }
 
-fn row_to_api_key(row: &sqlx::sqlite::SqliteRow) -> Result<APIKey> {
-    let id_str: String = row.try_get("id")?;
-    let ws_str: String = row.try_get("workspace_id")?;
-    let created_str: String = row.try_get("created_at")?;
-
-    Ok(APIKey {
-        id: parse_uuid(&id_str)?,
-        workspace_id: parse_uuid(&ws_str)?,
-        name: row.try_get("name")?,
-        key_hash: row.try_get("key_hash")?,
-        key_prefix: row.try_get("key_prefix")?,
-        created_at: parse_time(&created_str)?,
-    })
-}

@@ -70,7 +70,7 @@ impl SqliteStore {
     }
 }
 
-fn row_to_api_key(row: &sqlx::sqlite::SqliteRow) -> Result<APIKey> {
+pub(super) fn row_to_api_key(row: &sqlx::sqlite::SqliteRow) -> Result<APIKey> {
     let id_str: String = row.try_get("id")?;
     let ws_str: String = row.try_get("workspace_id")?;
     let created_str: String = row.try_get("created_at")?;

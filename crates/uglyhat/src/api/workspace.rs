@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::api::AppState;
 use crate::error::Error;
-use crate::middleware::auth::{WorkspaceId, hash_key};
+use crate::middleware::auth::WorkspaceId;
 use crate::model::{APIKeyWithRaw, BootstrapResponse, TaskPriority, TaskStatus};
 
 #[derive(Deserialize)]
@@ -28,17 +28,11 @@ pub async fn create_workspace(
         return Err(Error::BadRequest("name is required".into()));
     }
 
-    let raw_key = format!(
-        "uh_{}{}",
-        hex::encode(Uuid::new_v4().as_bytes()),
-        hex::encode(Uuid::new_v4().as_bytes()),
-    );
-    let key_hash = hash_key(&raw_key);
-    let key_prefix = &raw_key[..10];
+    let (raw_key, key_hash, key_prefix) = super::apikey::generate_api_key();
 
     let result = state
         .store
-        .bootstrap_workspace(&req.name, &req.description, &key_hash, key_prefix)
+        .bootstrap_workspace(&req.name, &req.description, &key_hash, &key_prefix)
         .await?;
 
     let resp = BootstrapResponse {
@@ -117,7 +111,7 @@ pub async fn report_issue(
         TaskPriority::Medium
     } else {
         serde_json::from_value::<TaskPriority>(serde_json::Value::String(req.severity.clone()))
-            .unwrap_or(TaskPriority::Medium)
+            .map_err(|_| Error::BadRequest(format!("invalid severity: {}", req.severity)))?
     };
 
     let epic_id = state.store.get_system_epic_id(workspace_id).await?;

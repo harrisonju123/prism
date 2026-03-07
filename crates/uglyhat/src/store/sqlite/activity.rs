@@ -139,7 +139,7 @@ impl SqliteStore {
     }
 }
 
-fn row_to_activity_entry(row: &sqlx::sqlite::SqliteRow) -> Result<ActivityEntry> {
+pub(super) fn row_to_activity_entry(row: &sqlx::sqlite::SqliteRow) -> Result<ActivityEntry> {
     let id_str: String = row.try_get("id")?;
     let ws_str: String = row.try_get("workspace_id")?;
     let entity_id_str: String = row.try_get("entity_id")?;

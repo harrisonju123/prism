@@ -89,6 +89,9 @@ pub async fn update_task(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateTaskReq>,
 ) -> Result<impl IntoResponse, Error> {
+    if req.name.is_empty() {
+        return Err(Error::BadRequest("name is required".into()));
+    }
     let task = state
         .store
         .update_task(

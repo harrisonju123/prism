@@ -3,9 +3,9 @@ use std::process;
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use uglyhat::middleware::auth::hash_key;
 use uglyhat::model::*;
 use uglyhat::store::sqlite::SqliteStore;
 use uglyhat::store::{ActivityFilters, Store, TaskFilters};
@@ -413,9 +413,7 @@ async fn run_command(cmd: Commands, store: &SqliteStore, ws_id: Uuid) -> Result<
                 .await
                 .map_err(|e| e.to_string())?;
 
-            let mut domain_tags: Vec<String> = tags
-                .map(|t| t.split(',').map(|s| s.trim().to_string()).collect())
-                .unwrap_or_default();
+            let mut domain_tags = split_csv(tags);
             domain_tags.push("agent-reported".to_string());
 
             let mut meta = serde_json::Map::new();
@@ -548,9 +546,7 @@ async fn run_command(cmd: Commands, store: &SqliteStore, ws_id: Uuid) -> Result<
                 let epic_id: Uuid = epic.parse().map_err(|e| format!("invalid epic ID: {e}"))?;
                 let task_status = parse_status(&status)?;
                 let task_priority = parse_priority(&priority)?;
-                let domain_tags: Vec<String> = tags
-                    .map(|t| t.split(',').map(|s| s.trim().to_string()).collect())
-                    .unwrap_or_default();
+                let domain_tags = split_csv(tags);
 
                 let result = store
                     .create_task(
@@ -729,9 +725,7 @@ async fn run_command(cmd: Commands, store: &SqliteStore, ws_id: Uuid) -> Result<
             print_json(&result);
         }
         Commands::Checkin { name, capabilities } => {
-            let caps: Vec<String> = capabilities
-                .map(|c| c.split(',').map(|s| s.trim().to_string()).collect())
-                .unwrap_or_default();
+            let caps = split_csv(capabilities);
             let result = store
                 .checkin_agent(ws_id, &name, caps)
                 .await
@@ -756,15 +750,9 @@ async fn run_command(cmd: Commands, store: &SqliteStore, ws_id: Uuid) -> Result<
                 .parse()
                 .map_err(|e| format!("invalid task ID: {e}"))?;
             let agent = std::env::var("UH_AGENT_NAME").unwrap_or_default();
-            let f: Vec<String> = findings
-                .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
-                .unwrap_or_default();
-            let b: Vec<String> = blockers
-                .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
-                .unwrap_or_default();
-            let n: Vec<String> = next_steps
-                .map(|s| s.split(',').map(|x| x.trim().to_string()).collect())
-                .unwrap_or_default();
+            let f = split_csv(findings);
+            let b = split_csv(blockers);
+            let n = split_csv(next_steps);
             let result = store
                 .create_handoff(tid, &agent, &summary, f, b, n, None)
                 .await
@@ -789,7 +777,7 @@ async fn cmd_init(name: &str) -> Result<(), String> {
 
     // Generate random API key
     let raw_key = generate_key();
-    let key_hash = sha256_hex(&raw_key);
+    let key_hash = hash_key(&raw_key);
     let key_prefix = &raw_key[..8];
 
     let result = store
@@ -835,6 +823,11 @@ fn print_json<T: Serialize>(value: &T) {
     );
 }
 
+fn split_csv(s: Option<String>) -> Vec<String> {
+    s.map(|v| v.split(',').map(|x| x.trim().to_string()).collect())
+        .unwrap_or_default()
+}
+
 fn parse_status(s: &str) -> Result<TaskStatus, String> {
     serde_json::from_value(serde_json::Value::String(s.to_string()))
         .map_err(|_| format!("invalid status: {s}"))
@@ -853,7 +846,3 @@ fn generate_key() -> String {
     base64::engine::general_purpose::URL_SAFE.encode(bytes)
 }
 
-fn sha256_hex(s: &str) -> String {
-    let hash = Sha256::digest(s.as_bytes());
-    hex::encode(hash)
-}

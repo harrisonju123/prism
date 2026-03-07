@@ -1,4 +1,8 @@
 /target
+.uglyhat.json
+.uglyhat.db
+.uglyhat.db-shm
+.uglyhat.db-wal
 .idea/
 .DS_Store
 .env

@@ -160,13 +160,16 @@ impl SqliteStore {
             return;
         }
 
-        let _ = sqlx::query(
+        if let Err(e) = sqlx::query(
             "UPDATE epics SET status = 'done', updated_at = $1 WHERE id = $2 AND status != 'done'",
         )
         .bind(now_rfc3339())
         .bind(epic_id.to_string())
         .execute(&self.pool)
-        .await;
+        .await
+        {
+            tracing::warn!(epic_id = %epic_id, error = %e, "failed to auto-close epic");
+        }
 
         self.maybe_close_initiative(initiative_id).await;
     }
@@ -188,13 +191,16 @@ impl SqliteStore {
             return;
         }
 
-        let _ = sqlx::query(
+        if let Err(e) = sqlx::query(
             "UPDATE initiatives SET status = 'done', updated_at = $1 WHERE id = $2 AND status != 'done'",
         )
         .bind(now_rfc3339())
         .bind(initiative_id.to_string())
         .execute(&self.pool)
-        .await;
+        .await
+        {
+            tracing::warn!(initiative_id = %initiative_id, error = %e, "failed to auto-close initiative");
+        }
     }
 
     pub(crate) async fn delete_task_impl(&self, id: Uuid) -> Result<()> {

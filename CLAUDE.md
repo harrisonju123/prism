@@ -1,5 +1,37 @@
 # PrisM — LLM Gateway + uglyhat Monorepo
 
+## Project Management with uglyhat
+
+This project uses uglyhat (`uh`) for task tracking. A workspace is initialized at `.uglyhat.json` / `.uglyhat.db` in the repo root.
+
+**When starting work on any non-trivial task:**
+```bash
+uh next                              # find the highest-priority unblocked task
+uh task claim <id> --name claude     # claim it
+uh task update <id> --status in_progress
+```
+
+**When done:**
+```bash
+uh task update <id> --status done
+uh checkout --name claude --summary "what was done"
+```
+
+**When discovering new work:**
+```bash
+uh task create "<title>" --epic <epic-id> --priority high
+```
+
+**When blocked:**
+```bash
+uh task block <blocking-id> <blocked-id>
+uh report "<issue title>" --desc "..."   # file in system epic
+```
+
+Always check `uh next` before starting new work, and update task status as you go.
+
+---
+
 ## Workflow: Plan → Worktree → Execute
 
 **Before executing any non-trivial plan, always create a worktree first.**

@@ -19,3 +19,9 @@ use crate::store::Store;
 pub struct AppState {
     pub store: Arc<dyn Store + Send + Sync>,
 }
+
+pub(crate) fn parse_rfc3339_param(s: &str) -> Result<chrono::DateTime<chrono::Utc>, crate::error::Error> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .map_err(|e| crate::error::Error::BadRequest(format!("invalid timestamp: {e}")))
+}

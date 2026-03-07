@@ -116,22 +116,7 @@ impl SqliteStore {
             .fetch_all(&mut *tx)
             .await?;
             for row in &act_rows {
-                let id_str: String = row.try_get("id")?;
-                let ws_str: String = row.try_get("workspace_id")?;
-                let entity_id_str: String = row.try_get("entity_id")?;
-                let det_str: Option<String> = row.try_get("detail")?;
-                let created_str: String = row.try_get("created_at")?;
-                recent_activity.push(ActivityEntry {
-                    id: parse_uuid(&id_str)?,
-                    workspace_id: parse_uuid(&ws_str)?,
-                    actor: row.try_get("actor")?,
-                    action: row.try_get("action")?,
-                    entity_type: row.try_get("entity_type")?,
-                    entity_id: parse_uuid(&entity_id_str)?,
-                    summary: row.try_get("summary")?,
-                    detail: str_to_opt_value(det_str),
-                    created_at: parse_time(&created_str)?,
-                });
+                recent_activity.push(super::activity::row_to_activity_entry(row)?);
             }
         }
 
