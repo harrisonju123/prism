@@ -99,6 +99,40 @@ impl FitnessCache {
         entries
     }
 
+    /// Update in-memory fitness for a single (task_type, model) pair from a benchmark result.
+    pub async fn record_benchmark(
+        &self,
+        task_type: TaskType,
+        model: &str,
+        quality: f64,
+        cost_per_1k: f64,
+        latency_ms: f64,
+    ) {
+        let mut data = self.data.write().await;
+        if let Some(entry) = data
+            .entries
+            .iter_mut()
+            .find(|e| e.task_type == task_type && e.model == model)
+        {
+            let n = entry.sample_size as f64 + 1.0;
+            entry.avg_quality += (quality - entry.avg_quality) / n;
+            entry.avg_cost_per_1k += (cost_per_1k - entry.avg_cost_per_1k) / n;
+            entry.avg_latency_ms += (latency_ms - entry.avg_latency_ms) / n;
+            entry.sample_size += 1;
+        } else {
+            data.entries.push(FitnessEntry {
+                task_type,
+                model: model.to_string(),
+                avg_quality: quality,
+                avg_cost_per_1k: cost_per_1k,
+                avg_latency_ms: latency_ms,
+                sample_size: 1,
+            });
+        }
+        data.by_task_type = Self::build_index(&data.entries);
+        data.last_updated = std::time::Instant::now();
+    }
+
     fn build_index(entries: &[FitnessEntry]) -> HashMap<TaskType, Vec<FitnessEntry>> {
         let mut map: HashMap<TaskType, Vec<FitnessEntry>> = HashMap::new();
         for entry in entries {

@@ -345,6 +345,7 @@ async fn main() -> anyhow::Result<()> {
             registry.clone(),
             judge,
             cancel.clone(),
+            fitness_cache.clone(),
         );
         tokio::spawn(sampler.run());
 

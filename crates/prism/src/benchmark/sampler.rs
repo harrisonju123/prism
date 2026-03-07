@@ -15,6 +15,7 @@ use crate::config::Config;
 use crate::models::MODEL_CATALOG;
 use crate::providers::ProviderRegistry;
 use crate::proxy::cost::compute_cost;
+use crate::routing::FitnessCache;
 
 pub struct BenchmarkSampler {
     rx: mpsc::Receiver<BenchmarkRequest>,
@@ -23,6 +24,7 @@ pub struct BenchmarkSampler {
     providers: Arc<ProviderRegistry>,
     judge: Arc<Judge>,
     cancel: CancellationToken,
+    fitness_cache: FitnessCache,
 }
 
 impl BenchmarkSampler {
@@ -33,6 +35,7 @@ impl BenchmarkSampler {
         providers: Arc<ProviderRegistry>,
         judge: Judge,
         cancel: CancellationToken,
+        fitness_cache: FitnessCache,
     ) -> Self {
         Self {
             rx,
@@ -41,6 +44,7 @@ impl BenchmarkSampler {
             providers,
             judge: Arc::new(judge),
             cancel,
+            fitness_cache,
         }
     }
 
@@ -80,6 +84,7 @@ impl BenchmarkSampler {
             let result_tx = self.result_tx.clone();
             let bench_req = bench_req.clone();
             let judge_model = self.config.benchmark.judge_model.clone();
+            let fitness_cache = self.fitness_cache.clone();
 
             set.spawn(async move {
                 let _permit = match sem.acquire().await {
@@ -98,6 +103,28 @@ impl BenchmarkSampler {
                     &judge_model,
                 )
                 .await;
+
+                if event.status == "success" {
+                    if let Some(task_type) = event.task_type {
+                        let bm_model = event.benchmark_model.clone();
+                        let orig_model = event.original_model.clone();
+                        let bm_score = event.benchmark_score;
+                        let bm_cost = event.benchmark_cost;
+                        let bm_latency = event.benchmark_latency_ms as f64;
+                        let orig_score = event.original_score;
+                        let cache = fitness_cache.clone();
+                        tokio::spawn(async move {
+                            cache
+                                .record_benchmark(
+                                    task_type, &bm_model, bm_score, bm_cost, bm_latency,
+                                )
+                                .await;
+                            cache
+                                .record_benchmark(task_type, &orig_model, orig_score, 0.0, 0.0)
+                                .await;
+                        });
+                    }
+                }
 
                 let _ = result_tx.send(event).await;
             });

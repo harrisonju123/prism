@@ -326,7 +326,7 @@ pub struct BenchmarkConfig {
 impl Default for BenchmarkConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             sample_rate: default_sample_rate(),
             judge_model: default_judge_model(),
             max_benchmark_models: default_max_benchmark_models(),
@@ -341,7 +341,7 @@ fn default_sample_rate() -> f64 {
     0.05
 }
 fn default_judge_model() -> String {
-    "gpt-4o-mini".to_string()
+    "claude-haiku-4-5-20251001".to_string()
 }
 fn default_max_benchmark_models() -> usize {
     3
@@ -1017,9 +1017,9 @@ mod tests {
     #[test]
     fn test_benchmark_defaults() {
         let config: Config = Figment::new().extract().unwrap();
-        assert!(!config.benchmark.enabled);
+        assert!(config.benchmark.enabled);
         assert!((config.benchmark.sample_rate - 0.05).abs() < f64::EPSILON);
-        assert_eq!(config.benchmark.judge_model, "gpt-4o-mini");
+        assert_eq!(config.benchmark.judge_model, "claude-haiku-4-5-20251001");
         assert_eq!(config.benchmark.max_benchmark_models, 3);
         assert_eq!(config.benchmark.max_concurrent_benchmarks, 5);
         assert_eq!(config.benchmark.fitness_refresh_interval_secs, 300);
