@@ -254,6 +254,7 @@ edition = "2024"
 #
 # PrisM crates
 #
+prism = { path = "crates/prism", default-features = false, features = ["embedded"] }
 prism-types = { path = "crates/prism-types" }
 prism-client = { path = "crates/prism-client" }
 uglyhat-panel = { path = "crates/uglyhat-panel" }

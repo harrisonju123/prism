@@ -3,7 +3,7 @@ use futures::{AsyncReadExt, FutureExt, StreamExt, future::BoxFuture};
 use gpui::{AnyView, App, AsyncApp, Context, Entity, SharedString, Task, Window};
 use http_client::{AsyncBody, HttpClient, Method, Request as HttpRequest};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use language_model::{
     ApiKeyState, AuthenticateError, EnvVar, IconOrSvg, LanguageModel, LanguageModelCompletionError,
@@ -18,7 +18,6 @@ use open_ai::{
     stream_completion,
 };
 use settings::{Settings, SettingsStore};
-use std::sync::{Arc, LazyLock};
 use ui::{ElevationIndex, Tooltip, prelude::*};
 use ui_input::InputField;
 use util::ResultExt;
@@ -35,6 +34,8 @@ const PROVIDER_NAME: LanguageModelProviderName = LanguageModelProviderName::new(
 const API_KEY_ENV_VAR_NAME: &str = "PRISM_API_KEY";
 static API_KEY_ENV_VAR: LazyLock<EnvVar> = env_var!(API_KEY_ENV_VAR_NAME);
 
+const DEFAULT_API_URL: &str = "http://localhost:9100/v1";
+
 #[derive(Default, Clone, Debug, PartialEq)]
 pub struct PrismSettings {
     pub api_url: String,
@@ -49,9 +50,8 @@ pub struct PrismLanguageModelProvider {
 #[derive(Debug, Clone, PartialEq)]
 enum SidecarStatus {
     Unknown,
+    Embedded,
     External,
-    Sidecar,
-    NotFound,
 }
 
 pub struct State {
@@ -60,23 +60,26 @@ pub struct State {
     http_client: Arc<dyn HttpClient>,
     fetched_models: Vec<String>,
     fetch_models_task: Option<Task<Result<()>>>,
-    sidecar: Option<smol::process::Child>,
+    embedded: Option<Arc<prism::EmbeddedGateway>>,
     sidecar_status: SidecarStatus,
-}
-
-impl Drop for State {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.sidecar.take() {
-            if let Err(err) = child.kill() {
-                log::warn!("Failed to kill PrisM sidecar process: {err}");
-            }
-        }
-    }
 }
 
 impl State {
     fn is_authenticated(&self) -> bool {
-        self.api_key_state.has_key()
+        self.sidecar_status == SidecarStatus::Embedded || self.api_key_state.has_key()
+    }
+
+    /// Returns the API key to use for requests. In embedded mode, falls back to a placeholder
+    /// since the embedded gateway has no virtual key service and accepts any Bearer token.
+    fn effective_api_key(&self) -> Option<Arc<str>> {
+        let url = &self.settings.api_url;
+        self.api_key_state.key(url).or_else(|| {
+            if self.sidecar_status == SidecarStatus::Embedded {
+                Some(Arc::from("embedded"))
+            } else {
+                None
+            }
+        })
     }
 
     fn set_api_key(&mut self, api_key: Option<String>, cx: &mut Context<Self>) -> Task<Result<()>> {
@@ -86,6 +89,10 @@ impl State {
     }
 
     fn authenticate(&mut self, cx: &mut Context<Self>) -> Task<Result<(), AuthenticateError>> {
+        if self.sidecar_status == SidecarStatus::Embedded {
+            self.restart_fetch_models_task(cx);
+            return Task::ready(Ok(()));
+        }
         let api_url = SharedString::new(self.settings.api_url.clone());
         let auth_task = self
             .api_key_state
@@ -103,8 +110,7 @@ impl State {
     fn fetch_models(&mut self, cx: &mut Context<Self>) -> Task<Result<()>> {
         let http_client = self.http_client.clone();
         let api_url = self.settings.api_url.clone();
-        let api_key = self.api_key_state.key(&api_url);
-        let sidecar_already_running = self.sidecar.is_some();
+        let api_key = self.effective_api_key();
 
         cx.spawn(async move |this, cx| {
             let Some(api_key) = api_key else {
@@ -114,7 +120,7 @@ impl State {
             match do_fetch_models(&http_client, &api_url, &api_key).await {
                 Ok(models) => {
                     this.update(cx, |this, cx| {
-                        if this.sidecar.is_none() {
+                        if this.sidecar_status != SidecarStatus::Embedded {
                             this.sidecar_status = SidecarStatus::External;
                         }
                         this.fetched_models = models;
@@ -122,42 +128,8 @@ impl State {
                     })
                 }
                 Err(err) if is_connection_refused(&err) => {
-                    if !sidecar_already_running {
-                        let port = port_from_url(&api_url);
-                        match find_prism_binary() {
-                            Some(path) => match spawn_prism_sidecar(&path, &port) {
-                                Ok(child) => {
-                                    this.update(cx, |this, cx| {
-                                        this.sidecar = Some(child);
-                                        this.sidecar_status = SidecarStatus::Sidecar;
-                                        cx.notify();
-                                    })
-                                    .ok();
-                                }
-                                Err(spawn_err) => {
-                                    log::warn!("Failed to spawn PrisM sidecar: {spawn_err}");
-                                    this.update(cx, |this, cx| {
-                                        this.sidecar_status = SidecarStatus::NotFound;
-                                        cx.notify();
-                                    })
-                                    .ok();
-                                    return Ok(());
-                                }
-                            },
-                            None => {
-                                this.update(cx, |this, cx| {
-                                    this.sidecar_status = SidecarStatus::NotFound;
-                                    cx.notify();
-                                })
-                                .ok();
-                                return Ok(());
-                            }
-                        }
-                    }
-
-                    // Retry with backoff while the sidecar starts up (up to 5 × 1500ms = 7.5s).
-                    for _ in 0..5 {
-                        smol::Timer::after(Duration::from_millis(1500)).await;
+                    for _ in 0..3 {
+                        smol::Timer::after(Duration::from_millis(500)).await;
                         match do_fetch_models(&http_client, &api_url, &api_key).await {
                             Ok(models) => {
                                 return this.update(cx, |this, cx| {
@@ -169,7 +141,7 @@ impl State {
                             Err(retry_err) => return Err(retry_err),
                         }
                     }
-
+                    log::warn!("PrisM gateway not reachable after retries at {api_url}");
                     Ok(())
                 }
                 Err(err) => Err(err),
@@ -180,6 +152,28 @@ impl State {
     fn restart_fetch_models_task(&mut self, cx: &mut Context<Self>) {
         let task = self.fetch_models(cx);
         self.fetch_models_task.replace(task);
+    }
+
+    fn start_embedded_if_needed(&mut self, cx: &mut Context<Self>) {
+        if self.settings.api_url != DEFAULT_API_URL {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            match prism::start_embedded(std::iter::empty()).await {
+                Ok(gateway) => {
+                    this.update(cx, |state, cx| {
+                        state.settings.api_url = gateway.api_url();
+                        state.embedded = Some(Arc::new(gateway));
+                        state.sidecar_status = SidecarStatus::Embedded;
+                        state.restart_fetch_models_task(cx);
+                        cx.notify();
+                    })
+                    .ok();
+                }
+                Err(e) => log::warn!("Failed to start embedded PrisM gateway: {e}"),
+            }
+        })
+        .detach();
     }
 }
 
@@ -203,6 +197,12 @@ impl PrismLanguageModelProvider {
                             this.restart_fetch_models_task(cx);
                         }
                         this.settings = settings;
+                        // Re-apply embedded gateway URL if settings reverted to the default.
+                        if let Some(ref gw) = this.embedded {
+                            if this.settings.api_url == DEFAULT_API_URL {
+                                this.settings.api_url = gw.api_url();
+                            }
+                        }
                         cx.notify();
                     }
                 })
@@ -210,7 +210,7 @@ impl PrismLanguageModelProvider {
                 let settings = crate::AllLanguageModelSettings::get_global(cx)
                     .prism
                     .clone();
-                State {
+                let mut state = State {
                     api_key_state: ApiKeyState::new(
                         SharedString::new(settings.api_url.as_str()),
                         API_KEY_ENV_VAR.clone(),
@@ -219,9 +219,11 @@ impl PrismLanguageModelProvider {
                     http_client,
                     fetched_models: Vec::new(),
                     fetch_models_task: None,
-                    sidecar: None,
+                    embedded: None,
                     sidecar_status: SidecarStatus::Unknown,
-                }
+                };
+                state.start_embedded_if_needed(cx);
+                state
             }
         });
 
@@ -351,11 +353,7 @@ impl PrismLanguageModel {
         let http_client = self.http_client.clone();
 
         let (api_key, api_url) = self.state.read_with(cx, |state, _cx| {
-            let api_url = &state.settings.api_url;
-            (
-                state.api_key_state.key(api_url),
-                state.settings.api_url.clone(),
-            )
+            (state.effective_api_key(), state.settings.api_url.clone())
         });
 
         let provider = self.provider_name.clone();
@@ -386,11 +384,7 @@ impl PrismLanguageModel {
         let http_client = self.http_client.clone();
 
         let (api_key, api_url) = self.state.read_with(cx, |state, _cx| {
-            let api_url = &state.settings.api_url;
-            (
-                state.api_key_state.key(api_url),
-                state.settings.api_url.clone(),
-            )
+            (state.effective_api_key(), state.settings.api_url.clone())
         });
 
         let provider = self.provider_name.clone();
@@ -697,8 +691,8 @@ impl Render for ConfigurationView {
         };
 
         let sidecar_status_label = match sidecar_status {
-            SidecarStatus::Sidecar => Some(
-                Label::new("PrisM running (sidecar)")
+            SidecarStatus::Embedded => Some(
+                Label::new("PrisM running (embedded)")
                     .size(LabelSize::Small)
                     .color(Color::Success),
             ),
@@ -706,11 +700,6 @@ impl Render for ConfigurationView {
                 Label::new("PrisM running (external)")
                     .size(LabelSize::Small)
                     .color(Color::Success),
-            ),
-            SidecarStatus::NotFound => Some(
-                Label::new("PrisM binary not found — install with: cargo install prism")
-                    .size(LabelSize::Small)
-                    .color(Color::Warning),
             ),
             SidecarStatus::Unknown => None,
         };
@@ -738,60 +727,6 @@ fn is_connection_refused(err: &anyhow::Error) -> bool {
         }
     }
     false
-}
-
-fn port_from_url(api_url: &str) -> String {
-    // Parse port from URLs like "http://localhost:9100/v1".
-    api_url
-        .split(':')
-        .nth(2)
-        .and_then(|s| s.split('/').next())
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(9100)
-        .to_string()
-}
-
-fn find_prism_binary() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("PRISM_BIN") {
-        let path = PathBuf::from(path);
-        if path.exists() {
-            return Some(path);
-        }
-    }
-
-    if let Ok(path_var) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path_var) {
-            for name in &["prism", "prism-gateway"] {
-                let candidate = dir.join(name);
-                if candidate.exists() {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-
-    if let Ok(home) = std::env::var("HOME") {
-        let candidate = PathBuf::from(home).join(".cargo/bin/prism");
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-
-    None
-}
-
-fn spawn_prism_sidecar(
-    path: &PathBuf,
-    port: &str,
-) -> Result<smol::process::Child> {
-    smol::process::Command::new(path)
-        .arg("--port")
-        .arg(port)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .context("Failed to spawn PrisM sidecar process")
 }
 
 async fn do_fetch_models(

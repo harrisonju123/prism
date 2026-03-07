@@ -271,6 +271,8 @@ pub async fn anthropic_messages(
 
     if let Some(ref kh) = key_hash {
         state.budget_tracker.record_spend(kh, cost);
+        // Record token usage for TPM rate limiting
+        state.rate_limiter.record_tokens(kh, cost_usage.total_tokens).await;
     }
 
     // Build prompt hash
@@ -282,6 +284,26 @@ pub async fn anthropic_messages(
         }
         hex::encode(hasher.finalize())
     };
+
+    // Compute completion hash from text blocks in response
+    let completion_hash = {
+        let text: String = anthropic_response
+            .content
+            .iter()
+            .filter_map(|block| block.text.as_deref())
+            .collect();
+        if text.is_empty() {
+            String::new()
+        } else {
+            let mut hasher = Sha256::new();
+            hasher.update(text.as_bytes());
+            hex::encode(hasher.finalize())
+        }
+    };
+
+    // Extract tool_calls_json for observability
+    let tool_calls_json = request.tools.as_ref()
+        .and_then(|tools| serde_json::to_string(tools).ok());
 
     // Emit inference event
     let event = InferenceEvent {
@@ -298,7 +320,7 @@ pub async fn anthropic_messages(
         estimated_cost_usd: cost,
         latency_ms,
         prompt_hash,
-        completion_hash: String::new(),
+        completion_hash,
         task_type: None,
         routing_decision: Some("anthropic_native".into()),
         variant_name: None,
@@ -311,7 +333,7 @@ pub async fn anthropic_messages(
         span_id,
         parent_span_id: None,
         agent_framework: None,
-        tool_calls_json: None,
+        tool_calls_json,
         ttft_ms: None,
         session_id,
         provider_attempted: None,

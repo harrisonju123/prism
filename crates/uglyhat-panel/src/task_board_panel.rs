@@ -1,4 +1,4 @@
-use crate::types::{AgentStatus, StatusCount, TaskSummary, WorkspaceContext};
+use crate::types::{AgentStatus, DependencyInfo, StatusCount, TaskContext, TaskSummary, WorkspaceContext};
 use anyhow::Result;
 use db::kvp::KEY_VALUE_STORE;
 use gpui::{
@@ -9,7 +9,8 @@ use gpui::{
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use ui::{
-    Color, Icon, IconButton, IconName, Label, LabelSize, Tooltip, h_flex, prelude::*, v_flex,
+    Button, ButtonStyle, Color, Icon, IconButton, IconName, Label, LabelSize, Tooltip, h_flex,
+    prelude::*, v_flex,
 };
 use util::{ResultExt, TryFutureExt};
 use workspace::{
@@ -20,6 +21,16 @@ use workspace::{
 const TASK_BOARD_PANEL_KEY: &str = "TaskBoardPanel";
 const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
+fn uh_binary() -> std::path::PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        let p = std::path::PathBuf::from(home).join(".cargo/bin/uh");
+        if p.exists() {
+            return p;
+        }
+    }
+    "uh".into()
+}
+
 actions!(
     uglyhat_panel,
     [
@@ -29,6 +40,16 @@ actions!(
         ToggleFocus
     ]
 );
+
+#[derive(Default)]
+enum ViewState {
+    #[default]
+    Board,
+    LoadingDetail {
+        task_id: String,
+    },
+    Detail(Box<TaskContext>),
+}
 
 pub struct TaskBoardPanel {
     focus_handle: FocusHandle,
@@ -45,11 +66,22 @@ pub struct TaskBoardPanel {
     refresh_task: Option<Task<()>>,
     pending_serialization: Task<Option<()>>,
     _auto_refresh: Task<()>,
+    // Navigation
+    view_state: ViewState,
+    detail_task: Option<Task<()>>,
+    // Check-in/checkout
+    agent_name: Option<String>,
+    checkin_task: Option<Task<()>>,
+    // Cost section
+    cost_expanded: bool,
+    prism_api_key: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
 struct SerializedTaskBoardPanel {
     width: Option<Pixels>,
+    #[serde(default)]
+    cost_expanded: bool,
 }
 
 #[derive(Debug)]
@@ -81,6 +113,12 @@ impl TaskBoardPanel {
                 refresh_task: None,
                 pending_serialization: Task::ready(None),
                 _auto_refresh: Task::ready(()),
+                view_state: ViewState::Board,
+                detail_task: None,
+                agent_name: std::env::var("UH_AGENT_NAME").ok(),
+                checkin_task: None,
+                cost_expanded: false,
+                prism_api_key: std::env::var("PRISM_API_KEY").ok(),
             };
 
             let auto_refresh = cx.spawn(async move |this, cx| loop {
@@ -116,6 +154,7 @@ impl TaskBoardPanel {
                 if let Some(serialized_panel) = serialized_panel {
                     panel.update(cx, |panel, cx| {
                         panel.width = serialized_panel.width.map(|w| w.round());
+                        panel.cost_expanded = serialized_panel.cost_expanded;
                         cx.notify();
                     });
                 }
@@ -126,12 +165,16 @@ impl TaskBoardPanel {
 
     fn serialize(&mut self, cx: &mut Context<Self>) {
         let width = self.width;
+        let cost_expanded = self.cost_expanded;
         self.pending_serialization = cx.background_spawn(
             async move {
                 KEY_VALUE_STORE
                     .write_kvp(
                         TASK_BOARD_PANEL_KEY.into(),
-                        serde_json::to_string(&SerializedTaskBoardPanel { width })?,
+                        serde_json::to_string(&SerializedTaskBoardPanel {
+                            width,
+                            cost_expanded,
+                        })?,
                     )
                     .await?;
                 anyhow::Ok(())
@@ -148,7 +191,7 @@ impl TaskBoardPanel {
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
             let context_result = cx
                 .background_spawn(async move {
-                    let output = std::process::Command::new("uh").arg("context").output()?;
+                    let output = std::process::Command::new(uh_binary()).arg("context").output()?;
                     if !output.status.success() {
                         anyhow::bail!(
                             "{}",
@@ -162,7 +205,7 @@ impl TaskBoardPanel {
 
             let next_result = cx
                 .background_spawn(async move {
-                    let output = std::process::Command::new("uh").arg("next").output()?;
+                    let output = std::process::Command::new(uh_binary()).arg("next").output()?;
                     if !output.status.success() {
                         return Ok(Vec::new());
                     }
@@ -189,6 +232,104 @@ impl TaskBoardPanel {
         }));
     }
 
+    fn open_task_detail(&mut self, task_id: String, cx: &mut Context<Self>) {
+        self.view_state = ViewState::LoadingDetail {
+            task_id: task_id.clone(),
+        };
+        cx.notify();
+        self.detail_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let output = std::process::Command::new(uh_binary())
+                        .args(["task", "context", &task_id])
+                        .output()?;
+                    if !output.status.success() {
+                        anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr));
+                    }
+                    serde_json::from_slice::<TaskContext>(&output.stdout)
+                        .map_err(anyhow::Error::from)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                match result {
+                    Ok(ctx) => {
+                        this.view_state = ViewState::Detail(Box::new(ctx));
+                    }
+                    Err(e) => {
+                        this.view_state = ViewState::Board;
+                        this.error = Some(e.to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    fn close_detail(&mut self, cx: &mut Context<Self>) {
+        self.view_state = ViewState::Board;
+        self.detail_task = None;
+        cx.notify();
+    }
+
+    fn run_checkin(&mut self, cx: &mut Context<Self>) {
+        let Some(name) = self.agent_name.clone() else {
+            return;
+        };
+        self.checkin_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let output = std::process::Command::new(uh_binary())
+                        .args(["checkin", "--name", &name, "--capabilities", "zed"])
+                        .output()?;
+                    if !output.status.success() {
+                        anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr));
+                    }
+                    anyhow::Ok(())
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.checkin_task = None;
+                if let Err(e) = result {
+                    this.error = Some(e.to_string());
+                    cx.notify();
+                } else {
+                    this.refresh(cx);
+                }
+            })
+            .ok();
+        }));
+    }
+
+    fn run_checkout(&mut self, cx: &mut Context<Self>) {
+        let Some(name) = self.agent_name.clone() else {
+            return;
+        };
+        self.checkin_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let output = std::process::Command::new(uh_binary())
+                        .args(["checkout", "--name", &name, "--summary", "Zed session ended"])
+                        .output()?;
+                    if !output.status.success() {
+                        anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr));
+                    }
+                    anyhow::Ok(())
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.checkin_task = None;
+                if let Err(e) = result {
+                    this.error = Some(e.to_string());
+                    cx.notify();
+                } else {
+                    this.refresh(cx);
+                }
+            })
+            .ok();
+        }));
+    }
+
     fn priority_color(priority: &str) -> Color {
         match priority {
             "critical" => Color::Error,
@@ -198,7 +339,7 @@ impl TaskBoardPanel {
         }
     }
 
-    fn render_task_row(task: &TaskSummary, cx: &App) -> impl IntoElement {
+    fn render_task_row(task: &TaskSummary, cx: &App) -> gpui::Div {
         let color = Self::priority_color(&task.priority);
         let task_name = task.name.clone();
         let epic_name = task.epic_name.clone().unwrap_or_default();
@@ -231,7 +372,33 @@ impl TaskBoardPanel {
             })
     }
 
-    fn render_agent_row(agent: &AgentStatus, cx: &App) -> impl IntoElement {
+    fn render_dep_row(dep: &DependencyInfo, color: Color, cx: &App) -> gpui::Div {
+        h_flex()
+            .w_full()
+            .px_2()
+            .py_0p5()
+            .gap_2()
+            .child(
+                div()
+                    .w(px(6.))
+                    .h(px(6.))
+                    .rounded_full()
+                    .flex_none()
+                    .bg(color.color(cx)),
+            )
+            .child(
+                Label::new(dep.task_name.clone())
+                    .size(LabelSize::Small)
+                    .truncate(),
+            )
+            .child(
+                Label::new(dep.status.replace('_', " "))
+                    .size(LabelSize::Small)
+                    .color(Color::Muted),
+            )
+    }
+
+    fn render_agent_row(agent: &AgentStatus, my_name: &str, cx: &App) -> impl IntoElement {
         let dot_color = if agent.session_open {
             Color::Success
         } else {
@@ -245,6 +412,11 @@ impl TaskBoardPanel {
             Color::Default
         } else {
             Color::Muted
+        };
+        let name_color = if agent.name == my_name {
+            Color::Accent
+        } else {
+            Color::Default
         };
 
         h_flex()
@@ -261,7 +433,7 @@ impl TaskBoardPanel {
                     .flex_none()
                     .bg(dot_color.color(cx)),
             )
-            .child(Label::new(agent.name.clone()).size(LabelSize::Small))
+            .child(Label::new(agent.name.clone()).size(LabelSize::Small).color(name_color))
             .child(
                 Label::new(task_label)
                     .size(LabelSize::Small)
@@ -321,6 +493,312 @@ impl TaskBoardPanel {
                     .color(Color::Default),
             )
     }
+
+    fn render_detail_view(&self, ctx: &TaskContext, cx: &mut Context<Self>) -> impl IntoElement {
+        let task = &ctx.task;
+        let status = task.status.replace('_', " ");
+        let assignee = task
+            .assignee
+            .clone()
+            .unwrap_or_else(|| "unassigned".to_owned());
+        let initiative_name = task.initiative_name.clone();
+        let epic_name = task.epic_name.clone();
+        let description = task.description.clone();
+        let blocked_by = ctx.blocked_by.clone();
+        let blocks = ctx.blocks.clone();
+        let notes = ctx.notes.clone();
+        let handoffs = ctx.handoffs.clone();
+        let recent_activity = ctx.recent_activity.clone();
+        let task_name = task.name.clone();
+
+        v_flex()
+            .size_full()
+            // Back header
+            .child(
+                h_flex()
+                    .justify_between()
+                    .px_2()
+                    .py_1()
+                    .h(px(32.))
+                    .flex_none()
+                    .border_b_1()
+                    .border_color(cx.theme().colors().border)
+                    .child(
+                        IconButton::new("back", IconName::ArrowLeft)
+                            .icon_size(ui::IconSize::Small)
+                            .icon_color(Color::Muted)
+                            .tooltip(Tooltip::text("Back to board"))
+                            .on_click(cx.listener(|this, _, _, cx| this.close_detail(cx))),
+                    )
+                    .child(
+                        Label::new(task_name)
+                            .size(LabelSize::Small)
+                            .truncate(),
+                    ),
+            )
+            // Scrollable body
+            .child(
+                v_flex()
+                    .id("detail-body")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    // Status + assignee
+                    .child(
+                        h_flex()
+                            .px_2()
+                            .py_1()
+                            .gap_2()
+                            .child(Label::new(status).size(LabelSize::Small))
+                            .child(Label::new("·").size(LabelSize::Small).color(Color::Muted))
+                            .child(
+                                Label::new(assignee)
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            ),
+                    )
+                    // Epic breadcrumb
+                    .when_some(epic_name, |this: gpui::Stateful<gpui::Div>, e| {
+                        this.child(
+                            h_flex()
+                                .px_2()
+                                .gap_1()
+                                .when_some(initiative_name, |this: gpui::Div, init| {
+                                    this.child(
+                                        Label::new(init)
+                                            .size(LabelSize::Small)
+                                            .color(Color::Muted),
+                                    )
+                                    .child(
+                                        Label::new("›")
+                                            .size(LabelSize::Small)
+                                            .color(Color::Muted),
+                                    )
+                                })
+                                .child(Label::new(e).size(LabelSize::Small).color(Color::Muted)),
+                        )
+                    })
+                    // Description
+                    .when_some(description, |this: gpui::Stateful<gpui::Div>, desc| {
+                        this.child(
+                            v_flex()
+                                .px_2()
+                                .py_1()
+                                .child(
+                                    Label::new("Description")
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted),
+                                )
+                                .child(Label::new(desc).size(LabelSize::Small)),
+                        )
+                    })
+                    // Blocked by
+                    .when(!blocked_by.is_empty(), |this: gpui::Stateful<gpui::Div>| {
+                        this.child(
+                            v_flex()
+                                .px_2()
+                                .py_1()
+                                .child(
+                                    Label::new("Blocked by")
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted),
+                                )
+                                .children(
+                                    blocked_by
+                                        .iter()
+                                        .map(|d| Self::render_dep_row(d, Color::Error, cx)),
+                                ),
+                        )
+                    })
+                    // Blocks
+                    .when(!blocks.is_empty(), |this: gpui::Stateful<gpui::Div>| {
+                        this.child(
+                            v_flex()
+                                .px_2()
+                                .py_1()
+                                .child(
+                                    Label::new("Blocks")
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted),
+                                )
+                                .children(
+                                    blocks
+                                        .iter()
+                                        .map(|d| Self::render_dep_row(d, Color::Warning, cx)),
+                                ),
+                        )
+                    })
+                    // Notes
+                    .when(!notes.is_empty(), |this: gpui::Stateful<gpui::Div>| {
+                        this.child(
+                            v_flex()
+                                .px_2()
+                                .py_1()
+                                .child(
+                                    Label::new("Notes")
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted),
+                                )
+                                .children(notes.iter().map(|n| {
+                                    v_flex()
+                                        .px_1()
+                                        .child(Label::new(n.title.clone()).size(LabelSize::Small))
+                                        .when_some(n.content.clone(), |this: gpui::Div, c| {
+                                            this.child(
+                                                Label::new(c)
+                                                    .size(LabelSize::Small)
+                                                    .color(Color::Muted),
+                                            )
+                                        })
+                                })),
+                        )
+                    })
+                    // Latest handoff
+                    .when_some(handoffs.first().cloned(), |this: gpui::Stateful<gpui::Div>, h| {
+                        this.child(
+                            v_flex()
+                                .px_2()
+                                .py_1()
+                                .child(
+                                    Label::new("Last Handoff")
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted),
+                                )
+                                .child(
+                                    Label::new(format!("↳ {}", h.agent_name))
+                                        .size(LabelSize::Small)
+                                        .color(Color::Muted),
+                                )
+                                .child(Label::new(h.summary.clone()).size(LabelSize::Small))
+                                .children(h.next_steps.iter().take(3).map(|s: &String| {
+                                    h_flex()
+                                        .gap_1()
+                                        .child(
+                                            Label::new("·")
+                                                .size(LabelSize::Small)
+                                                .color(Color::Muted),
+                                        )
+                                        .child(Label::new(s.clone()).size(LabelSize::Small))
+                                })),
+                        )
+                    })
+                    // Recent activity
+                    .when(!recent_activity.is_empty(), |this: gpui::Stateful<gpui::Div>| {
+                        this.child(
+                            v_flex()
+                                .px_2()
+                                .py_1()
+                                .child(
+                                    Label::new("Activity")
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted),
+                                )
+                                .children(recent_activity.iter().take(5).map(|e| {
+                                    h_flex()
+                                        .gap_1()
+                                        .child(Label::new(e.actor.clone()).size(LabelSize::Small))
+                                        .child(
+                                            Label::new(e.action.clone())
+                                                .size(LabelSize::Small)
+                                                .color(Color::Muted),
+                                        )
+                                        .when_some(e.entity_name.clone(), |this: gpui::Div, n| {
+                                            this.child(
+                                                Label::new(n).size(LabelSize::Small).truncate(),
+                                            )
+                                        })
+                                })),
+                        )
+                    }),
+            )
+    }
+
+    fn render_agent_action_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .w_full()
+            .px_2()
+            .py_1()
+            .gap_2()
+            .flex_none()
+            .border_t_1()
+            .border_color(cx.theme().colors().border)
+            .map(|this| {
+                if let Some(name) = &self.agent_name {
+                    let is_busy = self.checkin_task.is_some();
+                    let is_in = self
+                        .context
+                        .as_ref()
+                        .map(|c| {
+                            c.active_agents
+                                .iter()
+                                .any(|a| &a.name == name && a.session_open)
+                        })
+                        .unwrap_or(false);
+                    let name_label = name.clone();
+                    this.child(
+                        Label::new(name_label)
+                            .size(LabelSize::Small)
+                            .color(Color::Muted)
+                            .truncate(),
+                    )
+                    .child(if is_busy {
+                        Button::new("checkin-busy", if is_in { "Checking out..." } else { "Checking in..." })
+                            .style(ButtonStyle::Subtle)
+                            .label_size(LabelSize::Small)
+                            .disabled(true)
+                            .into_any_element()
+                    } else if is_in {
+                        Button::new("checkout", "Check Out")
+                            .style(ButtonStyle::Subtle)
+                            .label_size(LabelSize::Small)
+                            .on_click(cx.listener(|this, _, _, cx| this.run_checkout(cx)))
+                            .into_any_element()
+                    } else {
+                        Button::new("checkin", "Check In")
+                            .style(ButtonStyle::Filled)
+                            .label_size(LabelSize::Small)
+                            .on_click(cx.listener(|this, _, _, cx| this.run_checkin(cx)))
+                            .into_any_element()
+                    })
+                } else {
+                    this.child(
+                        Label::new("Set UH_AGENT_NAME to check in")
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    )
+                }
+            })
+    }
+
+    fn render_cost_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let cost_expanded = self.cost_expanded;
+        let has_api_key = self.prism_api_key.is_some();
+
+        v_flex()
+            .child(Self::render_section_header(
+                "section-cost",
+                "Cost",
+                cost_expanded,
+                cx.listener(|this, _, _, cx| {
+                    this.cost_expanded = !this.cost_expanded;
+                    this.serialize(cx);
+                    cx.notify();
+                }),
+                cx,
+            ))
+            .when(cost_expanded, |this| {
+                this.child(
+                    v_flex().px_2().py_1().child(
+                        Label::new(if has_api_key {
+                            "Cost display coming soon."
+                        } else {
+                            "Set PRISM_API_KEY to enable cost tracking."
+                        })
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                    ),
+                )
+            })
+    }
 }
 
 impl Render for TaskBoardPanel {
@@ -353,6 +831,30 @@ impl Render for TaskBoardPanel {
             )
             // Body
             .map(|container| {
+                // Detail / loading states bypass the board entirely
+                let loading_detail =
+                    matches!(&self.view_state, ViewState::LoadingDetail { .. });
+                let detail_ctx = if let ViewState::Detail(ctx) = &self.view_state {
+                    Some(ctx.clone())
+                } else {
+                    None
+                };
+
+                if loading_detail {
+                    return container.child(
+                        v_flex().p_4().child(
+                            Label::new("Loading task…")
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        ),
+                    );
+                }
+
+                if let Some(ctx) = detail_ctx {
+                    return container.child(self.render_detail_view(&ctx, cx));
+                }
+
+                // Board view
                 if is_loading && self.context.is_none() {
                     return container.child(
                         v_flex().p_4().child(
@@ -397,6 +899,7 @@ impl Render for TaskBoardPanel {
                 let status_counts = ctx.tasks_by_status.clone();
                 let agents = ctx.active_agents.clone();
                 let stale_tasks = ctx.stale_tasks.clone();
+                let my_agent_name = self.agent_name.clone().unwrap_or_default();
                 let agents_expanded = self.agents_expanded;
                 let stale_expanded = self.stale_expanded;
                 let active_expanded = self.active_expanded;
@@ -424,7 +927,7 @@ impl Render for TaskBoardPanel {
                                 ),
                             )
                         } else {
-                            this.children(agents.iter().map(|a| Self::render_agent_row(a, cx)))
+                            this.children(agents.iter().map(|a| Self::render_agent_row(a, &my_agent_name, cx)))
                         }
                     })
                     // Stale Tasks section (hidden when empty)
@@ -441,6 +944,7 @@ impl Render for TaskBoardPanel {
                         ))
                         .when(stale_expanded, |this| {
                             this.children(stale_tasks.iter().map(|task| {
+                                let task_id = task.id.clone();
                                 let assignee = task
                                     .assignee
                                     .clone()
@@ -450,7 +954,12 @@ impl Render for TaskBoardPanel {
                                     .px_2()
                                     .py_1()
                                     .gap_2()
+                                    .id(ElementId::Name(task_id.clone().into()))
+                                    .cursor_pointer()
                                     .hover(|style| style.bg(cx.theme().colors().element_hover))
+                                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                                        this.open_task_detail(task_id.clone(), cx);
+                                    }))
                                     .child(
                                         div()
                                             .w(px(6.))
@@ -493,11 +1002,15 @@ impl Render for TaskBoardPanel {
                                 ),
                             )
                         } else {
-                            this.children(
-                                active_tasks
-                                    .iter()
-                                    .map(|task| Self::render_task_row(task, cx)),
-                            )
+                            this.children(active_tasks.iter().map(|task| {
+                                let task_id = task.id.clone();
+                                Self::render_task_row(task, cx)
+                                    .id(ElementId::Name(task_id.clone().into()))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                                        this.open_task_detail(task_id.clone(), cx);
+                                    }))
+                            }))
                         }
                     })
                     // Up Next section
@@ -521,13 +1034,21 @@ impl Render for TaskBoardPanel {
                                 ),
                             )
                         } else {
-                            this.children(
-                                next_tasks
-                                    .iter()
-                                    .map(|task| Self::render_task_row(task, cx)),
-                            )
+                            this.children(next_tasks.iter().map(|task| {
+                                let task_id = task.id.clone();
+                                Self::render_task_row(task, cx)
+                                    .id(ElementId::Name(task_id.clone().into()))
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |this, _event, _window, cx| {
+                                        this.open_task_detail(task_id.clone(), cx);
+                                    }))
+                            }))
                         }
                     })
+                    // Cost section
+                    .child(self.render_cost_section(cx))
+                    // Agent action bar
+                    .child(self.render_agent_action_bar(cx))
                     // Summary footer
                     .when(!status_counts.is_empty(), |this| {
                         this.child(Self::render_summary_footer(&status_counts))

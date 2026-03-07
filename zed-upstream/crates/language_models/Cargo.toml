@@ -49,6 +49,7 @@ ollama = { workspace = true, features = ["schemars"] }
 open_ai = { workspace = true, features = ["schemars"] }
 open_router = { workspace = true, features = ["schemars"] }
 partial-json-fixer.workspace = true
+prism.workspace = true
 release_channel.workspace = true
 schemars.workspace = true
 semver.workspace = true

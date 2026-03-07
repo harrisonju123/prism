@@ -10232,6 +10232,7 @@ dependencies = [
  "open_router",
  "partial-json-fixer",
  "pretty_assertions",
+ "prism",
  "project",
  "release_channel",
  "schemars",
