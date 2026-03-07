@@ -1,4 +1,4 @@
-use futures::Stream;
+use futures::{stream, Stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 
@@ -24,7 +24,9 @@ pub type Result<T> = std::result::Result<T, ClientError>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamChunk {
     pub delta: String,
+    pub tool_calls: Option<serde_json::Value>,
     pub finish_reason: Option<String>,
+    pub usage: Option<Usage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +40,55 @@ pub struct ModelInfo {
     pub object: String,
     #[serde(default)]
     pub owned_by: String,
+}
+
+// --- SSE parsing ---
+
+fn parse_sse_bytes(item: std::result::Result<bytes::Bytes, reqwest::Error>) -> Vec<Result<StreamChunk>> {
+    let bytes = match item {
+        Err(e) => return vec![Err(ClientError::Request(e))],
+        Ok(b) => b,
+    };
+    let text = match std::str::from_utf8(&bytes) {
+        Err(_) => return vec![],
+        Ok(t) => t,
+    };
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(data) = line.strip_prefix("data: ") {
+            if data == "[DONE]" {
+                continue;
+            }
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(data) {
+                let choice = val.get("choices").and_then(|c| c.get(0));
+                let delta_str = choice
+                    .and_then(|c| c.get("delta"))
+                    .and_then(|d| d.get("content"))
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let tool_calls = choice
+                    .and_then(|c| c.get("delta"))
+                    .and_then(|d| d.get("tool_calls"))
+                    .cloned();
+                let finish_reason = choice
+                    .and_then(|c| c.get("finish_reason"))
+                    .and_then(|f| f.as_str())
+                    .map(String::from);
+                let usage = val
+                    .get("usage")
+                    .and_then(|u| serde_json::from_value(u.clone()).ok());
+                out.push(Ok(StreamChunk {
+                    delta: delta_str,
+                    tool_calls,
+                    finish_reason,
+                    usage,
+                }));
+            }
+        }
+    }
+    out
 }
 
 // --- Client ---
@@ -95,11 +146,9 @@ impl PrismClient {
         &self,
         req: &ChatCompletionRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk>> + Send>>> {
-        use bytes::Bytes;
-        use futures::StreamExt;
-
         let mut stream_req = req.clone();
         stream_req.stream = true;
+        stream_req.stream_options = Some(prism_types::StreamOptions { include_usage: true });
 
         let resp = self
             .request(reqwest::Method::POST, "/v1/chat/completions")
@@ -117,44 +166,9 @@ impl PrismClient {
         }
 
         let byte_stream = resp.bytes_stream();
-        let stream = byte_stream.filter_map(|item| async move {
-            let bytes: Bytes = item.ok()?;
-            let text = std::str::from_utf8(&bytes).ok()?;
-            // SSE: each line may be "data: {...}" or "data: [DONE]"
-            let mut chunks = Vec::new();
-            for line in text.lines() {
-                let line = line.trim();
-                if let Some(data) = line.strip_prefix("data: ") {
-                    if data == "[DONE]" {
-                        continue;
-                    }
-                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(data) {
-                        let delta = val
-                            .get("choices")
-                            .and_then(|c| c.get(0))
-                            .and_then(|c| c.get("delta"))
-                            .and_then(|d| d.get("content"))
-                            .and_then(|c| c.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let finish_reason = val
-                            .get("choices")
-                            .and_then(|c| c.get(0))
-                            .and_then(|c| c.get("finish_reason"))
-                            .and_then(|f| f.as_str())
-                            .map(String::from);
-                        chunks.push(Ok(StreamChunk {
-                            delta,
-                            finish_reason,
-                        }));
-                    }
-                }
-            }
-            if chunks.is_empty() {
-                None
-            } else {
-                chunks.into_iter().next()
-            }
+        let stream = byte_stream.flat_map(|item| {
+            let chunks = parse_sse_bytes(item);
+            stream::iter(chunks)
         });
 
         Ok(Box::pin(stream))
