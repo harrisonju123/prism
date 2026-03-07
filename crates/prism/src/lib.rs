@@ -1,29 +1,39 @@
-pub mod alerts;
 pub mod api;
 
 pub use server::embedded::{EmbeddedGateway, start_embedded};
 pub mod benchmark;
-pub mod billing;
 pub mod cache;
 pub mod classifier;
-pub mod compliance;
 pub mod config;
-pub mod enterprise;
 pub mod error;
 pub mod experiment;
-pub mod finetuning;
-pub mod guardrails;
 pub mod interop;
 pub mod keys;
 pub mod mcp;
 pub mod models;
 pub mod observability;
-pub mod optimization;
 pub mod prompts;
 pub mod providers;
 pub mod proxy;
 pub mod routing;
 pub mod server;
 pub mod types;
+
+#[cfg(feature = "full")]
+pub mod alerts;
+#[cfg(feature = "full")]
+pub mod billing;
+#[cfg(feature = "full")]
+pub mod compliance;
+#[cfg(feature = "full")]
+pub mod enterprise;
+#[cfg(feature = "full")]
+pub mod finetuning;
+#[cfg(feature = "full")]
+pub mod guardrails;
+#[cfg(feature = "full")]
+pub mod optimization;
+#[cfg(feature = "full")]
 pub mod waste;
+#[cfg(feature = "full")]
 pub mod workflows;

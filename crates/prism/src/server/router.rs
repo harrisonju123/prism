@@ -3,11 +3,14 @@ use std::sync::Arc;
 use axum::Router;
 use axum::extract::Request;
 use axum::middleware::from_fn;
-use axum::routing::{delete, get, patch, post, put};
+use axum::routing::{get, post};
+#[cfg(feature = "full")]
+use axum::routing::{delete, patch, put};
 use tower_http::trace::TraceLayer;
 
 use crate::api;
 use crate::experiment::feedback;
+#[cfg(feature = "full")]
 use crate::keys::MasterKey;
 use crate::proxy::batch;
 use crate::proxy::handler::{self, AppState};
