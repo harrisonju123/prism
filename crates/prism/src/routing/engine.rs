@@ -109,6 +109,12 @@ pub async fn resolve(
     }
 }
 
+/// Replace NaN with NEG_INFINITY so NaN candidates lose in `max_by` comparisons.
+#[inline]
+fn nan_min(x: f64) -> f64 {
+    if x.is_nan() { f64::NEG_INFINITY } else { x }
+}
+
 /// Pick the best candidate based on selection criteria.
 fn pick_best<'a>(
     criteria: &SelectionCriteria,
@@ -119,26 +125,28 @@ fn pick_best<'a>(
     }
 
     match criteria {
+        // NaN cost/latency sorts last in total_cmp → loses in min_by (correct).
         SelectionCriteria::CheapestAboveQuality => candidates
             .iter()
-            .min_by(|a, b| a.avg_cost_per_1k.partial_cmp(&b.avg_cost_per_1k).unwrap())
+            .min_by(|a, b| a.avg_cost_per_1k.total_cmp(&b.avg_cost_per_1k))
             .copied(),
         SelectionCriteria::FastestAboveQuality => candidates
             .iter()
-            .min_by(|a, b| a.avg_latency_ms.partial_cmp(&b.avg_latency_ms).unwrap())
+            .min_by(|a, b| a.avg_latency_ms.total_cmp(&b.avg_latency_ms))
             .copied(),
+        // NaN quality must lose in max_by → map to NEG_INFINITY first.
         SelectionCriteria::HighestQualityUnderCost => candidates
             .iter()
-            .max_by(|a, b| a.avg_quality.partial_cmp(&b.avg_quality).unwrap())
+            .max_by(|a, b| nan_min(a.avg_quality).total_cmp(&nan_min(b.avg_quality)))
             .copied(),
         SelectionCriteria::BestValue => {
-            // Value = quality / cost (higher is better)
+            // Value = quality / cost (higher is better); NaN value loses.
             candidates
                 .iter()
                 .max_by(|a, b| {
-                    let va = a.avg_quality / a.avg_cost_per_1k.max(0.001);
-                    let vb = b.avg_quality / b.avg_cost_per_1k.max(0.001);
-                    va.partial_cmp(&vb).unwrap()
+                    let va = nan_min(a.avg_quality / a.avg_cost_per_1k.max(0.001));
+                    let vb = nan_min(b.avg_quality / b.avg_cost_per_1k.max(0.001));
+                    va.total_cmp(&vb)
                 })
                 .copied()
         }
@@ -245,6 +253,47 @@ mod tests {
         .await;
 
         assert!(decision.is_none(), "empty policy should pass through");
+    }
+
+    fn make_entry(model: &str, quality: f64, cost: f64, latency: f64) -> FitnessEntry {
+        FitnessEntry {
+            task_type: TaskType::Conversation,
+            model: model.to_string(),
+            avg_quality: quality,
+            avg_cost_per_1k: cost,
+            avg_latency_ms: latency,
+            sample_size: 1,
+        }
+    }
+
+    #[test]
+    fn test_pick_best_nan_cost_does_not_panic() {
+        let a = make_entry("good", 0.8, 1.0, 500.0);
+        let b = make_entry("nan-cost", 0.8, f64::NAN, 500.0);
+        let candidates = vec![&b, &a];
+        let result = pick_best(&SelectionCriteria::CheapestAboveQuality, &candidates);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().model, "good");
+    }
+
+    #[test]
+    fn test_pick_best_nan_quality_does_not_panic() {
+        let a = make_entry("good", 0.8, 1.0, 500.0);
+        let b = make_entry("nan-quality", f64::NAN, 1.0, 500.0);
+        let candidates = vec![&b, &a];
+        let result = pick_best(&SelectionCriteria::HighestQualityUnderCost, &candidates);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().model, "good");
+    }
+
+    #[test]
+    fn test_pick_best_best_value_nan_does_not_panic() {
+        let a = make_entry("good", 0.8, 1.0, 500.0);
+        let b = make_entry("nan-both", f64::NAN, f64::NAN, 500.0);
+        let candidates = vec![&b, &a];
+        let result = pick_best(&SelectionCriteria::BestValue, &candidates);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().model, "good");
     }
 
     #[tokio::test]

@@ -106,11 +106,7 @@ impl FitnessCache {
         }
         // Sort each list by quality descending
         for list in map.values_mut() {
-            list.sort_by(|a, b| {
-                b.avg_quality
-                    .partial_cmp(&a.avg_quality)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
+            list.sort_by(|a, b| b.avg_quality.total_cmp(&a.avg_quality));
         }
         map
     }
