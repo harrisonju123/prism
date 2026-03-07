@@ -158,8 +158,9 @@ impl State {
         if self.settings.api_url != DEFAULT_API_URL {
             return;
         }
+        let providers = collect_provider_configs();
         cx.spawn(async move |this, cx| {
-            match prism::start_embedded(std::iter::empty()).await {
+            match prism::start_embedded_with(providers, |b| b).await {
                 Ok(gateway) => {
                     this.update(cx, |state, cx| {
                         state.settings.api_url = gateway.api_url();
@@ -175,6 +176,28 @@ impl State {
         })
         .detach();
     }
+}
+
+/// Collect provider (name, api_key, api_base) tuples from standard env vars.
+/// These supplement whatever PRISM_* vars the embedded gateway loads from config.
+fn collect_provider_configs() -> Vec<(String, String, String)> {
+    const KNOWN: &[(&str, &str, &str)] = &[
+        ("anthropic", "ANTHROPIC_API_KEY", "https://api.anthropic.com/v1"),
+        ("openai", "OPENAI_API_KEY", "https://api.openai.com/v1"),
+        (
+            "google",
+            "GOOGLE_AI_STUDIO_API_KEY",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+        ),
+    ];
+    KNOWN
+        .iter()
+        .filter_map(|(name, env_var, base_url)| {
+            std::env::var(env_var)
+                .ok()
+                .map(|key| (name.to_string(), key, base_url.to_string()))
+        })
+        .collect()
 }
 
 impl PrismLanguageModelProvider {

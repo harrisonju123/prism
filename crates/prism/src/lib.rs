@@ -1,6 +1,7 @@
 pub mod api;
 
-pub use server::embedded::{EmbeddedGateway, start_embedded};
+pub use proxy::builder::AppStateBuilder;
+pub use server::embedded::{EmbeddedGateway, start_embedded, start_embedded_with};
 pub mod benchmark;
 pub mod cache;
 pub mod classifier;

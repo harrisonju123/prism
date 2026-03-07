@@ -56,6 +56,34 @@ impl Drop for EmbeddedGateway {
 pub async fn start_embedded(
     providers: impl IntoIterator<Item = (String, String, String)>,
 ) -> Result<EmbeddedGateway> {
+    start_embedded_with(providers, |b| b).await
+}
+
+/// Start a minimal PrisM gateway with custom AppStateBuilder configuration.
+///
+/// Provider keys are read from `PRISM_*` environment variables on startup
+/// (via [`Config::load`]). Additional providers can be passed as
+/// `(name, api_key, api_base)` tuples to override or extend the env config.
+///
+/// The `configure` closure allows customization of the `AppStateBuilder` before
+/// building the final `AppState`. This enables advanced use cases like routing
+/// policy overrides or custom metrics injection.
+///
+/// # Example
+/// ```no_run
+/// # async fn example() -> anyhow::Result<()> {
+/// let gw = prism::start_embedded_with(
+///     vec![("anthropic".into(), "sk-ant-...".into(), "https://api.anthropic.com/v1".into())],
+///     |builder| builder, // customize here if needed
+/// ).await?;
+/// println!("Listening on {}", gw.api_url());
+/// # Ok(())
+/// # }
+/// ```
+pub async fn start_embedded_with(
+    providers: impl IntoIterator<Item = (String, String, String)>,
+    configure: impl FnOnce(AppStateBuilder) -> AppStateBuilder,
+) -> Result<EmbeddedGateway> {
     // Load config from env / TOML; fall back to pure defaults if load fails.
     let mut config = Config::load(None).unwrap_or_else(|_| Config::default());
 
@@ -82,11 +110,13 @@ pub async fn start_embedded(
     let (event_tx, _event_rx) = tokio::sync::mpsc::channel::<InferenceEvent>(512);
 
     let state = Arc::new(
-        AppStateBuilder::new(config)
-            .with_providers(registry)
-            .with_event_tx(event_tx)
-            .build()
-            .map_err(|e| PrismError::Internal(e.to_string()))?,
+        configure(
+            AppStateBuilder::new(config)
+                .with_providers(registry)
+                .with_event_tx(event_tx),
+        )
+        .build()
+        .map_err(|e| PrismError::Internal(e.to_string()))?,
     );
 
     let router = crate::server::router::build(state);
