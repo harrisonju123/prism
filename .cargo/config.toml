@@ -1,0 +1,11 @@
+[build]
+rustflags = ["-C", "symbol-mangling-version=v0", "--cfg", "tokio_unstable"]
+
+[alias]
+xtask = "run --package xtask --"
+
+[target.'cfg(target_os = "macos")']
+rustflags = ["-C", "symbol-mangling-version=v0", "--cfg", "tokio_unstable"]
+
+[env]
+MACOSX_DEPLOYMENT_TARGET = "10.15.7"

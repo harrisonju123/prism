@@ -173,7 +173,10 @@ impl RemoteRunningKernel {
 
             let (ws_stream, _response) = response?;
 
-            let kernel_socket = JupyterWebSocket { inner: ws_stream };
+            let kernel_socket = JupyterWebSocket {
+                inner: ws_stream,
+                protocol_mode: Default::default(),
+            };
 
             let (mut w, mut r): (JupyterWebSocketWriter, JupyterWebSocketReader) =
                 kernel_socket.split();
