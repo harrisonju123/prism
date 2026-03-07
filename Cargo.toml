@@ -6,6 +6,7 @@ members = [
     "crates/uglyhat",
     "crates/prism-types",
     "crates/prism-client",
+    "crates/prism-cli",
     # Zed crates
     "zed-upstream/crates/acp_thread",
     "zed-upstream/crates/acp_tools",

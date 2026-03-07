@@ -13996,6 +13996,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "prism-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "prism-client",
+ "prism-types",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "prism-client"
 version = "0.1.0"
 dependencies = [

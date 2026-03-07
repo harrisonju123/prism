@@ -1,12 +1,13 @@
 use async_trait::async_trait;
+use bytes::Bytes;
 use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{PrismError, Result};
 use crate::types::{
-    ChatCompletionRequest, ChatCompletionResponse, Choice, EmbeddingRequest, EmbeddingResponse,
-    Message, PrismStreamError, ProviderResponse, Usage,
+    ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, Choice, ChunkChoice,
+    EmbeddingRequest, EmbeddingResponse, Message, PrismStreamError, ProviderResponse, Usage,
 };
 
 use super::Provider;
@@ -78,6 +79,10 @@ struct GeminiTool {
 struct GeminiResponse {
     candidates: Option<Vec<GeminiCandidate>>,
     usage_metadata: Option<GeminiUsage>,
+    #[serde(default)]
+    model_version: Option<String>,
+    #[serde(default)]
+    response_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -250,6 +255,180 @@ fn from_gemini_response(resp: GeminiResponse, model_id: &str) -> ChatCompletionR
 }
 
 // ---------------------------------------------------------------------------
+// Gemini SSE parser — buffers raw bytes, extracts data: payloads
+// ---------------------------------------------------------------------------
+
+struct GeminiSseParser {
+    buffer: String,
+}
+
+impl GeminiSseParser {
+    fn new() -> Self {
+        Self {
+            buffer: String::new(),
+        }
+    }
+
+    fn feed(&mut self, bytes: &[u8]) -> Vec<String> {
+        self.buffer.push_str(&String::from_utf8_lossy(bytes));
+        let mut payloads = Vec::new();
+        while let Some(pos) = self.buffer.find('\n') {
+            let line = self.buffer[..pos].trim_end_matches('\r').to_string();
+            self.buffer.drain(..pos + 1);
+            if let Some(data) = line.strip_prefix("data: ") {
+                payloads.push(data.to_string());
+            }
+        }
+        payloads
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Gemini → OpenAI stream converter
+// ---------------------------------------------------------------------------
+
+struct GeminiStreamConverter {
+    response_id: String,
+    model: String,
+    created: i64,
+    prompt_tokens: u32,
+    tool_call_index: u32,
+    first_chunk: bool,
+}
+
+impl GeminiStreamConverter {
+    fn new(model_id: &str) -> Self {
+        Self {
+            response_id: format!("gemini-{}", uuid::Uuid::new_v4()),
+            model: model_id.to_string(),
+            created: chrono::Utc::now().timestamp(),
+            prompt_tokens: 0,
+            tool_call_index: 0,
+            first_chunk: true,
+        }
+    }
+
+    /// Convert a single `data:` payload to zero or more OpenAI SSE `Bytes` chunks.
+    fn convert(&mut self, data: &str) -> Vec<Bytes> {
+        let resp: GeminiResponse = match serde_json::from_str(data) {
+            Ok(r) => r,
+            Err(_) => return vec![],
+        };
+
+        // Use responseId / modelVersion from first chunk if available
+        if let Some(id) = &resp.response_id {
+            if self.response_id.starts_with("gemini-") {
+                self.response_id = id.clone();
+            }
+        }
+        if let Some(mv) = &resp.model_version {
+            self.model = mv.clone();
+        }
+
+        // Update usage from every chunk (last wins)
+        if let Some(usage) = &resp.usage_metadata {
+            self.prompt_tokens = usage.prompt_token_count.unwrap_or(self.prompt_tokens);
+        }
+
+        let candidate = resp.candidates.as_ref().and_then(|c| c.first());
+        let parts = candidate
+            .and_then(|c| c.content.as_ref())
+            .map(|c| c.parts.as_slice())
+            .unwrap_or(&[]);
+        let finish_reason = candidate.and_then(|c| c.finish_reason.as_deref());
+
+        let mut out: Vec<Bytes> = Vec::new();
+
+        // Role chunk on first content-bearing event
+        if self.first_chunk && (!parts.is_empty() || finish_reason.is_some()) {
+            self.first_chunk = false;
+            out.push(self.make_chunk(serde_json::json!({"role": "assistant"}), None, None));
+        }
+
+        // Content / tool-call chunks
+        for part in parts {
+            if let Some(text) = &part.text {
+                out.push(
+                    self.make_chunk(serde_json::json!({"content": text}), None, None),
+                );
+            } else if let Some(fc) = &part.function_call {
+                let name = fc.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let args = fc
+                    .get("args")
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "{}".to_string());
+                let idx = self.tool_call_index;
+                self.tool_call_index += 1;
+                out.push(self.make_chunk(
+                    serde_json::json!({
+                        "tool_calls": [{
+                            "index": idx,
+                            "id": format!("call_{}", uuid::Uuid::new_v4()),
+                            "type": "function",
+                            "function": { "name": name, "arguments": args }
+                        }]
+                    }),
+                    None,
+                    None,
+                ));
+            }
+        }
+
+        // Finish chunk + DONE sentinel
+        if let Some(reason) = finish_reason {
+            let mapped = match reason {
+                "STOP" => "stop".to_string(),
+                "MAX_TOKENS" => "length".to_string(),
+                "SAFETY" => "content_filter".to_string(),
+                other => other.to_lowercase(),
+            };
+            let completion_tokens = resp
+                .usage_metadata
+                .as_ref()
+                .and_then(|u| u.candidates_token_count)
+                .unwrap_or(0);
+            let total = resp
+                .usage_metadata
+                .as_ref()
+                .and_then(|u| u.total_token_count)
+                .unwrap_or(self.prompt_tokens + completion_tokens);
+            let usage = Usage {
+                prompt_tokens: self.prompt_tokens,
+                completion_tokens,
+                total_tokens: total,
+                ..Default::default()
+            };
+            out.push(self.make_chunk(serde_json::json!({}), Some(mapped), Some(usage)));
+            out.push(Bytes::from("data: [DONE]\n\n"));
+        }
+
+        out
+    }
+
+    fn make_chunk(
+        &self,
+        delta: serde_json::Value,
+        finish_reason: Option<String>,
+        usage: Option<Usage>,
+    ) -> Bytes {
+        let chunk = ChatCompletionChunk {
+            id: self.response_id.clone(),
+            object: "chat.completion.chunk".into(),
+            created: self.created,
+            model: self.model.clone(),
+            choices: vec![ChunkChoice {
+                index: 0,
+                delta,
+                finish_reason,
+            }],
+            usage,
+        };
+        let json = serde_json::to_string(&chunk).unwrap_or_default();
+        Bytes::from(format!("data: {json}\n\n"))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Provider impl
 // ---------------------------------------------------------------------------
 
@@ -295,9 +474,21 @@ impl Provider for GoogleProvider {
         }
 
         if request.stream {
-            let stream = resp
-                .bytes_stream()
-                .map(|result| result.map_err(PrismStreamError::Reqwest));
+            let model_id_owned = model_id.to_string();
+            let raw_stream = resp.bytes_stream();
+            let stream = async_stream::try_stream! {
+                let mut parser = GeminiSseParser::new();
+                let mut converter = GeminiStreamConverter::new(&model_id_owned);
+                let mut raw = Box::pin(raw_stream);
+                while let Some(chunk_result) = raw.next().await {
+                    let bytes = chunk_result.map_err(PrismStreamError::Reqwest)?;
+                    for data in parser.feed(&bytes) {
+                        for sse_bytes in converter.convert(&data) {
+                            yield sse_bytes;
+                        }
+                    }
+                }
+            };
             Ok(ProviderResponse::Stream(Box::pin(stream)))
         } else {
             let gemini_resp: GeminiResponse = resp.json().await.map_err(|e| {
@@ -487,6 +678,8 @@ mod tests {
                 finish_reason: Some("STOP".into()),
             }]),
             usage_metadata: None,
+            model_version: None,
+            response_id: None,
         };
         let oai = from_gemini_response(resp, "gemini-pro");
         assert_eq!(oai.choices[0].finish_reason.as_deref(), Some("stop"));
@@ -505,6 +698,8 @@ mod tests {
                 finish_reason: Some("MAX_TOKENS".into()),
             }]),
             usage_metadata: None,
+            model_version: None,
+            response_id: None,
         };
         let oai2 = from_gemini_response(resp2, "gemini-pro");
         assert_eq!(oai2.choices[0].finish_reason.as_deref(), Some("length"));
@@ -523,6 +718,8 @@ mod tests {
                 finish_reason: Some("SAFETY".into()),
             }]),
             usage_metadata: None,
+            model_version: None,
+            response_id: None,
         };
         let oai3 = from_gemini_response(resp3, "gemini-pro");
         assert_eq!(
@@ -550,6 +747,8 @@ mod tests {
                 candidates_token_count: Some(5),
                 total_token_count: Some(15),
             }),
+            model_version: None,
+            response_id: None,
         };
 
         let oai = from_gemini_response(resp, "gemini-pro");
@@ -568,5 +767,181 @@ mod tests {
         };
         let (model_id, _) = to_gemini_request(&req, "gemini-1.5-pro");
         assert_eq!(model_id, "gemini-1.5-pro");
+    }
+
+    // -----------------------------------------------------------------------
+    // SSE parser tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_gemini_sse_parser_single_event() {
+        let mut parser = GeminiSseParser::new();
+        let input = b"data: {\"candidates\":[]}\n\n";
+        let payloads = parser.feed(input);
+        assert_eq!(payloads, vec!["{\"candidates\":[]}"]);
+    }
+
+    #[test]
+    fn test_gemini_sse_parser_partial_delivery() {
+        let mut parser = GeminiSseParser::new();
+        let p1 = parser.feed(b"data: {\"cand");
+        let p2 = parser.feed(b"idates\":[]}\n\n");
+        assert!(p1.is_empty());
+        assert_eq!(p2, vec!["{\"candidates\":[]}"]);
+    }
+
+    #[test]
+    fn test_gemini_sse_parser_multiple_events_in_one_chunk() {
+        let mut parser = GeminiSseParser::new();
+        let input = b"data: {\"candidates\":[]}\n\ndata: {\"candidates\":[]}\n\n";
+        let payloads = parser.feed(input);
+        assert_eq!(payloads.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Converter unit tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_gemini_converter_text_delta() {
+        let mut c = GeminiStreamConverter::new("gemini-2.0-flash");
+        let data = r#"{"candidates":[{"content":{"role":"model","parts":[{"text":"Hello"}]},"finishReason":null}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":3,"totalTokenCount":13}}"#;
+        let out = c.convert(data);
+        // role chunk + content chunk
+        assert_eq!(out.len(), 2);
+        let role_s = std::str::from_utf8(&out[0]).unwrap();
+        let role_chunk: ChatCompletionChunk =
+            serde_json::from_str(role_s.strip_prefix("data: ").unwrap().trim()).unwrap();
+        assert_eq!(role_chunk.choices[0].delta["role"], "assistant");
+
+        let content_s = std::str::from_utf8(&out[1]).unwrap();
+        let content_chunk: ChatCompletionChunk =
+            serde_json::from_str(content_s.strip_prefix("data: ").unwrap().trim()).unwrap();
+        assert_eq!(content_chunk.choices[0].delta["content"], "Hello");
+    }
+
+    #[test]
+    fn test_gemini_converter_finish_reason_and_done() {
+        let mut c = GeminiStreamConverter::new("gemini-2.0-flash");
+        let data = r#"{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":10,"totalTokenCount":15}}"#;
+        let out = c.convert(data);
+        // role chunk + finish chunk + [DONE]
+        assert_eq!(out.len(), 3);
+        let finish_s = std::str::from_utf8(&out[1]).unwrap();
+        let finish_chunk: ChatCompletionChunk =
+            serde_json::from_str(finish_s.strip_prefix("data: ").unwrap().trim()).unwrap();
+        assert_eq!(
+            finish_chunk.choices[0].finish_reason.as_deref(),
+            Some("stop")
+        );
+        assert_eq!(out[2], Bytes::from("data: [DONE]\n\n"));
+    }
+
+    #[test]
+    fn test_gemini_converter_usage() {
+        let mut c = GeminiStreamConverter::new("gemini-2.0-flash");
+        let data = r#"{"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":4,"totalTokenCount":12}}"#;
+        let out = c.convert(data);
+        // role + finish + [DONE]
+        let finish_s = std::str::from_utf8(&out[1]).unwrap();
+        let finish_chunk: ChatCompletionChunk =
+            serde_json::from_str(finish_s.strip_prefix("data: ").unwrap().trim()).unwrap();
+        let usage = finish_chunk.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, 8);
+        assert_eq!(usage.completion_tokens, 4);
+        assert_eq!(usage.total_tokens, 12);
+    }
+
+    #[test]
+    fn test_gemini_converter_tool_call() {
+        let mut c = GeminiStreamConverter::new("gemini-2.0-flash");
+        let data = r#"{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"get_weather","args":{"city":"London"}}}]},"finishReason":null}]}"#;
+        let out = c.convert(data);
+        // role + tool_call chunk
+        assert_eq!(out.len(), 2);
+        let tc_s = std::str::from_utf8(&out[1]).unwrap();
+        let tc_chunk: ChatCompletionChunk =
+            serde_json::from_str(tc_s.strip_prefix("data: ").unwrap().trim()).unwrap();
+        let calls = tc_chunk.choices[0].delta["tool_calls"].as_array().unwrap();
+        assert_eq!(calls[0]["function"]["name"], "get_weather");
+        // args should be a JSON string
+        let args_str = calls[0]["function"]["arguments"].as_str().unwrap();
+        let args_val: serde_json::Value = serde_json::from_str(args_str).unwrap();
+        assert_eq!(args_val["city"], "London");
+    }
+
+    #[test]
+    fn test_gemini_converter_finish_reason_mapping() {
+        for (gemini, oai) in &[
+            ("STOP", "stop"),
+            ("MAX_TOKENS", "length"),
+            ("SAFETY", "content_filter"),
+        ] {
+            let mut c = GeminiStreamConverter::new("gemini-2.0-flash");
+            let data = format!(
+                r#"{{"candidates":[{{"content":{{"role":"model","parts":[]}},"finishReason":"{}"}}]}}"#,
+                gemini
+            );
+            let out = c.convert(&data);
+            let finish_s = std::str::from_utf8(&out[out.len() - 2]).unwrap();
+            let finish_chunk: ChatCompletionChunk =
+                serde_json::from_str(finish_s.strip_prefix("data: ").unwrap().trim()).unwrap();
+            assert_eq!(
+                finish_chunk.choices[0].finish_reason.as_deref(),
+                Some(*oai)
+            );
+        }
+    }
+
+    #[test]
+    fn test_gemini_converter_empty_parts_no_panic() {
+        let mut c = GeminiStreamConverter::new("gemini-2.0-flash");
+        // Chunk with content role only, no parts, no finishReason
+        let data = r#"{"candidates":[{"content":{"role":"model","parts":[]}}]}"#;
+        let out = c.convert(data);
+        // No parts, no finishReason → no output
+        assert!(out.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_gemini_end_to_end_with_stream_relay() {
+        use crate::proxy::streaming::StreamRelay;
+        use futures::stream;
+        use std::pin::Pin;
+
+        let raw_events: &[&[u8]] = &[
+            b"data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hello\"}]}}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":2,\"totalTokenCount\":12}}\n\n",
+            b"data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\" world\"}]}}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":4,\"totalTokenCount\":14}}\n\n",
+            b"data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":5,\"totalTokenCount\":15}}\n\n",
+        ];
+
+        let mut parser = GeminiSseParser::new();
+        let mut converter = GeminiStreamConverter::new("gemini-2.0-flash");
+        let mut sse_chunks: Vec<Bytes> = Vec::new();
+        for raw in raw_events {
+            for data in parser.feed(raw) {
+                for sse in converter.convert(&data) {
+                    sse_chunks.push(sse);
+                }
+            }
+        }
+
+        let source: Pin<
+            Box<dyn futures::Stream<Item = std::result::Result<Bytes, PrismStreamError>> + Send>,
+        > = Box::pin(stream::iter(
+            sse_chunks
+                .into_iter()
+                .map(|b| Ok(b) as std::result::Result<Bytes, PrismStreamError>),
+        ));
+        let (_relay, result_rx) = StreamRelay::start(source);
+        let result = result_rx.await.unwrap();
+
+        assert_eq!(result.model, "gemini-2.0-flash");
+        assert_eq!(result.completion_text, "Hello world");
+        let usage = result.usage.unwrap();
+        assert_eq!(usage.prompt_tokens, 10);
+        assert_eq!(usage.completion_tokens, 5);
+        assert_eq!(usage.total_tokens, 15);
+        assert!(result.ttft_ms.is_some());
     }
 }

@@ -680,17 +680,26 @@ pub async fn chat_completions(
                 }
             });
 
-            // Convert relay to SSE response
-            let sse_stream = futures::StreamExt::filter_map(relay, |item| async {
-                match item {
+            // Convert relay to SSE response.
+            // Providers emit pre-framed SSE bytes ("data: {json}\n\n"). Strip the
+            // "data: " prefix before passing to axum's Event::data(), which re-adds
+            // it — otherwise clients receive "data: data: {...}".
+            let sse_stream = futures::StreamExt::flat_map(relay, |item| {
+                let events: Vec<std::result::Result<Event, std::convert::Infallible>> = match item {
                     Ok(bytes) => {
-                        let text = String::from_utf8_lossy(&bytes);
-                        Some(Ok::<_, std::convert::Infallible>(
-                            Event::default().data(text.trim()),
-                        ))
+                        let text = String::from_utf8_lossy(&bytes).into_owned();
+                        text.split("\n\n")
+                            .filter_map(|block| {
+                                block
+                                    .lines()
+                                    .find_map(|line| line.strip_prefix("data: ").map(str::to_string))
+                                    .map(|payload| Ok(Event::default().data(payload)))
+                            })
+                            .collect()
                     }
-                    Err(_) => None,
-                }
+                    Err(_) => vec![],
+                };
+                futures::stream::iter(events)
             });
 
             Ok(Sse::new(sse_stream)

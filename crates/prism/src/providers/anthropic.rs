@@ -440,7 +440,7 @@ fn from_anthropic_response(resp: AnthropicResponse) -> ChatCompletionResponse {
                 tool_call_id: None,
                 extra: Default::default(),
             },
-            finish_reason: resp.stop_reason,
+            finish_reason: resp.stop_reason.as_deref().map(map_stop_reason).map(str::to_string),
         }],
         usage: Some(Usage {
             prompt_tokens: resp.usage.input_tokens,
@@ -686,7 +686,7 @@ mod tests {
             oai_resp.choices[0].message.content,
             Some(serde_json::Value::String("Hello world!".into()))
         );
-        assert_eq!(oai_resp.choices[0].finish_reason, Some("end_turn".into()));
+        assert_eq!(oai_resp.choices[0].finish_reason, Some("stop".into()));
 
         let usage = oai_resp.usage.unwrap();
         assert_eq!(usage.prompt_tokens, 10);
