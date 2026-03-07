@@ -78,8 +78,21 @@ impl Agent {
                             .and_then(|s| serde_json::from_str(s).ok())
                             .unwrap_or(json!({}));
 
-                        eprintln!("[tool] {name}");
+                        let args_preview = {
+                            let s = args.to_string();
+                            if s.len() > 120 { format!("{}…", &s[..120.min(s.len())]) } else { s }
+                        };
+                        eprintln!("[tool] {name}  args={args_preview}");
+
+                        let t0 = std::time::Instant::now();
                         let result = tools::dispatch(name, &args).await;
+                        let elapsed_ms = t0.elapsed().as_millis();
+
+                        let result_preview = {
+                            let trimmed = result.trim_start();
+                            if trimmed.len() > 80 { format!("{}…", &trimmed[..80.min(trimmed.len())]) } else { trimmed.to_string() }
+                        };
+                        eprintln!("[tool] {name}  {}ms  {} bytes  {result_preview}", elapsed_ms, result.len());
 
                         self.messages.push(Message {
                             role: "tool".into(),
