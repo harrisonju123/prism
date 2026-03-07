@@ -234,6 +234,11 @@ pub async fn anthropic_messages(
             futures::stream::iter(events)
         });
 
+        // TODO: Token recording for streaming paths requires buffering final usage from the stream.
+        // See handler.rs for the pattern using tokio::spawn to capture stream completion.
+        // For now, streaming token accounting is deferred to a future task.
+        // TODO: MCP call tracing for this path (requires access to emit_mcp_calls from handler.rs)
+
         return Ok(Sse::new(sse_stream)
             .keep_alive(KeepAlive::default())
             .into_response());
