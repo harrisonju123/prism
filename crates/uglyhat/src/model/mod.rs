@@ -194,6 +194,8 @@ pub struct WorkspaceContext {
     pub blocked_tasks_count: i64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub active_agents: Vec<AgentStatus>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stale_tasks: Vec<TaskSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -292,6 +294,13 @@ pub struct CheckinResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckoutRequest {
     pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckoutResponse {
+    pub session: AgentSession,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_task: Option<TaskSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

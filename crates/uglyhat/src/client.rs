@@ -256,9 +256,18 @@ impl HttpClient {
         &self,
         name: &str,
         summary: &str,
-    ) -> Result<AgentSession, ClientError> {
-        let body = serde_json::json!({ "name": name, "summary": summary });
+        complete_tasks: bool,
+    ) -> Result<CheckoutResponse, ClientError> {
+        let body = serde_json::json!({
+            "name": name,
+            "summary": summary,
+            "complete_tasks": complete_tasks,
+        });
         self.post(&self.ws_url("/agents/checkout"), &body).await
+    }
+
+    pub async fn get_stale_tasks(&self) -> Result<Vec<TaskSummary>, ClientError> {
+        self.get(&self.ws_url("/stale")).await
     }
 
     pub async fn list_agent_statuses(&self) -> Result<Vec<AgentStatus>, ClientError> {

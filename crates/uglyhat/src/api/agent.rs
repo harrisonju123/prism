@@ -22,6 +22,8 @@ pub struct CheckoutReq {
     pub name: String,
     #[serde(default)]
     pub summary: String,
+    #[serde(default)]
+    pub complete_tasks: bool,
 }
 
 pub async fn checkin(
@@ -47,11 +49,11 @@ pub async fn checkout(
     if req.name.is_empty() {
         return Err(Error::BadRequest("name is required".into()));
     }
-    let session = state
+    let resp = state
         .store
-        .checkout_agent(workspace_id, &req.name, &req.summary)
+        .checkout_agent(workspace_id, &req.name, &req.summary, req.complete_tasks)
         .await?;
-    Ok(Json(session))
+    Ok(Json(resp))
 }
 
 pub async fn list_agents(

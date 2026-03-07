@@ -135,8 +135,75 @@ impl SqliteStore {
         workspace_id: Uuid,
         agent_name: &str,
         summary: &str,
-    ) -> Result<AgentSession> {
+        complete_tasks: bool,
+    ) -> Result<CheckoutResponse> {
         let now = now_rfc3339();
+        let mut completed_task: Option<TaskSummary> = None;
+
+        // Auto-complete the agent's current task if requested
+        if complete_tasks {
+            let task_id_row = sqlx::query(
+                "SELECT current_task_id FROM agents WHERE workspace_id = $1 AND name = $2",
+            )
+            .bind(workspace_id.to_string())
+            .bind(agent_name)
+            .fetch_optional(&self.pool)
+            .await?;
+
+            if let Some(row) = task_id_row {
+                let task_id_str: Option<String> = row.try_get("current_task_id")?;
+                if let Some(task_id_str) = task_id_str {
+                    if let Ok(task_id) = task_id_str.parse::<uuid::Uuid>() {
+                        let result = sqlx::query(
+                            "UPDATE tasks SET status = 'done', updated_at = $1
+                             WHERE id = $2 AND status = 'in_progress'",
+                        )
+                        .bind(&now)
+                        .bind(&task_id_str)
+                        .execute(&self.pool)
+                        .await;
+
+                        if let Ok(r) = result {
+                            if r.rows_affected() > 0 {
+                                if let Ok(task) = self.fetch_task_by_id(&task_id_str).await {
+                                    let _ = self
+                                        .log_activity_impl(
+                                            workspace_id,
+                                            agent_name,
+                                            "completed",
+                                            "task",
+                                            task_id,
+                                            &format!(
+                                                "Auto-completed on checkout: {}",
+                                                task.name
+                                            ),
+                                            None,
+                                        )
+                                        .await;
+                                    self.maybe_close_epic(
+                                        workspace_id,
+                                        task.epic_id,
+                                        task.initiative_id,
+                                    )
+                                    .await;
+                                    completed_task = Some(TaskSummary {
+                                        id: task.id,
+                                        name: task.name,
+                                        status: task.status,
+                                        priority: task.priority,
+                                        assignee: task.assignee,
+                                        epic_name: task.epic_name,
+                                        initiative_name: task.initiative_name,
+                                        domain_tags: task.domain_tags,
+                                        created_at: task.created_at,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // Find open session
         let session_row = sqlx::query(
@@ -175,7 +242,8 @@ impl SqliteStore {
         .execute(&self.pool)
         .await?;
 
-        row_to_agent_session(&row)
+        let session = row_to_agent_session(&row)?;
+        Ok(CheckoutResponse { session, completed_task })
     }
 
     pub(crate) async fn list_agent_statuses_impl(&self, workspace_id: Uuid) -> Result<Vec<AgentStatus>> {

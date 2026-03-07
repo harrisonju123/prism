@@ -242,7 +242,8 @@ pub trait Store: Send + Sync {
         workspace_id: Uuid,
         agent_name: &str,
         summary: &str,
-    ) -> Result<AgentSession>;
+        complete_tasks: bool,
+    ) -> Result<CheckoutResponse>;
     async fn list_agents(&self, workspace_id: Uuid) -> Result<Vec<Agent>>;
     async fn list_agent_statuses(&self, workspace_id: Uuid) -> Result<Vec<AgentStatus>>;
     async fn claim_task(&self, workspace_id: Uuid, task_id: Uuid, agent_name: &str) -> Result<Task>;
@@ -281,4 +282,5 @@ pub trait Store: Send + Sync {
     // --- Context ---
     async fn get_workspace_context(&self, workspace_id: Uuid) -> Result<WorkspaceContext>;
     async fn get_next_tasks(&self, workspace_id: Uuid, limit: i64) -> Result<Vec<TaskSummary>>;
+    async fn get_stale_tasks(&self, workspace_id: Uuid) -> Result<Vec<TaskSummary>>;
 }

@@ -193,9 +193,14 @@ enum Commands {
         /// Session summary
         #[arg(long, default_value = "")]
         summary: String,
+        /// Auto-complete the agent's current task on checkout
+        #[arg(long)]
+        complete_tasks: bool,
     },
     /// List agents and their current tasks
     Agents,
+    /// Show stale tasks (in_progress with no active agent session)
+    Stale,
     /// Create a structured handoff
     Handoff {
         /// Task ID
@@ -735,9 +740,16 @@ async fn run_command_local(cmd: Commands, store: &SqliteStore, ws_id: Uuid) -> R
                 .map_err(|e| e.to_string())?;
             print_json(&result);
         }
-        Commands::Checkout { name, summary } => {
+        Commands::Checkout { name, summary, complete_tasks } => {
             let result = store
-                .checkout_agent(ws_id, &name, &summary)
+                .checkout_agent(ws_id, &name, &summary, complete_tasks)
+                .await
+                .map_err(|e| e.to_string())?;
+            print_json(&result);
+        }
+        Commands::Stale => {
+            let result = store
+                .get_stale_tasks(ws_id)
                 .await
                 .map_err(|e| e.to_string())?;
             print_json(&result);
@@ -1022,11 +1034,15 @@ async fn run_command_remote(cmd: Commands, client: &HttpClient) -> Result<(), St
             let result = client.checkin(&name, caps).await.map_err(|e| e.to_string())?;
             print_json(&result);
         }
-        Commands::Checkout { name, summary } => {
+        Commands::Checkout { name, summary, complete_tasks } => {
             let result = client
-                .checkout(&name, &summary)
+                .checkout(&name, &summary, complete_tasks)
                 .await
                 .map_err(|e| e.to_string())?;
+            print_json(&result);
+        }
+        Commands::Stale => {
+            let result = client.get_stale_tasks().await.map_err(|e| e.to_string())?;
             print_json(&result);
         }
         Commands::Handoff {

@@ -450,8 +450,9 @@ impl Store for SqliteStore {
         workspace_id: Uuid,
         agent_name: &str,
         summary: &str,
-    ) -> Result<AgentSession> {
-        self.checkout_agent_impl(workspace_id, agent_name, summary)
+        complete_tasks: bool,
+    ) -> Result<CheckoutResponse> {
+        self.checkout_agent_impl(workspace_id, agent_name, summary, complete_tasks)
             .await
     }
 
@@ -529,5 +530,9 @@ impl Store for SqliteStore {
 
     async fn get_next_tasks(&self, workspace_id: Uuid, limit: i64) -> Result<Vec<TaskSummary>> {
         self.get_next_tasks_impl(workspace_id, limit).await
+    }
+
+    async fn get_stale_tasks(&self, workspace_id: Uuid) -> Result<Vec<TaskSummary>> {
+        self.get_stale_tasks_impl(workspace_id).await
     }
 }

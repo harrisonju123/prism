@@ -35,3 +35,11 @@ pub async fn get_next_tasks(
     let tasks = state.store.get_next_tasks(workspace_id, q.limit).await?;
     Ok(Json(tasks))
 }
+
+pub async fn get_stale_tasks(
+    State(state): State<Arc<AppState>>,
+    Path(workspace_id): Path<Uuid>,
+) -> Result<impl IntoResponse, Error> {
+    let tasks = state.store.get_stale_tasks(workspace_id).await?;
+    Ok(Json(tasks))
+}

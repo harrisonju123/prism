@@ -1347,19 +1347,19 @@ async fn agent_checkout() {
         .checkin_agent_impl(result.workspace.id, "agent-2", vec![])
         .await
         .unwrap();
-    let session = store
-        .checkout_agent_impl(result.workspace.id, "agent-2", "Work complete")
+    let resp = store
+        .checkout_agent_impl(result.workspace.id, "agent-2", "Work complete", false)
         .await
         .unwrap();
-    assert!(session.ended_at.is_some());
-    assert_eq!(session.summary, "Work complete");
+    assert!(resp.session.ended_at.is_some());
+    assert_eq!(resp.session.summary, "Work complete");
 }
 
 #[tokio::test]
 async fn agent_checkout_no_open_session() {
     let (store, result) = setup().await;
     let err = store
-        .checkout_agent_impl(result.workspace.id, "nonexistent", "")
+        .checkout_agent_impl(result.workspace.id, "nonexistent", "", false)
         .await
         .unwrap_err();
     assert!(matches!(err, Error::NotFound(_)));

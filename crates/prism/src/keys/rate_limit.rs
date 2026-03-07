@@ -218,7 +218,7 @@ impl RedisRateLimiter {
     pub async fn check_tpm(&self, key_hash: &str, limit: u32) -> RateLimitResult {
         if let Some(ref conn) = self.conn {
             match self
-                .check_sorted_set(conn, &format!("ratelimit:tpm:{key_hash}"), limit)
+                .check_tpm_sorted_set(conn, &format!("ratelimit:tpm:{key_hash}"), limit)
                 .await
             {
                 Ok(result) => return result,
@@ -228,6 +228,50 @@ impl RedisRateLimiter {
             }
         }
         self.fallback.check_tpm(key_hash, limit)
+    }
+
+    async fn check_tpm_sorted_set(
+        &self,
+        conn: &redis::aio::MultiplexedConnection,
+        key: &str,
+        limit: u32,
+    ) -> Result<RateLimitResult, redis::RedisError> {
+        let mut conn = conn.clone();
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let cutoff_ms = now_ms - (WINDOW_SECS as i64 * 1000);
+
+        // Atomically prune expired entries and fetch all remaining members
+        let mut pipe = redis::pipe();
+        pipe.atomic()
+            .cmd("ZREMRANGEBYSCORE").arg(key).arg("-inf").arg(cutoff_ms).ignore()
+            .cmd("ZRANGE").arg(key).arg(0isize).arg(-1isize);
+
+        let (members,): (Vec<String>,) = pipe.query_async(&mut conn).await?;
+
+        // Member format: "{timestamp_ms}:{token_count}:{random_u32}"
+        // Sum the middle field across all entries in the current window
+        let total_tokens: u32 = members
+            .iter()
+            .filter_map(|m| m.split(':').nth(1)?.parse::<u32>().ok())
+            .sum();
+
+        if total_tokens >= limit {
+            let oldest: Vec<(String, f64)> = redis::cmd("ZRANGE")
+                .arg(key).arg(0isize).arg(0isize).arg("WITHSCORES")
+                .query_async(&mut conn).await?;
+
+            let retry_after = oldest
+                .first()
+                .map(|(_, score)| {
+                    let expires_at_ms = *score as i64 + (WINDOW_SECS as i64 * 1000);
+                    (((expires_at_ms - now_ms).max(0) / 1000) as u64).saturating_add(1)
+                })
+                .unwrap_or(1);
+
+            return Ok(RateLimitResult { allowed: false, retry_after_secs: Some(retry_after) });
+        }
+
+        Ok(RateLimitResult { allowed: true, retry_after_secs: None })
     }
 
     async fn check_sorted_set(
@@ -449,6 +493,34 @@ mod tests {
         rl.record_request("k1").await;
         let res = rl.check_rpm("k1", 5).await;
         assert!(res.allowed);
+    }
+
+    #[test]
+    fn tpm_member_parsing_sums_token_counts() {
+        let members = vec![
+            "1700000000000:400:11111111".to_string(),
+            "1700000001000:300:22222222".to_string(),
+            "1700000002000:200:33333333".to_string(),
+        ];
+        let total: u32 = members
+            .iter()
+            .filter_map(|m| m.split(':').nth(1)?.parse::<u32>().ok())
+            .sum();
+        assert_eq!(total, 900);
+    }
+
+    #[test]
+    fn tpm_member_parsing_ignores_malformed() {
+        let members = vec![
+            "1700000000000:512:99999999".to_string(),
+            "bad_entry".to_string(),
+            "1700000001000:notanumber:1".to_string(),
+        ];
+        let total: u32 = members
+            .iter()
+            .filter_map(|m| m.split(':').nth(1)?.parse::<u32>().ok())
+            .sum();
+        assert_eq!(total, 512);
     }
 
     #[tokio::test]

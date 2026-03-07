@@ -29,6 +29,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             "/workspaces/{workspaceId}/next",
             get(context::get_next_tasks),
         )
+        .route(
+            "/workspaces/{workspaceId}/stale",
+            get(context::get_stale_tasks),
+        )
         // Workspace tasks
         .route(
             "/workspaces/{workspaceId}/tasks",

@@ -23,6 +23,7 @@ impl SqliteStore {
             by_priority,
             blocked_tasks_count,
             active_agents,
+            stale_tasks,
         ) = tokio::try_join!(
             self.get_workspace_impl(workspace_id),
             self.fetch_initiatives_with_counts(&ws_str),
@@ -54,6 +55,7 @@ impl SqliteStore {
             self.fetch_priority_counts(&ws_str),
             self.fetch_blocked_count(&ws_str),
             self.list_agent_statuses_impl(workspace_id),
+            self.get_stale_tasks_impl(workspace_id),
         )?;
 
         Ok(WorkspaceContext {
@@ -66,6 +68,7 @@ impl SqliteStore {
             tasks_by_priority: by_priority,
             blocked_tasks_count,
             active_agents,
+            stale_tasks,
         })
     }
 
@@ -197,6 +200,29 @@ impl SqliteStore {
         .fetch_one(&self.pool)
         .await?;
         Ok(row.try_get("cnt")?)
+    }
+
+    pub(crate) async fn get_stale_tasks_impl(&self, workspace_id: Uuid) -> Result<Vec<TaskSummary>> {
+        self.scan_task_summaries(
+            "SELECT t.id, t.name, t.status, t.priority, t.assignee,
+                    ep.name AS epic_name, i.name AS initiative_name, t.domain_tags, t.created_at
+             FROM tasks t
+             JOIN epics ep ON ep.id = t.epic_id
+             JOIN initiatives i ON i.id = t.initiative_id
+             WHERE t.workspace_id = $1
+               AND t.status = 'in_progress'
+               AND t.assignee != ''
+               AND NOT EXISTS (
+                   SELECT 1 FROM agents a
+                   JOIN agent_sessions s ON s.agent_id = a.id
+                   WHERE a.workspace_id = t.workspace_id
+                     AND a.name = t.assignee
+                     AND s.ended_at IS NULL
+               )
+             ORDER BY t.updated_at ASC",
+            vec![workspace_id.to_string()],
+        )
+        .await
     }
 
     pub(crate) async fn get_next_tasks_impl(

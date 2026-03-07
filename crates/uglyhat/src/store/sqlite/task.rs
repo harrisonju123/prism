@@ -137,13 +137,13 @@ impl SqliteStore {
 
         // Upward propagation: auto-close epic if all tasks are done/cancelled
         if t.status.is_terminal() {
-            self.maybe_close_epic(t.epic_id, t.initiative_id).await;
+            self.maybe_close_epic(t.workspace_id, t.epic_id, t.initiative_id).await;
         }
 
         Ok(t)
     }
 
-    async fn maybe_close_epic(&self, epic_id: Uuid, initiative_id: Uuid) {
+    pub(super) async fn maybe_close_epic(&self, workspace_id: Uuid, epic_id: Uuid, initiative_id: Uuid) {
         let count_result = sqlx::query(
             "SELECT COUNT(*) AS cnt FROM tasks WHERE epic_id = $1 AND status NOT IN ('done', 'cancelled')",
         )
@@ -160,21 +160,38 @@ impl SqliteStore {
             return;
         }
 
-        if let Err(e) = sqlx::query(
+        let result = sqlx::query(
             "UPDATE epics SET status = 'done', updated_at = $1 WHERE id = $2 AND status != 'done'",
         )
         .bind(now_rfc3339())
         .bind(epic_id.to_string())
         .execute(&self.pool)
-        .await
-        {
-            tracing::warn!(epic_id = %epic_id, error = %e, "failed to auto-close epic");
+        .await;
+
+        match result {
+            Ok(r) if r.rows_affected() > 0 => {
+                let _ = self
+                    .log_activity_impl(
+                        workspace_id,
+                        "system",
+                        "auto_closed",
+                        "epic",
+                        epic_id,
+                        "Epic auto-closed: all tasks complete",
+                        None,
+                    )
+                    .await;
+            }
+            Err(e) => {
+                tracing::warn!(epic_id = %epic_id, error = %e, "failed to auto-close epic");
+            }
+            _ => {}
         }
 
-        self.maybe_close_initiative(initiative_id).await;
+        self.maybe_close_initiative(workspace_id, initiative_id).await;
     }
 
-    async fn maybe_close_initiative(&self, initiative_id: Uuid) {
+    async fn maybe_close_initiative(&self, workspace_id: Uuid, initiative_id: Uuid) {
         let count_result = sqlx::query(
             "SELECT COUNT(*) AS cnt FROM epics WHERE initiative_id = $1 AND status NOT IN ('done', 'cancelled')",
         )
@@ -191,15 +208,32 @@ impl SqliteStore {
             return;
         }
 
-        if let Err(e) = sqlx::query(
+        let result = sqlx::query(
             "UPDATE initiatives SET status = 'done', updated_at = $1 WHERE id = $2 AND status != 'done'",
         )
         .bind(now_rfc3339())
         .bind(initiative_id.to_string())
         .execute(&self.pool)
-        .await
-        {
-            tracing::warn!(initiative_id = %initiative_id, error = %e, "failed to auto-close initiative");
+        .await;
+
+        match result {
+            Ok(r) if r.rows_affected() > 0 => {
+                let _ = self
+                    .log_activity_impl(
+                        workspace_id,
+                        "system",
+                        "auto_closed",
+                        "initiative",
+                        initiative_id,
+                        "Initiative auto-closed: all epics complete",
+                        None,
+                    )
+                    .await;
+            }
+            Err(e) => {
+                tracing::warn!(initiative_id = %initiative_id, error = %e, "failed to auto-close initiative");
+            }
+            _ => {}
         }
     }
 
@@ -331,7 +365,19 @@ impl SqliteStore {
 
         tx.commit().await?;
 
-        self.get_task_impl(task_id).await
+        let task = self.get_task_impl(task_id).await?;
+        let _ = self
+            .log_activity_impl(
+                workspace_id,
+                agent_name,
+                "claimed",
+                "task",
+                task_id,
+                &format!("{agent_name} claimed task: {}", task.name),
+                None,
+            )
+            .await;
+        Ok(task)
     }
 
     pub(crate) async fn fetch_task_by_id(&self, id: &str) -> Result<Task> {
