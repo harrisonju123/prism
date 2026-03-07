@@ -404,6 +404,7 @@ impl GeminiStreamConverter {
                 "STOP" => "stop".to_string(),
                 "MAX_TOKENS" => "length".to_string(),
                 "SAFETY" => "content_filter".to_string(),
+                "FUNCTION_CALL" => "tool_calls".to_string(),
                 other => other.to_lowercase(),
             };
             let completion_tokens = resp
