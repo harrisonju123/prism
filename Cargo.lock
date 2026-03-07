@@ -19955,6 +19955,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "uglyhat-panel"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "db",
+ "gpui",
+ "serde",
+ "serde_json",
+ "settings",
+ "ui",
+ "util",
+ "workspace",
+]
+
+[[package]]
 name = "ui"
 version = "0.1.0"
 dependencies = [
@@ -23584,6 +23599,7 @@ dependencies = [
  "tracing",
  "tree-sitter-md",
  "tree-sitter-rust",
+ "uglyhat-panel",
  "ui",
  "ui_prompt",
  "url",
