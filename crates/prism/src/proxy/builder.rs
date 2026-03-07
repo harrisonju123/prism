@@ -340,6 +340,7 @@ impl AppStateBuilder {
             interop_bridge: self.interop_bridge,
             interop_metering: self.interop_metering,
             metrics: self.metrics,
+            session_cost_usd: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
     }
 }

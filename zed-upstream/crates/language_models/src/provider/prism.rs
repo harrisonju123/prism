@@ -62,6 +62,7 @@ pub struct State {
     fetch_models_task: Option<Task<Result<()>>>,
     embedded: Option<Arc<prism::EmbeddedGateway>>,
     sidecar_status: SidecarStatus,
+    session_cost_usd: f64,
 }
 
 impl State {
@@ -118,12 +119,15 @@ impl State {
             };
 
             match do_fetch_models(&http_client, &api_url, &api_key).await {
-                Ok(models) => {
+                Ok(result) => {
                     this.update(cx, |this, cx| {
                         if this.sidecar_status != SidecarStatus::Embedded {
                             this.sidecar_status = SidecarStatus::External;
                         }
-                        this.fetched_models = models;
+                        this.fetched_models = result.model_ids;
+                        if let Some(cost) = result.session_cost_usd {
+                            this.session_cost_usd = cost;
+                        }
                         cx.notify();
                     })
                 }
@@ -131,9 +135,12 @@ impl State {
                     for _ in 0..3 {
                         smol::Timer::after(Duration::from_millis(500)).await;
                         match do_fetch_models(&http_client, &api_url, &api_key).await {
-                            Ok(models) => {
+                            Ok(result) => {
                                 return this.update(cx, |this, cx| {
-                                    this.fetched_models = models;
+                                    this.fetched_models = result.model_ids;
+                                    if let Some(cost) = result.session_cost_usd {
+                                        this.session_cost_usd = cost;
+                                    }
                                     cx.notify();
                                 });
                             }
@@ -244,6 +251,7 @@ impl PrismLanguageModelProvider {
                     fetch_models_task: None,
                     embedded: None,
                     sidecar_status: SidecarStatus::Unknown,
+                    session_cost_usd: 0.0,
                 };
                 state.start_embedded_if_needed(cx);
                 state
@@ -714,11 +722,19 @@ impl Render for ConfigurationView {
         };
 
         let sidecar_status_label = match sidecar_status {
-            SidecarStatus::Embedded => Some(
-                Label::new("PrisM running (embedded)")
-                    .size(LabelSize::Small)
-                    .color(Color::Success),
-            ),
+            SidecarStatus::Embedded => {
+                let cost = state.session_cost_usd;
+                let cost_label = if cost > 0.0 {
+                    format!("PrisM running (embedded) — session cost: ${cost:.6}")
+                } else {
+                    "PrisM running (embedded)".to_string()
+                };
+                Some(
+                    Label::new(cost_label)
+                        .size(LabelSize::Small)
+                        .color(Color::Success),
+                )
+            }
             SidecarStatus::External => Some(
                 Label::new("PrisM running (external)")
                     .size(LabelSize::Small)
@@ -752,11 +768,16 @@ fn is_connection_refused(err: &anyhow::Error) -> bool {
     false
 }
 
+struct FetchModelsResult {
+    model_ids: Vec<String>,
+    session_cost_usd: Option<f64>,
+}
+
 async fn do_fetch_models(
     http_client: &Arc<dyn HttpClient>,
     api_url: &str,
     api_key: &str,
-) -> Result<Vec<String>> {
+) -> Result<FetchModelsResult> {
     let uri = format!("{api_url}/models");
     let request = HttpRequest::builder()
         .method(Method::GET)
@@ -766,6 +787,13 @@ async fn do_fetch_models(
         .body(AsyncBody::default())?;
 
     let mut response = http_client.send(request).await?;
+
+    let session_cost_usd = response
+        .headers()
+        .get("x-prism-session-cost-usd")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<f64>().ok());
+
     let mut body = String::new();
     response.body_mut().read_to_string(&mut body).await?;
 
@@ -779,7 +807,10 @@ async fn do_fetch_models(
     let parsed: PrismModelsResponse =
         serde_json::from_str(&body).context("failed to parse PrisM models response")?;
 
-    Ok(parsed.data.into_iter().map(|m| m.id).collect())
+    Ok(FetchModelsResult {
+        model_ids: parsed.data.into_iter().map(|m| m.id).collect(),
+        session_cost_usd,
+    })
 }
 
 #[derive(serde::Deserialize)]
