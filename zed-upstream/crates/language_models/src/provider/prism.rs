@@ -3,6 +3,8 @@ use futures::{AsyncReadExt, FutureExt, StreamExt, future::BoxFuture};
 use gpui::{AnyView, App, AsyncApp, Context, Entity, SharedString, Task, Window};
 use http_client::{AsyncBody, HttpClient, Method, Request as HttpRequest};
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::Duration;
 use language_model::{
     ApiKeyState, AuthenticateError, EnvVar, IconOrSvg, LanguageModel, LanguageModelCompletionError,
     LanguageModelCompletionEvent, LanguageModelId, LanguageModelName, LanguageModelProvider,
@@ -44,12 +46,32 @@ pub struct PrismLanguageModelProvider {
     state: Entity<State>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum SidecarStatus {
+    Unknown,
+    External,
+    Sidecar,
+    NotFound,
+}
+
 pub struct State {
     api_key_state: ApiKeyState,
     settings: PrismSettings,
     http_client: Arc<dyn HttpClient>,
     fetched_models: Vec<String>,
     fetch_models_task: Option<Task<Result<()>>>,
+    sidecar: Option<smol::process::Child>,
+    sidecar_status: SidecarStatus,
+}
+
+impl Drop for State {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.sidecar.take() {
+            if let Err(err) = child.kill() {
+                log::warn!("Failed to kill PrisM sidecar process: {err}");
+            }
+        }
+    }
 }
 
 impl State {
@@ -82,37 +104,76 @@ impl State {
         let http_client = self.http_client.clone();
         let api_url = self.settings.api_url.clone();
         let api_key = self.api_key_state.key(&api_url);
+        let sidecar_already_running = self.sidecar.is_some();
 
         cx.spawn(async move |this, cx| {
             let Some(api_key) = api_key else {
                 return Ok(());
             };
-            let uri = format!("{api_url}/models");
-            let request = HttpRequest::builder()
-                .method(Method::GET)
-                .uri(uri)
-                .header("Accept", "application/json")
-                .header("Authorization", format!("Bearer {api_key}"))
-                .body(AsyncBody::default())?;
 
-            let mut response = http_client.send(request).await?;
-            let mut body = String::new();
-            response.body_mut().read_to_string(&mut body).await?;
+            match do_fetch_models(&http_client, &api_url, &api_key).await {
+                Ok(models) => {
+                    this.update(cx, |this, cx| {
+                        if this.sidecar.is_none() {
+                            this.sidecar_status = SidecarStatus::External;
+                        }
+                        this.fetched_models = models;
+                        cx.notify();
+                    })
+                }
+                Err(err) if is_connection_refused(&err) => {
+                    if !sidecar_already_running {
+                        let port = port_from_url(&api_url);
+                        match find_prism_binary() {
+                            Some(path) => match spawn_prism_sidecar(&path, &port) {
+                                Ok(child) => {
+                                    this.update(cx, |this, cx| {
+                                        this.sidecar = Some(child);
+                                        this.sidecar_status = SidecarStatus::Sidecar;
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                }
+                                Err(spawn_err) => {
+                                    log::warn!("Failed to spawn PrisM sidecar: {spawn_err}");
+                                    this.update(cx, |this, cx| {
+                                        this.sidecar_status = SidecarStatus::NotFound;
+                                        cx.notify();
+                                    })
+                                    .ok();
+                                    return Ok(());
+                                }
+                            },
+                            None => {
+                                this.update(cx, |this, cx| {
+                                    this.sidecar_status = SidecarStatus::NotFound;
+                                    cx.notify();
+                                })
+                                .ok();
+                                return Ok(());
+                            }
+                        }
+                    }
 
-            anyhow::ensure!(
-                response.status().is_success(),
-                "PrisM /v1/models failed: {} {}",
-                response.status(),
-                body
-            );
+                    // Retry with backoff while the sidecar starts up (up to 5 × 1500ms = 7.5s).
+                    for _ in 0..5 {
+                        smol::Timer::after(Duration::from_millis(1500)).await;
+                        match do_fetch_models(&http_client, &api_url, &api_key).await {
+                            Ok(models) => {
+                                return this.update(cx, |this, cx| {
+                                    this.fetched_models = models;
+                                    cx.notify();
+                                });
+                            }
+                            Err(retry_err) if is_connection_refused(&retry_err) => continue,
+                            Err(retry_err) => return Err(retry_err),
+                        }
+                    }
 
-            let models: PrismModelsResponse = serde_json::from_str(&body)
-                .context("failed to parse PrisM models response")?;
-
-            this.update(cx, |this, cx| {
-                this.fetched_models = models.data.into_iter().map(|m| m.id).collect();
-                cx.notify();
-            })
+                    Ok(())
+                }
+                Err(err) => Err(err),
+            }
         })
     }
 
@@ -158,6 +219,8 @@ impl PrismLanguageModelProvider {
                     http_client,
                     fetched_models: Vec::new(),
                     fetch_models_task: None,
+                    sidecar: None,
+                    sidecar_status: SidecarStatus::Unknown,
                 }
             }
         });
@@ -561,6 +624,7 @@ impl Render for ConfigurationView {
         let state = self.state.read(cx);
         let env_var_set = state.api_key_state.is_from_env_var();
         let env_var_name = state.api_key_state.env_var_name();
+        let sidecar_status = state.sidecar_status.clone();
 
         let api_key_section = if self.should_render_editor(cx) {
             v_flex()
@@ -632,12 +696,132 @@ impl Render for ConfigurationView {
                 .into_any()
         };
 
+        let sidecar_status_label = match sidecar_status {
+            SidecarStatus::Sidecar => Some(
+                Label::new("PrisM running (sidecar)")
+                    .size(LabelSize::Small)
+                    .color(Color::Success),
+            ),
+            SidecarStatus::External => Some(
+                Label::new("PrisM running (external)")
+                    .size(LabelSize::Small)
+                    .color(Color::Success),
+            ),
+            SidecarStatus::NotFound => Some(
+                Label::new("PrisM binary not found — install with: cargo install prism")
+                    .size(LabelSize::Small)
+                    .color(Color::Warning),
+            ),
+            SidecarStatus::Unknown => None,
+        };
+
         if self.load_credentials_task.is_some() {
             div().child(Label::new("Loading credentials…")).into_any()
         } else {
-            v_flex().size_full().child(api_key_section).into_any()
+            v_flex()
+                .size_full()
+                .child(api_key_section)
+                .when_some(sidecar_status_label, |this, label| {
+                    this.child(div().pt(DynamicSpacing::Base04.rems(cx)).child(label))
+                })
+                .into_any()
         }
     }
+}
+
+fn is_connection_refused(err: &anyhow::Error) -> bool {
+    for cause in err.chain() {
+        if let Some(io_err) = cause.downcast_ref::<std::io::Error>() {
+            if io_err.kind() == std::io::ErrorKind::ConnectionRefused {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn port_from_url(api_url: &str) -> String {
+    // Parse port from URLs like "http://localhost:9100/v1".
+    api_url
+        .split(':')
+        .nth(2)
+        .and_then(|s| s.split('/').next())
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(9100)
+        .to_string()
+}
+
+fn find_prism_binary() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("PRISM_BIN") {
+        let path = PathBuf::from(path);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            for name in &["prism", "prism-gateway"] {
+                let candidate = dir.join(name);
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        let candidate = PathBuf::from(home).join(".cargo/bin/prism");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
+fn spawn_prism_sidecar(
+    path: &PathBuf,
+    port: &str,
+) -> Result<smol::process::Child> {
+    smol::process::Command::new(path)
+        .arg("--port")
+        .arg(port)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("Failed to spawn PrisM sidecar process")
+}
+
+async fn do_fetch_models(
+    http_client: &Arc<dyn HttpClient>,
+    api_url: &str,
+    api_key: &str,
+) -> Result<Vec<String>> {
+    let uri = format!("{api_url}/models");
+    let request = HttpRequest::builder()
+        .method(Method::GET)
+        .uri(uri)
+        .header("Accept", "application/json")
+        .header("Authorization", format!("Bearer {api_key}"))
+        .body(AsyncBody::default())?;
+
+    let mut response = http_client.send(request).await?;
+    let mut body = String::new();
+    response.body_mut().read_to_string(&mut body).await?;
+
+    anyhow::ensure!(
+        response.status().is_success(),
+        "PrisM /v1/models failed: {} {}",
+        response.status(),
+        body
+    );
+
+    let parsed: PrismModelsResponse =
+        serde_json::from_str(&body).context("failed to parse PrisM models response")?;
+
+    Ok(parsed.data.into_iter().map(|m| m.id).collect())
 }
 
 #[derive(serde::Deserialize)]
