@@ -23,6 +23,10 @@ pub fn build(state: Arc<AppState>) -> Router {
     // --- Proxy routes (with optional key service extension) ---
     let proxy_routes = Router::new()
         .route("/v1/chat/completions", post(handler::chat_completions))
+        .route(
+            "/v1/completions",
+            post(crate::proxy::completions_handler::text_completions),
+        )
         .route("/v1/embeddings", post(handler::embeddings))
         .route(
             "/v1/batch/chat/completions",
