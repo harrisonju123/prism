@@ -29,9 +29,10 @@ pub fn tool_definitions() -> Vec<Tool> {
             "run_command",
             "Run a shell command; returns stdout/stderr/exit_code",
             json!({ "type": "object", "properties": {
-                "command": { "type": "string" },
-                "args": { "type": "array", "items": { "type": "string" } },
-                "timeout_secs": { "type": "integer" }
+                "command":      { "type": "string" },
+                "args":         { "type": "array", "items": { "type": "string" } },
+                "timeout_secs": { "type": "integer" },
+                "cwd":          { "type": "string", "description": "working directory for the command (default: current dir)" }
             }, "required": ["command"] }),
         ),
         make_tool(
@@ -83,7 +84,8 @@ pub async fn dispatch(name: &str, args: &serde_json::Value) -> String {
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
                 .unwrap_or_default();
             let timeout = args["timeout_secs"].as_u64().unwrap_or(30).min(120);
-            shell::run_command(cmd, &raw_args, timeout).await
+            let cwd = args["cwd"].as_str();
+            shell::run_command(cmd, &raw_args, timeout, cwd).await
         }
         "edit_file" => {
             let path       = args["path"].as_str().unwrap_or("");
