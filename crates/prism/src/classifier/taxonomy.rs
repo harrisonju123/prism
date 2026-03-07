@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 use crate::types::TaskType;
 
 /// Input features extracted from a request for classification.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ClassifierInput {
     pub system_prompt_hash: Option<String>,
     pub has_tools: bool,

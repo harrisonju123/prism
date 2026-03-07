@@ -147,6 +147,24 @@ pub async fn chat_completions(
             "classified request"
         );
 
+        // Embedding tier: if rules confidence is below threshold, try local embedding classifier
+        let emb_cfg = &state.config.routing.embedding_classifier;
+        if classification.confidence < state.config.routing.classifier_confidence_threshold
+            && emb_cfg.enabled
+        {
+            let emb = crate::classifier::EmbeddingClassifier::get().classify(&input);
+            if emb.confidence > classification.confidence {
+                tracing::debug!(
+                    rules_task = %classification.task_type,
+                    rules_confidence = classification.confidence,
+                    emb_task = %emb.task_type,
+                    emb_confidence = emb.confidence,
+                    "embedding classifier improved on rules"
+                );
+                classification = emb;
+            }
+        }
+
         // LLM fallback: if rules confidence is below threshold and LLM classifier is enabled
         let llm_cfg = &state.config.routing.llm_classifier;
         if classification.confidence < state.config.routing.classifier_confidence_threshold
@@ -491,6 +509,12 @@ pub async fn chat_completions(
                 m.record_cost(event_cost);
             }
 
+            // Increment session cost (stored as micro-dollars for lock-free atomic operations)
+            state.session_cost_usd.fetch_add(
+                (event_cost * 1_000_000.0) as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+
             // MCP tracing: extract MCP tool calls from tool_calls_json
             if let Some(ref mcp_tx) = state.mcp_tx {
                 emit_mcp_calls(
@@ -558,6 +582,7 @@ pub async fn chat_completions(
             let agent_framework_owned = agent_framework.clone();
             let tool_calls_json_owned = tool_calls_json.clone();
             let session_id_owned = session_id.clone();
+            let session_cost_usd = state.session_cost_usd.clone();
 
             // Spawn a task to capture the final result after stream completes
             tokio::spawn(async move {
@@ -636,6 +661,12 @@ pub async fn chat_completions(
                     let event_model_str = event.model.clone();
                     let event_cost = event.estimated_cost_usd;
                     let _ = event_tx.send(event).await;
+
+                    // Increment session cost (stored as micro-dollars for lock-free atomic operations)
+                    session_cost_usd.fetch_add(
+                        (event_cost * 1_000_000.0) as u64,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
 
                     // MCP tracing: extract MCP tool calls from tool_calls_json
                     if let Some(ref mcp_tx) = mcp_tx_clone {
@@ -1158,6 +1189,7 @@ pub struct AppState {
     pub interop_bridge: Option<Arc<crate::interop::bridge::DiscoveryBridge>>,
     pub interop_metering: Option<Arc<crate::interop::metering::MeteringStore>>,
     pub metrics: Option<Arc<crate::observability::metrics::MetricsCollector>>,
+    pub session_cost_usd: Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[cfg(test)]

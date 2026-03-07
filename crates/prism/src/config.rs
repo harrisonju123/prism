@@ -138,6 +138,8 @@ pub struct RoutingConfig {
     pub rules: Vec<RoutingRule>,
     #[serde(default)]
     pub llm_classifier: LlmClassifierConfig,
+    #[serde(default)]
+    pub embedding_classifier: EmbeddingClassifierConfig,
 }
 
 impl Default for RoutingConfig {
@@ -149,8 +151,34 @@ impl Default for RoutingConfig {
             fitness: FitnessConfig::default(),
             rules: Vec::new(),
             llm_classifier: LlmClassifierConfig::default(),
+            embedding_classifier: EmbeddingClassifierConfig::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmbeddingClassifierConfig {
+    #[serde(default = "default_embedding_classifier_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_embedding_classifier_dim")]
+    pub dim: usize,
+}
+
+impl Default for EmbeddingClassifierConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            dim: default_embedding_classifier_dim(),
+        }
+    }
+}
+
+fn default_embedding_classifier_enabled() -> bool {
+    true
+}
+
+fn default_embedding_classifier_dim() -> usize {
+    128
 }
 
 #[derive(Debug, Clone, Deserialize)]
