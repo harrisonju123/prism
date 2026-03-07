@@ -891,6 +891,104 @@ mod tests {
         assert_eq!(map_stop_reason("unknown_reason"), "unknown_reason");
     }
 
+    #[test]
+    fn test_tool_use_response_maps_to_tool_calls() {
+        let resp = AnthropicResponse {
+            id: "msg_tool".into(),
+            model: "claude-3-5-sonnet".into(),
+            content: vec![ContentBlock {
+                r#type: "tool_use".into(),
+                text: None,
+                id: Some("toolu_abc123".into()),
+                name: Some("get_weather".into()),
+                input: Some(serde_json::json!({"city": "London"})),
+            }],
+            stop_reason: Some("tool_use".into()),
+            usage: AnthropicUsage {
+                input_tokens: 20,
+                output_tokens: 10,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            },
+        };
+
+        let oai = from_anthropic_response(resp);
+        assert_eq!(oai.choices[0].finish_reason.as_deref(), Some("tool_calls"));
+        // content must be null when tool_calls present
+        assert!(oai.choices[0].message.content.is_none());
+        let tool_calls = oai.choices[0].message.tool_calls.as_ref().unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0]["id"], "toolu_abc123");
+        assert_eq!(tool_calls[0]["type"], "function");
+        assert_eq!(tool_calls[0]["function"]["name"], "get_weather");
+    }
+
+    #[test]
+    fn test_tool_use_input_serialized_to_string() {
+        let resp = AnthropicResponse {
+            id: "msg_args".into(),
+            model: "claude-3-5-sonnet".into(),
+            content: vec![ContentBlock {
+                r#type: "tool_use".into(),
+                text: None,
+                id: Some("toolu_xyz".into()),
+                name: Some("get_weather".into()),
+                input: Some(serde_json::json!({"city": "London"})),
+            }],
+            stop_reason: Some("tool_use".into()),
+            usage: AnthropicUsage {
+                input_tokens: 10,
+                output_tokens: 5,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            },
+        };
+
+        let oai = from_anthropic_response(resp);
+        let tool_calls = oai.choices[0].message.tool_calls.as_ref().unwrap();
+        let args_str = tool_calls[0]["function"]["arguments"].as_str().unwrap();
+        let args_val: serde_json::Value = serde_json::from_str(args_str).unwrap();
+        assert_eq!(args_val["city"], "London");
+    }
+
+    #[test]
+    fn test_mixed_text_and_tool_use_response() {
+        let resp = AnthropicResponse {
+            id: "msg_mixed".into(),
+            model: "claude-3-5-sonnet".into(),
+            content: vec![
+                ContentBlock {
+                    r#type: "text".into(),
+                    text: Some("Let me check the weather.".into()),
+                    id: None,
+                    name: None,
+                    input: None,
+                },
+                ContentBlock {
+                    r#type: "tool_use".into(),
+                    text: None,
+                    id: Some("toolu_weather".into()),
+                    name: Some("get_weather".into()),
+                    input: Some(serde_json::json!({"city": "Paris"})),
+                },
+            ],
+            stop_reason: Some("tool_use".into()),
+            usage: AnthropicUsage {
+                input_tokens: 15,
+                output_tokens: 8,
+                cache_read_input_tokens: 0,
+                cache_creation_input_tokens: 0,
+            },
+        };
+
+        let oai = from_anthropic_response(resp);
+        // When tool_calls present, content should be null per OpenAI spec
+        assert!(oai.choices[0].message.content.is_none());
+        let tool_calls = oai.choices[0].message.tool_calls.as_ref().unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0]["function"]["name"], "get_weather");
+    }
+
     #[tokio::test]
     async fn test_end_to_end_with_stream_relay() {
         use crate::proxy::streaming::StreamRelay;

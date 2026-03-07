@@ -195,19 +195,42 @@ fn to_gemini_request(req: &ChatCompletionRequest, model_id: &str) -> (String, Ge
 }
 
 fn from_gemini_response(resp: GeminiResponse, model_id: &str) -> ChatCompletionResponse {
-    let text = resp
+    let parts = resp
         .candidates
         .as_ref()
         .and_then(|c| c.first())
         .and_then(|c| c.content.as_ref())
-        .map(|c| {
-            c.parts
-                .iter()
-                .filter_map(|p| p.text.as_deref())
-                .collect::<Vec<_>>()
-                .join("")
+        .map(|c| c.parts.as_slice())
+        .unwrap_or(&[]);
+
+    let text: String = parts
+        .iter()
+        .filter_map(|p| p.text.as_deref())
+        .collect::<Vec<_>>()
+        .join("");
+
+    let tool_calls: Vec<serde_json::Value> = parts
+        .iter()
+        .filter_map(|p| p.function_call.as_ref())
+        .map(|fc| {
+            serde_json::json!({
+                "id": format!("call_{}", uuid::Uuid::new_v4()),
+                "type": "function",
+                "function": {
+                    "name": fc.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                    "arguments": fc.get("args")
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "{}".to_string())
+                }
+            })
         })
-        .unwrap_or_default();
+        .collect();
+
+    let (content, tool_calls_opt) = if tool_calls.is_empty() {
+        (Some(serde_json::Value::String(text)), None)
+    } else {
+        (None, Some(tool_calls))
+    };
 
     let finish_reason = resp
         .candidates
@@ -218,6 +241,7 @@ fn from_gemini_response(resp: GeminiResponse, model_id: &str) -> ChatCompletionR
             "STOP" => "stop".to_string(),
             "MAX_TOKENS" => "length".to_string(),
             "SAFETY" => "content_filter".to_string(),
+            "FUNCTION_CALL" => "tool_calls".to_string(),
             other => other.to_lowercase(),
         });
 
@@ -241,9 +265,9 @@ fn from_gemini_response(resp: GeminiResponse, model_id: &str) -> ChatCompletionR
             index: 0,
             message: Message {
                 role: "assistant".into(),
-                content: Some(serde_json::Value::String(text)),
+                content,
                 name: None,
-                tool_calls: None,
+                tool_calls: tool_calls_opt,
                 tool_call_id: None,
                 extra: Default::default(),
             },
@@ -866,6 +890,88 @@ mod tests {
         assert_eq!(calls[0]["function"]["name"], "get_weather");
         // args should be a JSON string
         let args_str = calls[0]["function"]["arguments"].as_str().unwrap();
+        let args_val: serde_json::Value = serde_json::from_str(args_str).unwrap();
+        assert_eq!(args_val["city"], "London");
+    }
+
+    #[test]
+    fn test_function_call_response_maps_to_tool_calls() {
+        let resp = GeminiResponse {
+            candidates: Some(vec![GeminiCandidate {
+                content: Some(GeminiContent {
+                    role: Some("model".into()),
+                    parts: vec![GeminiPart {
+                        text: None,
+                        function_call: Some(serde_json::json!({
+                            "name": "get_weather",
+                            "args": {"city": "London"}
+                        })),
+                        function_response: None,
+                    }],
+                }),
+                finish_reason: Some("FUNCTION_CALL".into()),
+            }]),
+            usage_metadata: None,
+            model_version: None,
+            response_id: None,
+        };
+
+        let oai = from_gemini_response(resp, "gemini-pro");
+        assert_eq!(oai.choices[0].finish_reason.as_deref(), Some("tool_calls"));
+        assert!(oai.choices[0].message.content.is_none());
+        let tool_calls = oai.choices[0].message.tool_calls.as_ref().unwrap();
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0]["type"], "function");
+        assert_eq!(tool_calls[0]["function"]["name"], "get_weather");
+    }
+
+    #[test]
+    fn test_function_call_finish_reason() {
+        let resp = GeminiResponse {
+            candidates: Some(vec![GeminiCandidate {
+                content: Some(GeminiContent {
+                    role: Some("model".into()),
+                    parts: vec![GeminiPart {
+                        text: None,
+                        function_call: Some(serde_json::json!({"name": "fn", "args": {}})),
+                        function_response: None,
+                    }],
+                }),
+                finish_reason: Some("FUNCTION_CALL".into()),
+            }]),
+            usage_metadata: None,
+            model_version: None,
+            response_id: None,
+        };
+        let oai = from_gemini_response(resp, "gemini-pro");
+        assert_eq!(oai.choices[0].finish_reason.as_deref(), Some("tool_calls"));
+    }
+
+    #[test]
+    fn test_function_call_args_serialized_to_string() {
+        let resp = GeminiResponse {
+            candidates: Some(vec![GeminiCandidate {
+                content: Some(GeminiContent {
+                    role: Some("model".into()),
+                    parts: vec![GeminiPart {
+                        text: None,
+                        function_call: Some(serde_json::json!({
+                            "name": "get_weather",
+                            "args": {"city": "London"}
+                        })),
+                        function_response: None,
+                    }],
+                }),
+                finish_reason: Some("FUNCTION_CALL".into()),
+            }]),
+            usage_metadata: None,
+            model_version: None,
+            response_id: None,
+        };
+
+        let oai = from_gemini_response(resp, "gemini-pro");
+        let tool_calls = oai.choices[0].message.tool_calls.as_ref().unwrap();
+        let args_str = tool_calls[0]["function"]["arguments"].as_str().unwrap();
         let args_val: serde_json::Value = serde_json::from_str(args_str).unwrap();
         assert_eq!(args_val["city"], "London");
     }
