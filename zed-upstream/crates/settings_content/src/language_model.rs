@@ -19,6 +19,7 @@ pub struct AllLanguageModelSettingsContent {
     pub open_router: Option<OpenRouterSettingsContent>,
     pub openai: Option<OpenAiSettingsContent>,
     pub openai_compatible: Option<HashMap<Arc<str>, OpenAiCompatibleSettingsContent>>,
+    pub prism: Option<PrismSettingsContent>,
     pub vercel: Option<VercelSettingsContent>,
     pub vercel_ai_gateway: Option<VercelAiGatewaySettingsContent>,
     pub x_ai: Option<XAiSettingsContent>,
@@ -444,6 +445,24 @@ pub enum DataCollection {
     #[default]
     Allow,
     Disallow,
+}
+
+#[with_fallible_options]
+#[derive(Default, Clone, Debug, Serialize, Deserialize, PartialEq, JsonSchema, MergeFrom)]
+pub struct PrismSettingsContent {
+    pub api_url: Option<String>,
+    pub available_models: Option<Vec<PrismAvailableModel>>,
+}
+
+#[with_fallible_options]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
+pub struct PrismAvailableModel {
+    pub name: String,
+    pub display_name: Option<String>,
+    pub max_tokens: u64,
+    pub max_output_tokens: Option<u64>,
+    #[serde(default)]
+    pub capabilities: OpenAiCompatibleModelCapabilities,
 }
 
 fn default_true() -> bool {

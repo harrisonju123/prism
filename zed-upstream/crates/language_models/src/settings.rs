@@ -8,7 +8,8 @@ use crate::provider::{
     deepseek::DeepSeekSettings, google::GoogleSettings, lmstudio::LmStudioSettings,
     mistral::MistralSettings, ollama::OllamaSettings, open_ai::OpenAiSettings,
     open_ai_compatible::OpenAiCompatibleSettings, open_router::OpenRouterSettings,
-    vercel::VercelSettings, vercel_ai_gateway::VercelAiGatewaySettings, x_ai::XAiSettings,
+    prism::PrismSettings, vercel::VercelSettings, vercel_ai_gateway::VercelAiGatewaySettings,
+    x_ai::XAiSettings,
 };
 
 #[derive(Debug, RegisterSetting)]
@@ -23,6 +24,7 @@ pub struct AllLanguageModelSettings {
     pub open_router: OpenRouterSettings,
     pub openai: OpenAiSettings,
     pub openai_compatible: HashMap<Arc<str>, OpenAiCompatibleSettings>,
+    pub prism: PrismSettings,
     pub vercel: VercelSettings,
     pub vercel_ai_gateway: VercelAiGatewaySettings,
     pub x_ai: XAiSettings,
@@ -44,6 +46,7 @@ impl settings::Settings for AllLanguageModelSettings {
         let open_router = language_models.open_router.unwrap();
         let openai = language_models.openai.unwrap();
         let openai_compatible = language_models.openai_compatible.unwrap();
+        let prism = language_models.prism.unwrap();
         let vercel = language_models.vercel.unwrap();
         let vercel_ai_gateway = language_models.vercel_ai_gateway.unwrap();
         let x_ai = language_models.x_ai.unwrap();
@@ -105,6 +108,10 @@ impl settings::Settings for AllLanguageModelSettings {
                     )
                 })
                 .collect(),
+            prism: PrismSettings {
+                api_url: prism.api_url.unwrap(),
+                available_models: prism.available_models.unwrap_or_default(),
+            },
             vercel: VercelSettings {
                 api_url: vercel.api_url.unwrap(),
                 available_models: vercel.available_models.unwrap_or_default(),
