@@ -82,10 +82,16 @@ impl FitnessCache {
         let mut entries = Vec::new();
         for (model_name, info) in MODEL_CATALOG.iter() {
             let tier_idx = (info.tier as usize).saturating_sub(1).min(2);
-            let (quality, latency) = TIER_DEFAULTS[tier_idx];
+            let latency = TIER_DEFAULTS[tier_idx].1;
             let cost = (info.input_cost_per_1m * 0.5 + info.output_cost_per_1m * 0.5) / 1000.0;
 
             for &task_type in TaskType::ALL_ROUTABLE {
+                let task_str = serde_json::to_value(task_type)
+                    .ok()
+                    .and_then(|v| v.as_str().map(str::to_string))
+                    .unwrap_or_default();
+                let quality = info.quality_for_task(&task_str);
+
                 entries.push(FitnessEntry {
                     task_type,
                     model: model_name.to_string(),

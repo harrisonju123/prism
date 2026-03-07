@@ -379,6 +379,31 @@ async fn main() -> anyhow::Result<()> {
         benchmark_tx_option = Some(bench_req_tx);
     }
 
+    // --- Traffic-based fitness refresh (cost + latency from live inference_events) ---
+    if !config.clickhouse.url.is_empty() {
+        let fc = fitness_cache.clone();
+        let ch_url = config.clickhouse.url.clone();
+        let ch_db = config.clickhouse.database.clone();
+        let cancel = cancel.clone();
+        let interval_secs = config.benchmark.traffic_fitness_refresh_interval_secs;
+        let min_samples = config.benchmark.traffic_fitness_min_samples;
+        let lookback_days = config.benchmark.traffic_fitness_lookback_days;
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(interval_secs)) => {
+                        if let Err(e) = routing::traffic::refresh_fitness_from_traffic(
+                            &fc, &ch_url, &ch_db, min_samples, lookback_days,
+                        ).await {
+                            tracing::warn!(error = %e, "traffic fitness refresh failed");
+                        }
+                    }
+                    _ = cancel.cancelled() => break,
+                }
+            }
+        });
+    }
+
     // --- Feedback Adjuster ---
     if config.feedback_adjuster.enabled {
         tracing::info!(

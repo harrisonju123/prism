@@ -321,6 +321,12 @@ pub struct BenchmarkConfig {
     pub fitness_refresh_interval_secs: u64,
     #[serde(default = "default_min_sample_size")]
     pub min_sample_size: u32,
+    #[serde(default = "default_traffic_fitness_refresh_interval_secs")]
+    pub traffic_fitness_refresh_interval_secs: u64,
+    #[serde(default = "default_traffic_fitness_min_samples")]
+    pub traffic_fitness_min_samples: u32,
+    #[serde(default = "default_traffic_fitness_lookback_days")]
+    pub traffic_fitness_lookback_days: u32,
 }
 
 impl Default for BenchmarkConfig {
@@ -333,6 +339,9 @@ impl Default for BenchmarkConfig {
             max_concurrent_benchmarks: default_max_concurrent_benchmarks(),
             fitness_refresh_interval_secs: default_fitness_refresh_interval_secs(),
             min_sample_size: default_min_sample_size(),
+            traffic_fitness_refresh_interval_secs: default_traffic_fitness_refresh_interval_secs(),
+            traffic_fitness_min_samples: default_traffic_fitness_min_samples(),
+            traffic_fitness_lookback_days: default_traffic_fitness_lookback_days(),
         }
     }
 }
@@ -354,6 +363,15 @@ fn default_fitness_refresh_interval_secs() -> u64 {
 }
 fn default_min_sample_size() -> u32 {
     10
+}
+fn default_traffic_fitness_refresh_interval_secs() -> u64 {
+    1800
+}
+fn default_traffic_fitness_min_samples() -> u32 {
+    5
+}
+fn default_traffic_fitness_lookback_days() -> u32 {
+    7
 }
 
 // --- Alerts ---

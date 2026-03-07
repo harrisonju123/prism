@@ -3,6 +3,7 @@ pub mod engine;
 pub mod fitness;
 pub mod policy;
 pub mod session;
+pub mod traffic;
 pub mod types;
 
 pub use engine::resolve;
