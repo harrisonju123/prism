@@ -18,3 +18,9 @@ tracing      = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid         = { workspace = true }
 clap         = { workspace = true }
+globset      = { workspace = true }
+walkdir      = { workspace = true }
+regex        = { workspace = true }
+
+[dev-dependencies]
+tempfile     = { workspace = true }

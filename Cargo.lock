@@ -14001,14 +14001,18 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "globset",
  "prism-client",
  "prism-types",
+ "regex",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "walkdir",
 ]
 
 [[package]]
