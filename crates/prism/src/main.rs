@@ -47,7 +47,6 @@ use crate::mcp::types::McpCall;
 use crate::mcp::writer::McpWriter;
 use crate::observability::writer::{BenchmarkWriter, FeedbackWriter, InferenceWriter};
 use crate::providers::ProviderRegistry;
-use crate::proxy::handler::AppState;
 use crate::types::InferenceEvent;
 
 #[tokio::main]
@@ -570,31 +569,33 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("prometheus metrics enabled at /metrics");
 
     // Build app state
-    let state = Arc::new(AppState {
-        config: config.clone(),
-        providers: registry,
-        event_tx,
-        fitness_cache,
-        routing_policy: routing_policy.clone(),
-        key_service,
-        rate_limiter,
-        budget_tracker,
-        experiment_engine,
-        response_cache,
-        feedback_tx: Some(feedback_tx),
-        benchmark_tx: benchmark_tx_option,
-        mcp_tx: Some(mcp_tx),
-        prompt_store: Some(prompt_store),
-        hot_config: Some(Arc::new(arc_swap::ArcSwap::from_pointee(config.clone()))),
-        hot_routing_policy: Some(Arc::new(arc_swap::ArcSwap::from_pointee(
-            routing_policy.clone(),
-        ))),
-        session_tracker,
-        callback_registry,
-        interop_bridge,
-        interop_metering,
-        metrics: Some(metrics_collector),
-    });
+    let state = Arc::new(
+        crate::proxy::AppStateBuilder::new(config.clone())
+            .with_providers(registry)
+            .with_event_tx(event_tx)
+            .with_fitness_cache(fitness_cache)
+            .with_routing_policy(routing_policy.clone())
+            .with_rate_limiter(rate_limiter)
+            .with_budget_tracker(budget_tracker)
+            .with_session_tracker(session_tracker)
+            .with_key_service_opt(key_service)
+            .with_experiment_engine_opt(experiment_engine)
+            .with_response_cache_opt(response_cache)
+            .with_feedback_tx(feedback_tx)
+            .with_benchmark_tx_opt(benchmark_tx_option)
+            .with_mcp_tx(mcp_tx)
+            .with_prompt_store(prompt_store)
+            .with_hot_config(Arc::new(arc_swap::ArcSwap::from_pointee(config.clone())))
+            .with_hot_routing_policy(Arc::new(arc_swap::ArcSwap::from_pointee(
+                routing_policy.clone(),
+            )))
+            .with_callback_registry_opt(callback_registry)
+            .with_interop_bridge_opt(interop_bridge)
+            .with_interop_metering_opt(interop_metering)
+            .with_metrics(metrics_collector)
+            .build()
+            .expect("AppState construction is infallible after main.rs init"),
+    );
 
     // Build router
     let app = server::router::build(state);
