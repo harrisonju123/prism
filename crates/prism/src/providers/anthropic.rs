@@ -50,6 +50,8 @@ struct AnthropicRequest {
     stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -377,6 +379,25 @@ fn map_stop_reason(reason: &str) -> &str {
 // Format conversion: OpenAI ↔ Anthropic
 // ---------------------------------------------------------------------------
 
+fn openai_to_anthropic_tool_choice(tc: &serde_json::Value) -> serde_json::Value {
+    match tc {
+        serde_json::Value::String(s) => match s.as_str() {
+            "auto" | "none" => serde_json::json!({"type": "auto"}),
+            "required" => serde_json::json!({"type": "any"}),
+            _ => tc.clone(),
+        },
+        _ if tc.get("type").and_then(|t| t.as_str()) == Some("function") => {
+            let name = tc
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("");
+            serde_json::json!({"type": "tool", "name": name})
+        }
+        _ => tc.clone(),
+    }
+}
+
 fn to_anthropic_request(req: &ChatCompletionRequest, model_id: &str) -> AnthropicRequest {
     let mut system = None;
     let mut messages = Vec::new();
@@ -387,6 +408,45 @@ fn to_anthropic_request(req: &ChatCompletionRequest, model_id: &str) -> Anthropi
             if let Some(content) = &msg.content {
                 system = Some(content_to_string(content));
             }
+        } else if msg.role == "tool" {
+            // OpenAI tool result → Anthropic tool_result block in a user turn
+            messages.push(AnthropicMessage {
+                role: "user".into(),
+                content: serde_json::json!([{
+                    "type": "tool_result",
+                    "tool_use_id": msg.tool_call_id.as_deref().unwrap_or(""),
+                    "content": msg.content.as_ref()
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("")
+                }]),
+            });
+        } else if msg.role == "assistant" && msg.tool_calls.is_some() {
+            // OpenAI assistant with tool_calls → Anthropic tool_use blocks
+            let calls = msg.tool_calls.as_ref().unwrap();
+            let mut blocks: Vec<serde_json::Value> = Vec::new();
+            // Prepend text content if present
+            if let Some(ref c) = msg.content {
+                let t = content_to_string(c);
+                if !t.is_empty() {
+                    blocks.push(serde_json::json!({"type": "text", "text": t}));
+                }
+            }
+            for tc in calls {
+                let args_obj: serde_json::Value = tc["function"]["arguments"]
+                    .as_str()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or(serde_json::json!({}));
+                blocks.push(serde_json::json!({
+                    "type": "tool_use",
+                    "id": tc["id"].as_str().unwrap_or(""),
+                    "name": tc["function"]["name"].as_str().unwrap_or(""),
+                    "input": args_obj,
+                }));
+            }
+            messages.push(AnthropicMessage {
+                role: "assistant".into(),
+                content: serde_json::Value::Array(blocks),
+            });
         } else {
             messages.push(AnthropicMessage {
                 role: msg.role.clone(),
@@ -412,6 +472,8 @@ fn to_anthropic_request(req: &ChatCompletionRequest, model_id: &str) -> Anthropi
             .collect()
     });
 
+    let tool_choice = req.tool_choice.as_ref().map(openai_to_anthropic_tool_choice);
+
     AnthropicRequest {
         model: model_id.to_string(),
         max_tokens: req.max_tokens.unwrap_or(4096),
@@ -421,6 +483,7 @@ fn to_anthropic_request(req: &ChatCompletionRequest, model_id: &str) -> Anthropi
         top_p: req.top_p,
         stream: if req.stream { Some(true) } else { None },
         tools,
+        tool_choice,
     }
 }
 
@@ -889,6 +952,97 @@ mod tests {
         assert_eq!(map_stop_reason("stop_sequence"), "stop");
         assert_eq!(map_stop_reason("tool_use"), "tool_calls");
         assert_eq!(map_stop_reason("unknown_reason"), "unknown_reason");
+    }
+
+    #[test]
+    fn test_tool_result_message_conversion() {
+        let req = ChatCompletionRequest {
+            model: "claude-3".into(),
+            messages: vec![
+                Message {
+                    role: "assistant".into(),
+                    content: None,
+                    name: None,
+                    tool_calls: Some(vec![serde_json::json!({
+                        "id": "toolu_abc",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": "{\"city\":\"London\"}"}
+                    })]),
+                    tool_call_id: None,
+                    extra: Default::default(),
+                },
+                Message {
+                    role: "tool".into(),
+                    content: Some(serde_json::Value::String("Sunny, 22°C".into())),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: Some("toolu_abc".into()),
+                    extra: Default::default(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let anthropic_req = to_anthropic_request(&req, "claude-3");
+        // First message: assistant with tool_use block
+        // Second message: user with tool_result block
+        assert_eq!(anthropic_req.messages.len(), 2);
+        assert_eq!(anthropic_req.messages[1].role, "user");
+        let content = &anthropic_req.messages[1].content;
+        let arr = content.as_array().expect("should be array");
+        assert_eq!(arr[0]["type"], "tool_result");
+        assert_eq!(arr[0]["tool_use_id"], "toolu_abc");
+        assert_eq!(arr[0]["content"], "Sunny, 22°C");
+    }
+
+    #[test]
+    fn test_assistant_tool_calls_conversion() {
+        let req = ChatCompletionRequest {
+            model: "claude-3".into(),
+            messages: vec![Message {
+                role: "assistant".into(),
+                content: Some(serde_json::Value::String("Let me check.".into())),
+                name: None,
+                tool_calls: Some(vec![serde_json::json!({
+                    "id": "toolu_xyz",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": "{\"city\":\"Paris\"}"}
+                })]),
+                tool_call_id: None,
+                extra: Default::default(),
+            }],
+            ..Default::default()
+        };
+
+        let anthropic_req = to_anthropic_request(&req, "claude-3");
+        assert_eq!(anthropic_req.messages.len(), 1);
+        assert_eq!(anthropic_req.messages[0].role, "assistant");
+        let blocks = anthropic_req.messages[0]
+            .content
+            .as_array()
+            .expect("should be array");
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], "Let me check.");
+        assert_eq!(blocks[1]["type"], "tool_use");
+        assert_eq!(blocks[1]["id"], "toolu_xyz");
+        assert_eq!(blocks[1]["name"], "get_weather");
+        assert_eq!(blocks[1]["input"]["city"], "Paris");
+    }
+
+    #[test]
+    fn test_tool_choice_conversion() {
+        assert_eq!(
+            openai_to_anthropic_tool_choice(&serde_json::Value::String("auto".into())),
+            serde_json::json!({"type": "auto"})
+        );
+        assert_eq!(
+            openai_to_anthropic_tool_choice(&serde_json::Value::String("required".into())),
+            serde_json::json!({"type": "any"})
+        );
+        let specific = serde_json::json!({"type": "function", "function": {"name": "get_weather"}});
+        let result = openai_to_anthropic_tool_choice(&specific);
+        assert_eq!(result["type"], "tool");
+        assert_eq!(result["name"], "get_weather");
     }
 
     #[test]
