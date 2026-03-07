@@ -12,6 +12,8 @@ mod task;
 mod task_context;
 pub mod types;
 mod workspace;
+#[cfg(test)]
+mod tests;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -25,6 +27,30 @@ use crate::store::{ActivityFilters, BootstrapResult, HandoffFilters, Store, Task
 
 pub struct SqliteStore {
     pub pool: SqlitePool,
+}
+
+#[cfg(test)]
+impl SqliteStore {
+    pub(crate) async fn open_memory() -> Result<Self> {
+        let opts = SqliteConnectOptions::new()
+            .filename(":memory:")
+            .create_if_missing(true)
+            .foreign_keys(true);
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .map_err(|e| crate::error::Error::Internal(format!("open memory sqlite: {e}")))?;
+
+        let schema = include_str!("schema.sql");
+        sqlx::raw_sql(schema)
+            .execute(&pool)
+            .await
+            .map_err(|e| crate::error::Error::Internal(format!("apply schema: {e}")))?;
+
+        Ok(Self { pool })
+    }
 }
 
 impl SqliteStore {
