@@ -266,6 +266,7 @@ impl Agent {
 
                         let t0 = std::time::Instant::now();
                         let result = tools::dispatch(name, &args).await;
+                        let result = truncate_tool_output(name, &result, self.config.max_tool_output);
                         let elapsed_ms = t0.elapsed().as_millis();
 
                         let result_preview = {
@@ -314,5 +315,117 @@ impl Agent {
             Some(_) => Ok(()),
             None => anyhow::bail!("exceeded max_turns ({})", self.config.max_turns),
         }
+    }
+}
+
+fn truncate_tool_output(tool_name: &str, output: &str, limit: usize) -> String {
+    if output.len() <= limit {
+        return output.to_string();
+    }
+
+    // run_command returns {"exit_code":N,"stdout":"...","stderr":"..."}
+    // Truncate the two text fields individually so the JSON stays valid.
+    if tool_name == "run_command" {
+        if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(output) {
+            let field_limit = limit / 2;
+            for field in ["stdout", "stderr"] {
+                if let Some(s) = val.get(field).and_then(|v| v.as_str()) {
+                    if s.len() > field_limit {
+                        let head = floor_char_boundary(s, field_limit * 2 / 3);
+                        let tail_start = s.len() - ceil_char_boundary(s, field_limit / 3);
+                        let omitted = tail_start - head;
+                        let truncated = format!(
+                            "{}\n[... {omitted} chars omitted ...]\n{}",
+                            &s[..head],
+                            &s[tail_start..]
+                        );
+                        val[field] = serde_json::Value::String(truncated);
+                    }
+                }
+            }
+            if let Ok(s) = serde_json::to_string(&val) {
+                return s;
+            }
+        }
+    }
+
+    // Generic head + tail with omission notice.
+    let head = floor_char_boundary(output, limit * 2 / 3);
+    let tail_start = output.len() - ceil_char_boundary(output, limit / 3);
+    let omitted = tail_start - head;
+    format!(
+        "{}\n[... {omitted} chars omitted — use a line range or narrower query to see more ...]\n{}",
+        &output[..head],
+        &output[tail_start..]
+    )
+}
+
+/// Round `pos` down to the nearest UTF-8 char boundary.
+fn floor_char_boundary(s: &str, pos: usize) -> usize {
+    let pos = pos.min(s.len());
+    let mut p = pos;
+    while p > 0 && !s.is_char_boundary(p) {
+        p -= 1;
+    }
+    p
+}
+
+/// Round `len` up so that `s.len() - len` lands on a char boundary.
+fn ceil_char_boundary(s: &str, len: usize) -> usize {
+    let len = len.min(s.len());
+    let start = s.len() - len;
+    let mut p = start;
+    while p < s.len() && !s.is_char_boundary(p) {
+        p += 1;
+    }
+    s.len() - p
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_output_unchanged() {
+        let s = "hello world";
+        assert_eq!(truncate_tool_output("read_file", s, 100), s);
+    }
+
+    #[test]
+    fn long_output_truncated() {
+        let s = "a".repeat(1000);
+        let result = truncate_tool_output("read_file", &s, 100);
+        assert!(result.len() < 1000);
+        assert!(result.contains("chars omitted"));
+        // head and tail still present
+        assert!(result.starts_with('a'));
+        assert!(result.ends_with('a'));
+    }
+
+    #[test]
+    fn run_command_json_stays_valid() {
+        let stdout = "x".repeat(40_000);
+        let stderr = "e".repeat(40_000);
+        let input = serde_json::json!({
+            "exit_code": 0,
+            "stdout": stdout,
+            "stderr": stderr,
+        })
+        .to_string();
+
+        let result = truncate_tool_output("run_command", &input, 32_768);
+        let parsed: serde_json::Value = serde_json::from_str(&result).expect("must be valid JSON");
+        assert_eq!(parsed["exit_code"], 0);
+        assert!(parsed["stdout"].as_str().unwrap().contains("chars omitted"));
+        assert!(parsed["stderr"].as_str().unwrap().contains("chars omitted"));
+    }
+
+    #[test]
+    fn non_ascii_no_panic() {
+        // emoji = 4 bytes each
+        let s = "🦀".repeat(10_000);
+        let result = truncate_tool_output("read_file", &s, 100);
+        // result must be valid UTF-8 (String is always UTF-8)
+        assert!(result.contains("chars omitted"));
     }
 }

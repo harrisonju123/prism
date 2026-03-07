@@ -7,6 +7,7 @@ pub struct Config {
     pub prism_model: String,
     pub max_turns: u32,
     pub max_cost_usd: Option<f64>,
+    pub max_tool_output: usize,
 }
 
 impl Config {
@@ -29,12 +30,18 @@ impl Config {
             .ok()
             .and_then(|s| s.parse().ok());
 
+        let max_tool_output = std::env::var("PRISM_MAX_TOOL_OUTPUT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(32_768);
+
         Ok(Self {
             prism_url,
             prism_api_key,
             prism_model,
             max_turns,
             max_cost_usd,
+            max_tool_output,
         })
     }
 }
