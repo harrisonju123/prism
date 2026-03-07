@@ -47,6 +47,12 @@ impl Agent {
             extra: Default::default(),
         });
 
+        let mut total_prompt: u32 = 0;
+        let mut total_completion: u32 = 0;
+        let mut turns: u32 = 0;
+        let mut model_name = self.config.prism_model.clone();
+        let mut stop_reason: Option<String> = None;
+
         for _turn in 0..self.config.max_turns {
             let req = ChatCompletionRequest {
                 model: self.config.prism_model.clone(),
@@ -58,6 +64,12 @@ impl Agent {
 
             let resp = self.client.chat_completion(&req).await
                 .map_err(|e| anyhow!("chat_completion failed: {e}"))?;
+            turns += 1;
+            model_name = resp.model.clone();
+            if let Some(u) = &resp.usage {
+                total_prompt += u.prompt_tokens;
+                total_completion += u.completion_tokens;
+            }
             let choice = resp.choices.into_iter().next().ok_or_else(|| anyhow!("no choices"))?;
 
             self.messages.push(choice.message.clone());
@@ -67,7 +79,8 @@ impl Agent {
                     if let Some(c) = &choice.message.content {
                         println!("{}", c.as_str().unwrap_or(&c.to_string()));
                     }
-                    return Ok(());
+                    stop_reason = choice.finish_reason.clone();
+                    break;
                 }
                 Some("tool_calls") => {
                     for tc in choice.message.tool_calls.unwrap_or_default() {
@@ -108,6 +121,29 @@ impl Agent {
             }
         }
 
-        anyhow::bail!("exceeded max_turns ({})", self.config.max_turns)
+        let cost_usd = {
+            let (in_rate, out_rate): (f64, f64) = match model_name.as_str() {
+                m if m.contains("claude-opus-4")     => (15.0,  75.0),
+                m if m.contains("claude-sonnet-4")   => (3.0,   15.0),
+                m if m.contains("claude-haiku-4")    => (0.8,    4.0),
+                m if m.contains("gpt-4o-mini")       => (0.15,   0.6),
+                m if m.contains("gpt-4o")            => (2.5,   10.0),
+                m if m.contains("gemini-1.5-pro")    => (1.25,   5.0),
+                m if m.contains("gemini-1.5-flash")  => (0.075,  0.3),
+                _                                    => (0.0,    0.0),
+            };
+            (total_prompt as f64 * in_rate + total_completion as f64 * out_rate) / 1_000_000.0
+        };
+        let cost_str = if cost_usd > 0.0 { format!("  ~${:.4}", cost_usd) } else { String::new() };
+        eprintln!(
+            "[session] {}  {} turns  {} in / {} out tokens{}",
+            model_name, turns, total_prompt, total_completion, cost_str
+        );
+
+        if stop_reason.is_some() {
+            Ok(())
+        } else {
+            anyhow::bail!("exceeded max_turns ({})", self.config.max_turns)
+        }
     }
 }
