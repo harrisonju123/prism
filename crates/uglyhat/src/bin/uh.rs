@@ -218,6 +218,24 @@ enum Commands {
         #[arg(long)]
         next_steps: Option<String>,
     },
+    /// Manage connection to a remote uglyhat server.
+    #[command(subcommand)]
+    Remote(RemoteCommand),
+}
+
+#[derive(Subcommand)]
+enum RemoteCommand {
+    /// Configure this workspace to use a remote server.
+    Set {
+        /// Base URL of the uglyhat server (e.g. http://my-server:3001)
+        url: String,
+        /// API key for authentication
+        api_key: String,
+    },
+    /// Revert to local SQLite mode (clears base_url in .uglyhat.json).
+    Unset,
+    /// Show current connection mode and settings.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -370,8 +388,20 @@ fn main() {
 async fn run(cli: Cli) -> Result<(), String> {
     match cli.command {
         Commands::Init { name } => cmd_init(&name).await,
+        Commands::Remote(remote_cmd) => cmd_remote(remote_cmd).await,
         other => {
-            let (cfg, config_dir) = load_config()?;
+            let (mut cfg, config_dir) = load_config()?;
+            // Env var overrides win over config file
+            if let Ok(url) = std::env::var("UGLYHAT_SERVER_URL") {
+                if !url.is_empty() {
+                    cfg.base_url = url;
+                }
+            }
+            if let Ok(key) = std::env::var("UGLYHAT_API_KEY") {
+                if !key.is_empty() {
+                    cfg.api_key = key;
+                }
+            }
             let ws_id: Uuid = cfg
                 .workspace_id
                 .parse()
@@ -393,7 +423,7 @@ async fn run(cli: Cli) -> Result<(), String> {
 
 async fn run_command_local(cmd: Commands, store: &SqliteStore, ws_id: Uuid) -> Result<(), String> {
     match cmd {
-        Commands::Init { .. } => unreachable!(),
+        Commands::Init { .. } | Commands::Remote(_) => unreachable!(),
         Commands::Context => {
             let result = store
                 .get_workspace_context(ws_id)
@@ -784,7 +814,7 @@ async fn run_command_local(cmd: Commands, store: &SqliteStore, ws_id: Uuid) -> R
 
 async fn run_command_remote(cmd: Commands, client: &HttpClient) -> Result<(), String> {
     match cmd {
-        Commands::Init { .. } => unreachable!(),
+        Commands::Init { .. } | Commands::Remote(_) => unreachable!(),
         Commands::Context => {
             let result = client.get_context().await.map_err(|e| e.to_string())?;
             print_json(&result);
@@ -1069,6 +1099,86 @@ async fn run_command_remote(cmd: Commands, client: &HttpClient) -> Result<(), St
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Remote command
+// ---------------------------------------------------------------------------
+
+async fn cmd_remote(remote_cmd: RemoteCommand) -> Result<(), String> {
+    match remote_cmd {
+        RemoteCommand::Set { url, api_key } => {
+            let (mut cfg, config_dir) = load_config()?;
+            cfg.base_url = url.clone();
+            cfg.api_key = api_key.clone();
+            save_config(&config_dir, &cfg)?;
+
+            let ws_id: Uuid = cfg
+                .workspace_id
+                .parse()
+                .map_err(|e| format!("invalid workspace_id: {e}"))?;
+            let client = HttpClient::new(url.clone(), api_key, ws_id);
+            match client.get_context().await {
+                Ok(_) => {
+                    print_json(&serde_json::json!({"ok": true, "mode": "remote", "url": url}));
+                }
+                Err(e) => {
+                    eprintln!("Warning: connectivity test failed: {e}");
+                    print_json(&serde_json::json!({
+                        "ok": true,
+                        "mode": "remote",
+                        "url": url,
+                        "warning": e.to_string(),
+                    }));
+                }
+            }
+            Ok(())
+        }
+        RemoteCommand::Unset => {
+            let (mut cfg, config_dir) = load_config()?;
+            cfg.base_url = String::new();
+            save_config(&config_dir, &cfg)?;
+            print_json(&serde_json::json!({"mode": "local"}));
+            Ok(())
+        }
+        RemoteCommand::Status => {
+            let (cfg_opt, dir_opt) = load_config().ok().unzip();
+            let cfg = cfg_opt.unwrap_or_else(|| Config {
+                workspace_id: String::new(),
+                api_key: String::new(),
+                base_url: String::new(),
+                mode: String::new(),
+                db_path: String::new(),
+            });
+            let config_file = dir_opt
+                .map(|d| d.join(CONFIG_FILE).display().to_string())
+                .unwrap_or_default();
+
+            let env_url = std::env::var("UGLYHAT_SERVER_URL")
+                .ok()
+                .filter(|s| !s.is_empty());
+            let effective_url = env_url
+                .as_deref()
+                .unwrap_or(&cfg.base_url)
+                .to_string();
+            let mode = if effective_url.is_empty() { "local" } else { "remote" };
+            let key_prefix = if cfg.api_key.len() >= 8 {
+                format!("{}…", &cfg.api_key[..8])
+            } else if cfg.api_key.is_empty() {
+                "(none)".to_string()
+            } else {
+                "***".to_string()
+            };
+            print_json(&serde_json::json!({
+                "mode": mode,
+                "url": effective_url,
+                "api_key_prefix": key_prefix,
+                "env_override": std::env::var("UGLYHAT_SERVER_URL").is_ok(),
+                "config_file": config_file,
+            }));
+            Ok(())
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
