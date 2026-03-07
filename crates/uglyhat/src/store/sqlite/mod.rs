@@ -9,6 +9,7 @@ mod handoff;
 mod initiative;
 mod note;
 mod task;
+mod migrate;
 mod task_context;
 pub mod types;
 mod workspace;
@@ -43,11 +44,7 @@ impl SqliteStore {
             .await
             .map_err(|e| crate::error::Error::Internal(format!("open memory sqlite: {e}")))?;
 
-        let schema = include_str!("schema.sql");
-        sqlx::raw_sql(schema)
-            .execute(&pool)
-            .await
-            .map_err(|e| crate::error::Error::Internal(format!("apply schema: {e}")))?;
+        migrate::run_migrations(&pool).await?;
 
         Ok(Self { pool })
     }
@@ -67,18 +64,7 @@ impl SqliteStore {
             .await
             .map_err(|e| crate::error::Error::Internal(format!("open sqlite: {e}")))?;
 
-        let schema = include_str!("schema.sql");
-        sqlx::raw_sql(schema)
-            .execute(&pool)
-            .await
-            .map_err(|e| crate::error::Error::Internal(format!("apply schema: {e}")))?;
-
-        // Best-effort migration for current_task_id column
-        let _ = sqlx::query(
-            "ALTER TABLE agents ADD COLUMN current_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL"
-        )
-        .execute(&pool)
-        .await;
+        migrate::run_migrations(&pool).await?;
 
         Ok(Self { pool })
     }
