@@ -73,6 +73,13 @@ struct ContentBlock {
     r#type: String,
     #[serde(default)]
     text: Option<String>,
+    // tool_use fields
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    input: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -425,6 +432,30 @@ fn from_anthropic_response(resp: AnthropicResponse) -> ChatCompletionResponse {
         .collect::<Vec<_>>()
         .join("");
 
+    let tool_calls: Vec<serde_json::Value> = resp
+        .content
+        .iter()
+        .filter(|b| b.r#type == "tool_use")
+        .map(|b| {
+            serde_json::json!({
+                "id": b.id.as_deref().unwrap_or(""),
+                "type": "function",
+                "function": {
+                    "name": b.name.as_deref().unwrap_or(""),
+                    "arguments": b.input.as_ref()
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "{}".to_string())
+                }
+            })
+        })
+        .collect();
+
+    let (content, tool_calls_opt) = if tool_calls.is_empty() {
+        (Some(serde_json::Value::String(text)), None)
+    } else {
+        (None, Some(tool_calls))
+    };
+
     ChatCompletionResponse {
         id: resp.id,
         object: "chat.completion".into(),
@@ -434,9 +465,9 @@ fn from_anthropic_response(resp: AnthropicResponse) -> ChatCompletionResponse {
             index: 0,
             message: Message {
                 role: "assistant".into(),
-                content: Some(serde_json::Value::String(text)),
+                content,
                 name: None,
-                tool_calls: None,
+                tool_calls: tool_calls_opt,
                 tool_call_id: None,
                 extra: Default::default(),
             },
@@ -663,10 +694,16 @@ mod tests {
                 ContentBlock {
                     r#type: "text".into(),
                     text: Some("Hello ".into()),
+                    id: None,
+                    name: None,
+                    input: None,
                 },
                 ContentBlock {
                     r#type: "text".into(),
                     text: Some("world!".into()),
+                    id: None,
+                    name: None,
+                    input: None,
                 },
             ],
             stop_reason: Some("end_turn".into()),
