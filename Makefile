@@ -1,7 +1,7 @@
 .PHONY: build run check test lint dev fmt ci clean \
         run-prism run-uh install-uh \
         docker-up docker-down docker-build docker-logs \
-        health models \
+        health models uh-health \
         dashboard-install dashboard-build dashboard-dev
 
 # Development
@@ -57,6 +57,9 @@ health:
 
 models:
 	curl -s http://localhost:9100/v1/models | jq .
+
+uh-health:
+	curl -s http://localhost:3001/health | jq .
 
 # Dashboard
 dashboard-install:

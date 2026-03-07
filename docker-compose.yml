@@ -33,7 +33,9 @@ services:
       retries: 5
 
   prism:
-    build: .
+    build:
+      context: .
+      target: prism
     ports:
       - "9100:9100"
     depends_on:
@@ -51,6 +53,25 @@ services:
     volumes:
       - ./config/prism.toml:/app/prism.toml:ro
 
+  uglyhat:
+    build:
+      context: .
+      target: uglyhat
+    ports:
+      - "3001:3001"
+    environment:
+      RUST_LOG: uglyhat=info
+      UGLYHAT_DB_PATH: /data/uglyhat.db
+      UGLYHAT_ADDR: 0.0.0.0:3001
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://localhost:3001/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - uglyhat_data:/data
+
 volumes:
   clickhouse_data:
   postgres_data:
+  uglyhat_data:

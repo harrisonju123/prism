@@ -16,10 +16,10 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 
-RUN cargo build --release -p prism
+RUN cargo build --release -p prism -p uglyhat
 
-# --- Runtime stage ---
-FROM alpine:3.21
+# --- Prism runtime stage ---
+FROM alpine:3.21 AS prism
 
 RUN apk add --no-cache ca-certificates
 
@@ -29,3 +29,15 @@ COPY --from=dashboard /dashboard/dist /usr/share/prism/dashboard
 EXPOSE 9100
 
 CMD ["prism"]
+
+# --- uglyhat runtime stage ---
+FROM alpine:3.21
+
+RUN apk add --no-cache ca-certificates wget
+
+COPY --from=builder /app/target/release/uglyhat /usr/local/bin/uglyhat
+COPY --from=builder /app/target/release/uh /usr/local/bin/uh
+
+EXPOSE 3001
+
+CMD ["uglyhat"]
