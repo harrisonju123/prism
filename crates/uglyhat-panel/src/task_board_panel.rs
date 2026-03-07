@@ -1,4 +1,4 @@
-use crate::types::{StatusCount, TaskSummary, WorkspaceContext};
+use crate::types::{AgentStatus, StatusCount, TaskSummary, WorkspaceContext};
 use anyhow::Result;
 use db::kvp::KEY_VALUE_STORE;
 use gpui::{
@@ -38,6 +38,8 @@ pub struct TaskBoardPanel {
     next_tasks: Vec<TaskSummary>,
     is_loading: bool,
     error: Option<String>,
+    agents_expanded: bool,
+    stale_expanded: bool,
     active_expanded: bool,
     next_expanded: bool,
     refresh_task: Option<Task<()>>,
@@ -72,6 +74,8 @@ impl TaskBoardPanel {
                 next_tasks: Vec::new(),
                 is_loading: false,
                 error: None,
+                agents_expanded: true,
+                stale_expanded: true,
                 active_expanded: true,
                 next_expanded: true,
                 refresh_task: None,
@@ -227,6 +231,44 @@ impl TaskBoardPanel {
             })
     }
 
+    fn render_agent_row(agent: &AgentStatus, cx: &App) -> impl IntoElement {
+        let dot_color = if agent.session_open {
+            Color::Success
+        } else {
+            Color::Muted
+        };
+        let task_label = agent
+            .current_task_name
+            .clone()
+            .unwrap_or_else(|| "idle".to_owned());
+        let task_color = if agent.current_task_name.is_some() {
+            Color::Default
+        } else {
+            Color::Muted
+        };
+
+        h_flex()
+            .w_full()
+            .px_2()
+            .py_1()
+            .gap_2()
+            .hover(|style| style.bg(cx.theme().colors().element_hover))
+            .child(
+                div()
+                    .w(px(6.))
+                    .h(px(6.))
+                    .rounded_full()
+                    .flex_none()
+                    .bg(dot_color.color(cx)),
+            )
+            .child(Label::new(agent.name.clone()).size(LabelSize::Small))
+            .child(
+                Label::new(task_label)
+                    .size(LabelSize::Small)
+                    .color(task_color),
+            )
+    }
+
     fn render_summary_footer(status_counts: &[StatusCount]) -> impl IntoElement {
         let parts: Vec<String> = status_counts
             .iter()
@@ -353,10 +395,83 @@ impl Render for TaskBoardPanel {
                 let active_tasks = ctx.active_tasks.clone();
                 let next_tasks = self.next_tasks.clone();
                 let status_counts = ctx.tasks_by_status.clone();
+                let agents = ctx.active_agents.clone();
+                let stale_tasks = ctx.stale_tasks.clone();
+                let agents_expanded = self.agents_expanded;
+                let stale_expanded = self.stale_expanded;
                 let active_expanded = self.active_expanded;
                 let next_expanded = self.next_expanded;
 
                 container
+                    // Agents section
+                    .child(Self::render_section_header(
+                        "section-agents",
+                        "Agents",
+                        agents_expanded,
+                        cx.listener(|this, _event, _window, cx| {
+                            this.agents_expanded = !this.agents_expanded;
+                            cx.notify();
+                        }),
+                        cx,
+                    ))
+                    .when(agents_expanded, |this| {
+                        if agents.is_empty() {
+                            this.child(
+                                v_flex().px_2().py_1().child(
+                                    Label::new("No agents registered.")
+                                        .size(LabelSize::Small)
+                                        .color(Color::Muted),
+                                ),
+                            )
+                        } else {
+                            this.children(agents.iter().map(|a| Self::render_agent_row(a, cx)))
+                        }
+                    })
+                    // Stale Tasks section (hidden when empty)
+                    .when(!stale_tasks.is_empty(), |this| {
+                        this.child(Self::render_section_header(
+                            "section-stale",
+                            "Stale Tasks",
+                            stale_expanded,
+                            cx.listener(|this, _event, _window, cx| {
+                                this.stale_expanded = !this.stale_expanded;
+                                cx.notify();
+                            }),
+                            cx,
+                        ))
+                        .when(stale_expanded, |this| {
+                            this.children(stale_tasks.iter().map(|task| {
+                                let assignee = task
+                                    .assignee
+                                    .clone()
+                                    .unwrap_or_else(|| "unassigned".to_owned());
+                                h_flex()
+                                    .w_full()
+                                    .px_2()
+                                    .py_1()
+                                    .gap_2()
+                                    .hover(|style| style.bg(cx.theme().colors().element_hover))
+                                    .child(
+                                        div()
+                                            .w(px(6.))
+                                            .h(px(6.))
+                                            .rounded_full()
+                                            .flex_none()
+                                            .bg(Color::Warning.color(cx)),
+                                    )
+                                    .child(
+                                        Label::new(task.name.clone())
+                                            .size(LabelSize::Small)
+                                            .truncate(),
+                                    )
+                                    .child(
+                                        Label::new(assignee)
+                                            .size(LabelSize::Small)
+                                            .color(Color::Muted),
+                                    )
+                            }))
+                        })
+                    })
                     // In Progress section
                     .child(Self::render_section_header(
                         "section-active",
