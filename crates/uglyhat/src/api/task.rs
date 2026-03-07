@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use axum::Extension;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -9,6 +10,7 @@ use uuid::Uuid;
 
 use crate::api::AppState;
 use crate::error::Error;
+use crate::middleware::auth::WorkspaceId;
 use crate::model::{TaskPriority, TaskStatus};
 use crate::store::TaskFilters;
 
@@ -164,4 +166,22 @@ pub async fn get_task_context(
 ) -> Result<impl IntoResponse, Error> {
     let ctx = state.store.get_task_context(id).await?;
     Ok(Json(ctx))
+}
+
+#[derive(Deserialize)]
+pub struct ClaimTaskReq {
+    pub agent_name: String,
+}
+
+pub async fn claim_task(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<Uuid>,
+    Extension(WorkspaceId(ws_id)): Extension<WorkspaceId>,
+    Json(req): Json<ClaimTaskReq>,
+) -> Result<impl IntoResponse, Error> {
+    if req.agent_name.is_empty() {
+        return Err(Error::BadRequest("agent_name is required".into()));
+    }
+    let task = state.store.claim_task(ws_id, id, &req.agent_name).await?;
+    Ok(Json(task))
 }

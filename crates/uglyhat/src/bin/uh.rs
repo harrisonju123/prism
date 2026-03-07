@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use uglyhat::client::HttpClient;
 use uglyhat::middleware::auth::hash_key;
 use uglyhat::model::*;
 use uglyhat::store::sqlite::SqliteStore;
@@ -366,20 +367,26 @@ async fn run(cli: Cli) -> Result<(), String> {
         Commands::Init { name } => cmd_init(&name).await,
         other => {
             let (cfg, config_dir) = load_config()?;
-            let db_path = resolve_db_path(&cfg, &config_dir);
-            let store = SqliteStore::open(db_path.to_str().unwrap())
-                .await
-                .map_err(|e| format!("opening database: {e}"))?;
             let ws_id: Uuid = cfg
                 .workspace_id
                 .parse()
                 .map_err(|e| format!("invalid workspace_id: {e}"))?;
-            run_command(other, &store, ws_id).await
+            if !cfg.base_url.is_empty() {
+                let client =
+                    HttpClient::new(cfg.base_url.clone(), cfg.api_key.clone(), ws_id);
+                run_command_remote(other, &client).await
+            } else {
+                let db_path = resolve_db_path(&cfg, &config_dir);
+                let store = SqliteStore::open(db_path.to_str().unwrap())
+                    .await
+                    .map_err(|e| format!("opening database: {e}"))?;
+                run_command_local(other, &store, ws_id).await
+            }
         }
     }
 }
 
-async fn run_command(cmd: Commands, store: &SqliteStore, ws_id: Uuid) -> Result<(), String> {
+async fn run_command_local(cmd: Commands, store: &SqliteStore, ws_id: Uuid) -> Result<(), String> {
     match cmd {
         Commands::Init { .. } => unreachable!(),
         Commands::Context => {
@@ -753,6 +760,295 @@ async fn run_command(cmd: Commands, store: &SqliteStore, ws_id: Uuid) -> Result<
                 .create_handoff(tid, &agent, &summary, f, b, n, None)
                 .await
                 .map_err(|e| e.to_string())?;
+            print_json(&result);
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Remote dispatch (HTTP client mode)
+// ---------------------------------------------------------------------------
+
+async fn run_command_remote(cmd: Commands, client: &HttpClient) -> Result<(), String> {
+    match cmd {
+        Commands::Init { .. } => unreachable!(),
+        Commands::Context => {
+            let result = client.get_context().await.map_err(|e| e.to_string())?;
+            print_json(&result);
+        }
+        Commands::Next { limit } => {
+            let result = client.get_next_tasks(limit).await.map_err(|e| e.to_string())?;
+            print_json(&result);
+        }
+        Commands::Report {
+            title,
+            desc,
+            severity,
+            source,
+            tags,
+        } => {
+            let domain_tags: Vec<String> = split_csv(tags);
+            let body = serde_json::json!({
+                "title": title,
+                "description": desc.unwrap_or_default(),
+                "severity": severity.unwrap_or_default(),
+                "source": source.unwrap_or_default(),
+                "domain_tags": domain_tags,
+            });
+            let result = client.report_issue(&body).await.map_err(|e| e.to_string())?;
+            print_json(&result);
+        }
+        Commands::Initiative { action } => match action {
+            InitiativeAction::Create { name, desc } => {
+                let result = client
+                    .create_initiative(&name, desc.as_deref().unwrap_or(""))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&result);
+            }
+            InitiativeAction::List => {
+                let result = client.list_initiatives().await.map_err(|e| e.to_string())?;
+                print_json(&result);
+            }
+        },
+        Commands::Epic { action } => match action {
+            EpicAction::Create {
+                name,
+                initiative,
+                desc,
+            } => {
+                let init_id: Uuid = initiative
+                    .parse()
+                    .map_err(|e| format!("invalid initiative ID: {e}"))?;
+                let result = client
+                    .create_epic(init_id, &name, desc.as_deref().unwrap_or(""))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&result);
+            }
+            EpicAction::List { initiative } => {
+                let init_id: Uuid = initiative
+                    .parse()
+                    .map_err(|e| format!("invalid initiative ID: {e}"))?;
+                let result = client.list_epics(init_id).await.map_err(|e| e.to_string())?;
+                print_json(&result);
+            }
+        },
+        Commands::Task { action } => match action {
+            TaskAction::Get { id } => {
+                let task_id: Uuid = id.parse().map_err(|e| format!("invalid task ID: {e}"))?;
+                let result = client.get_task(task_id).await.map_err(|e| e.to_string())?;
+                print_json(&result);
+            }
+            TaskAction::Update {
+                id,
+                status,
+                assignee,
+                priority,
+                name,
+                desc,
+            } => {
+                let task_id: Uuid = id.parse().map_err(|e| format!("invalid task ID: {e}"))?;
+                let current = client.get_task(task_id).await.map_err(|e| e.to_string())?;
+                let new_name = name.as_deref().unwrap_or(&current.name);
+                let new_desc = desc.as_deref().unwrap_or(&current.description);
+                let new_assignee = assignee.as_deref().unwrap_or(&current.assignee);
+                let new_status = if let Some(ref s) = status {
+                    parse_status(s)?
+                } else {
+                    current.status.clone()
+                };
+                let new_priority = if let Some(ref p) = priority {
+                    parse_priority(p)?
+                } else {
+                    current.priority.clone()
+                };
+                let body = serde_json::json!({
+                    "name": new_name,
+                    "description": new_desc,
+                    "status": new_status,
+                    "priority": new_priority,
+                    "assignee": new_assignee,
+                    "domain_tags": current.domain_tags,
+                    "metadata": current.metadata,
+                });
+                let result = client
+                    .update_task(task_id, &body)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&result);
+            }
+            TaskAction::Create {
+                name,
+                epic,
+                desc,
+                priority,
+                assignee,
+                tags,
+                status,
+            } => {
+                let epic_id: Uuid = epic.parse().map_err(|e| format!("invalid epic ID: {e}"))?;
+                let domain_tags = split_csv(tags);
+                let result = client
+                    .create_task(
+                        epic_id,
+                        &name,
+                        desc.as_deref().unwrap_or(""),
+                        &status,
+                        &priority,
+                        assignee.as_deref().unwrap_or(""),
+                        domain_tags,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&result);
+            }
+            TaskAction::Claim { id, name } => {
+                let task_id: Uuid = id.parse().map_err(|e| format!("invalid task ID: {e}"))?;
+                let result = client
+                    .claim_task(task_id, &name)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&result);
+            }
+            TaskAction::Deps { id } => {
+                let task_id: Uuid = id.parse().map_err(|e| format!("invalid task ID: {e}"))?;
+                let result = client.get_task_deps(task_id).await.map_err(|e| e.to_string())?;
+                print_json(&result);
+            }
+            TaskAction::Block {
+                blocking_id,
+                blocked_id,
+            } => {
+                let blocking: Uuid = blocking_id
+                    .parse()
+                    .map_err(|e| format!("invalid blocking task ID: {e}"))?;
+                let blocked: Uuid = blocked_id
+                    .parse()
+                    .map_err(|e| format!("invalid blocked task ID: {e}"))?;
+                let result = client
+                    .add_dependency(blocking, blocked)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&result);
+            }
+            TaskAction::Context { id } => {
+                let task_id: Uuid = id.parse().map_err(|e| format!("invalid task ID: {e}"))?;
+                let result = client
+                    .get_task_context(task_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&result);
+            }
+        },
+        Commands::Tasks {
+            status,
+            domain,
+            assignee,
+            unassigned,
+        } => {
+            let result = client
+                .list_tasks(
+                    status.as_deref(),
+                    domain.as_deref(),
+                    assignee.as_deref(),
+                    unassigned,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            print_json(&result);
+        }
+        Commands::Decision { action } => match action {
+            DecisionAction::Create {
+                title,
+                content,
+                initiative,
+                epic,
+            } => {
+                let init_id: Option<Uuid> = initiative
+                    .map(|s| s.parse().map_err(|e| format!("invalid initiative ID: {e}")))
+                    .transpose()?;
+                let epic_id: Option<Uuid> = epic
+                    .map(|s| s.parse().map_err(|e| format!("invalid epic ID: {e}")))
+                    .transpose()?;
+                let body = serde_json::json!({
+                    "title": title,
+                    "content": content.unwrap_or_default(),
+                    "initiative_id": init_id,
+                    "epic_id": epic_id,
+                });
+                let result = client.create_decision(&body).await.map_err(|e| e.to_string())?;
+                print_json(&result);
+            }
+            DecisionAction::List => {
+                let result = client.list_decisions().await.map_err(|e| e.to_string())?;
+                print_json(&result);
+            }
+        },
+        Commands::Note {
+            title,
+            content,
+            task_id,
+        } => {
+            let tid: Option<Uuid> = task_id
+                .map(|s| s.parse().map_err(|e| format!("invalid task ID: {e}")))
+                .transpose()?;
+            let body = serde_json::json!({
+                "title": title,
+                "content": content.unwrap_or_default(),
+                "task_id": tid,
+            });
+            let result = client.create_note(&body).await.map_err(|e| e.to_string())?;
+            print_json(&result);
+        }
+        Commands::Activity {
+            since,
+            actor,
+            limit,
+        } => {
+            let result = client
+                .list_activity(since.as_deref(), actor.as_deref(), limit)
+                .await
+                .map_err(|e| e.to_string())?;
+            print_json(&result);
+        }
+        Commands::Agents => {
+            let result = client.list_agent_statuses().await.map_err(|e| e.to_string())?;
+            print_json(&result);
+        }
+        Commands::Checkin { name, capabilities } => {
+            let caps = split_csv(capabilities);
+            let result = client.checkin(&name, caps).await.map_err(|e| e.to_string())?;
+            print_json(&result);
+        }
+        Commands::Checkout { name, summary } => {
+            let result = client
+                .checkout(&name, &summary)
+                .await
+                .map_err(|e| e.to_string())?;
+            print_json(&result);
+        }
+        Commands::Handoff {
+            task_id,
+            summary,
+            findings,
+            blockers,
+            next_steps,
+        } => {
+            let tid: Uuid = task_id
+                .parse()
+                .map_err(|e| format!("invalid task ID: {e}"))?;
+            let agent = std::env::var("UH_AGENT_NAME").unwrap_or_default();
+            let body = serde_json::json!({
+                "task_id": tid,
+                "agent_name": agent,
+                "summary": summary,
+                "findings": split_csv(findings),
+                "blockers": split_csv(blockers),
+                "next_steps": split_csv(next_steps),
+            });
+            let result = client.create_handoff(&body).await.map_err(|e| e.to_string())?;
             print_json(&result);
         }
     }

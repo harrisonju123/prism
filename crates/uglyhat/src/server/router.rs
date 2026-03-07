@@ -83,6 +83,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         )
         // Task context
         .route("/tasks/{id}/context", get(task::get_task_context))
+        // Task claim
+        .route("/tasks/{id}/claim", post(task::claim_task))
         // Task handoffs
         .route("/tasks/{id}/handoffs", get(handoff::get_handoffs_by_task))
         // Handoffs (workspace level)
@@ -129,6 +131,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
             post(agent::checkout),
         )
         .route("/workspaces/{workspaceId}/agents", get(agent::list_agents))
+        .route(
+            "/workspaces/{workspaceId}/agents/statuses",
+            get(agent::list_agent_statuses),
+        )
         // API Keys
         .route(
             "/workspaces/{workspaceId}/api-keys",

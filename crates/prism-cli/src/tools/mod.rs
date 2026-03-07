@@ -35,6 +35,15 @@ pub fn tool_definitions() -> Vec<Tool> {
             }, "required": ["command"] }),
         ),
         make_tool(
+            "edit_file",
+            "Replace an exact string in a file. Fails if old_string is not found or appears more than once — add more surrounding context to make it unique.",
+            json!({ "type": "object", "properties": {
+                "path":       { "type": "string" },
+                "old_string": { "type": "string" },
+                "new_string": { "type": "string" }
+            }, "required": ["path", "old_string", "new_string"] }),
+        ),
+        make_tool(
             "glob_files",
             "Find files by glob pattern (e.g. '**/*.rs'). Returns array of matching paths.",
             json!({ "type": "object", "properties": {
@@ -75,6 +84,12 @@ pub async fn dispatch(name: &str, args: &serde_json::Value) -> String {
                 .unwrap_or_default();
             let timeout = args["timeout_secs"].as_u64().unwrap_or(30).min(120);
             shell::run_command(cmd, &raw_args, timeout).await
+        }
+        "edit_file" => {
+            let path       = args["path"].as_str().unwrap_or("");
+            let old_string = args["old_string"].as_str().unwrap_or("");
+            let new_string = args["new_string"].as_str().unwrap_or("");
+            files::edit_file(path, old_string, new_string).await
         }
         "glob_files" => {
             let pattern = args["pattern"].as_str().unwrap_or("");

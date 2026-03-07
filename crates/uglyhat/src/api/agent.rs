@@ -61,3 +61,11 @@ pub async fn list_agents(
     let agents = state.store.list_agents(workspace_id).await?;
     Ok(Json(agents))
 }
+
+pub async fn list_agent_statuses(
+    State(state): State<Arc<AppState>>,
+    Path(workspace_id): Path<Uuid>,
+) -> Result<impl IntoResponse, Error> {
+    let statuses = state.store.list_agent_statuses(workspace_id).await?;
+    Ok(Json(statuses))
+}

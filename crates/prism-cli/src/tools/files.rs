@@ -21,6 +21,28 @@ pub async fn write_file(path: &str, content: &str) -> String {
     }
 }
 
+pub async fn edit_file(path: &str, old_string: &str, new_string: &str) -> String {
+    if old_string.is_empty() {
+        return "error: old_string must not be empty".to_string();
+    }
+    let contents = match tokio::fs::read_to_string(path).await {
+        Ok(c) => c,
+        Err(e) => return format!("error reading {path}: {e}"),
+    };
+    let count = contents.matches(old_string).count();
+    if count == 0 {
+        return format!("error: old_string not found in {path}");
+    }
+    if count > 1 {
+        return format!("error: old_string appears {count} times in {path}; provide more context to make it unique");
+    }
+    let new_contents = contents.replacen(old_string, new_string, 1);
+    match tokio::fs::write(path, &new_contents).await {
+        Ok(()) => format!("edited {path}"),
+        Err(e) => format!("error writing {path}: {e}"),
+    }
+}
+
 pub async fn list_dir(path: &str) -> String {
     let read = match std::fs::read_dir(path) {
         Ok(r) => r,
@@ -43,4 +65,40 @@ pub async fn list_dir(path: &str) -> String {
     let entries: Vec<String> = dirs.into_iter().chain(files).collect();
 
     serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[tokio::test]
+    async fn edit_file_success() {
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "hello world").unwrap();
+        let path = f.path().to_str().unwrap();
+        let result = edit_file(path, "world", "rust").await;
+        assert_eq!(result, format!("edited {path}"));
+        let contents = tokio::fs::read_to_string(path).await.unwrap();
+        assert_eq!(contents, "hello rust");
+    }
+
+    #[tokio::test]
+    async fn edit_file_not_found() {
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "hello world").unwrap();
+        let path = f.path().to_str().unwrap();
+        let result = edit_file(path, "missing", "x").await;
+        assert!(result.starts_with("error: old_string not found"));
+    }
+
+    #[tokio::test]
+    async fn edit_file_ambiguous() {
+        let mut f = NamedTempFile::new().unwrap();
+        write!(f, "foo foo foo").unwrap();
+        let path = f.path().to_str().unwrap();
+        let result = edit_file(path, "foo", "bar").await;
+        assert!(result.contains("appears 3 times"));
+    }
 }
