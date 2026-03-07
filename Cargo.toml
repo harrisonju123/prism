@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = ["crates/prism", "crates/prism-client", "crates/prism-types", "crates/uglyhat"]
+
+[workspace.package]
+edition = "2024"
+
+[workspace.dependencies]
+# HTTP server
+axum = { version = "0.8", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+sha2 = "0.10"
+hex = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+async-trait = "0.1"
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "sqlite", "uuid", "chrono", "json", "migrate"] }
+prism-types = { path = "crates/prism-types" }
+prism-client = { path = "crates/prism-client" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

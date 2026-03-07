@@ -1,0 +1,85 @@
+[package]
+name = "prism"
+version = "0.1.0"
+edition.workspace = true
+description = "High-performance Rust LLM gateway"
+
+[lib]
+name = "prism"
+path = "src/lib.rs"
+
+[dependencies]
+# HTTP server
+axum = { workspace = true }
+axum-extra = { version = "0.10", features = ["typed-header"] }
+tower = { version = "0.5", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "request-id", "util", "fs"] }
+
+# Async runtime
+tokio = { workspace = true }
+tokio-util = { version = "0.7", features = ["rt"] }
+tokio-stream = "0.1"
+
+# HTTP client (upstream provider calls)
+reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest-eventsource = "0.6"
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Configuration
+figment = { version = "0.10", features = ["toml", "env"] }
+toml = "0.8"
+serde_yaml = "0.9"
+
+# Database - ClickHouse (observability)
+clickhouse = { version = "0.13", features = ["inserter", "time"] }
+time = "0.3"
+
+# Database - Postgres (virtual keys)
+sqlx = { workspace = true }
+
+# Concurrency + randomness
+dashmap = "6"
+rand = "0.9"
+
+# Tracing / Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+chrono = { workspace = true }
+async-stream = "0.3"
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+bytes = "1"
+futures = "0.3"
+pin-project-lite = "0.2"
+regex = "1"
+jsonschema = "0.28"
+arc-swap = "1"
+petgraph = "0.7"
+jsonwebtoken = "9"
+hmac = "0.12"
+
+# AWS SDK (Bedrock provider + S3 cache)
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-bedrockruntime = "1"
+aws-sdk-s3 = "1"
+aws-types = "1"
+
+# Redis (distributed rate limiting + cache)
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+
+opentelemetry = "0.27"
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", features = ["tonic"] }
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+
+[dev-dependencies]
+tokio-test = "0.4"

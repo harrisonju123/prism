@@ -1,0 +1,11 @@
+/target
+.idea/
+.DS_Store
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+dashboard/node_modules/
+dashboard/dist/
+dashboard/.pnpm-store/

@@ -1,0 +1,150 @@
+# PrisM Gateway Configuration
+# Copy to prism.toml and fill in your API keys.
+# All values can be overridden with PRISM_ environment variables.
+
+[gateway]
+address = "0.0.0.0:9100"
+
+[clickhouse]
+url = "http://localhost:8123"
+database = "prism"
+
+[pipeline]
+batch_size = 50
+flush_interval_ms = 100
+queue_size = 10000
+
+# --- Postgres (required if keys.enabled) ---
+
+# [postgres]
+# url = "postgres://prism:prism@localhost:5432/prism"
+# max_connections = 10
+# connect_timeout_secs = 5
+
+# --- Virtual API Keys ---
+
+# [keys]
+# enabled = false
+# master_key = "your-secret-master-key"
+# cache_capacity = 10000
+# budget_reconcile_interval_secs = 300
+
+# --- Providers ---
+# Set API keys here or via environment variables.
+# Values like "${ENV_VAR}" are resolved from the environment.
+
+[providers.openai]
+api_key = "${OPENAI_API_KEY}"
+# api_base = "https://api.openai.com/v1"  # default
+
+[providers.anthropic]
+api_key = "${ANTHROPIC_API_KEY}"
+# api_base = "https://api.anthropic.com"  # default
+
+# [providers.google]
+# api_key = "${GOOGLE_API_KEY}"
+
+# [providers.bedrock]
+# region = "us-east-1"
+
+# [providers.mistral]
+# api_key = "${MISTRAL_API_KEY}"
+
+# --- Model Aliases ---
+# Map friendly names to specific provider models.
+# These are used when clients send `model: "alias-name"`.
+
+[models.sonnet]
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+tier = 2
+fallback = "gpt-4o-mini"
+
+[models.haiku]
+provider = "anthropic"
+model = "claude-3-5-haiku-20241022"
+tier = 3
+
+[models.gpt4o]
+provider = "openai"
+model = "gpt-4o"
+tier = 2
+fallback = "sonnet"
+
+[models.gpt4o-mini]
+provider = "openai"
+model = "gpt-4o-mini"
+tier = 3
+
+# --- Routing ---
+# Smart model routing based on task classification and fitness scoring.
+
+[routing]
+enabled = false
+classifier_confidence_threshold = 0.4
+tier1_confidence_threshold = 0.7
+
+[routing.fitness]
+cache_ttl_secs = 300
+
+# [[routing.rules]]
+# task_type = "code_generation"
+# criteria = "cheapest_above_quality"
+# min_quality = 0.70
+# fallback = "sonnet"
+
+# [[routing.rules]]
+# task_type = "*"
+# criteria = "cheapest_above_quality"
+# min_quality = 0.55
+# fallback = "sonnet"
+
+# --- Experimentation ---
+# A/B testing and multi-armed bandit experiments.
+
+[experiments]
+enabled = false
+
+# [experiments.experiments.summarizer-test]
+# function_name = "sonnet"
+# mode = "static"
+#
+# [[experiments.experiments.summarizer-test.variants]]
+# name = "control"
+# model = "claude-sonnet-4-20250514"
+# weight = 1.0
+#
+# [[experiments.experiments.summarizer-test.variants]]
+# name = "challenger"
+# model = "gpt-4o"
+# weight = 1.0
+# temperature = 0.7
+
+# --- Response Cache ---
+# In-memory LRU cache for identical requests.
+
+[cache]
+enabled = false
+max_size = 1000
+ttl_secs = 3600
+
+# --- Benchmarking ---
+# Sample live traffic and score with LLM-as-judge to replace synthetic fitness data.
+
+[benchmark]
+enabled = false
+sample_rate = 0.05
+judge_model = "gpt-4o-mini"
+max_benchmark_models = 3
+max_concurrent_benchmarks = 5
+fitness_refresh_interval_secs = 300
+min_sample_size = 10
+
+# --- Waste Detection ---
+# Analyze cost data to find model overkill and overspend.
+
+[waste]
+enabled = true
+quality_tolerance = 0.05
+cost_ratio_threshold = 0.5
+overspend_multiplier = 2.0

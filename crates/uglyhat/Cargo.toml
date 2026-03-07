@@ -1,0 +1,34 @@
+[package]
+name = "uglyhat"
+version = "0.1.0"
+edition.workspace = true
+description = "AI-agent-first project management API and CLI"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+async-trait = { workspace = true }
+sqlx = { workspace = true }
+axum = { workspace = true }
+tower = { version = "0.5", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+clap = { version = "4", features = ["derive"] }
+rand = "0.10.0"
+base64 = "0.22.1"
+
+[[bin]]
+name = "uglyhat"
+path = "src/main.rs"
+
+[[bin]]
+name = "uh"
+path = "src/bin/uh.rs"

@@ -1,0 +1,15 @@
+[package]
+name = "prism-client"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+prism-types = { workspace = true }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures = "0.3"
+bytes = "1"
+thiserror = { workspace = true }
+async-trait = { workspace = true }

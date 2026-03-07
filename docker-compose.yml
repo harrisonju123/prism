@@ -1,0 +1,56 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: prism
+      POSTGRES_USER: prism
+      POSTGRES_PASSWORD: prism
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U prism"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    ports:
+      - "8123:8123"   # HTTP interface
+      - "9000:9000"   # Native protocol
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    environment:
+      CLICKHOUSE_DB: prism
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  prism:
+    build: .
+    ports:
+      - "9100:9100"
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      RUST_LOG: prism=info
+      PRISM_CLICKHOUSE_URL: http://clickhouse:8123
+      PRISM_CLICKHOUSE_DATABASE: prism
+      PRISM_POSTGRES_URL: postgres://prism:prism@postgres:5432/prism
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ./config/prism.toml:/app/prism.toml:ro
+
+volumes:
+  clickhouse_data:
+  postgres_data:
