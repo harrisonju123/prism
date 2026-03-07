@@ -570,6 +570,24 @@ struct ConfigurationView {
     api_key_editor: Entity<InputField>,
     state: Entity<State>,
     load_credentials_task: Option<Task<()>>,
+    api_key_error: Option<SharedString>,
+}
+
+fn is_valid_prism_key(key: &str) -> bool {
+    match key.strip_prefix("prism_") {
+        Some(hex) => hex.len() == 32 && hex.chars().all(|c| c.is_ascii_hexdigit()),
+        None => false,
+    }
+}
+
+fn validate_prism_key(key: &str) -> Option<SharedString> {
+    if !key.starts_with("prism_") {
+        return None;
+    }
+    if is_valid_prism_key(key) {
+        return None;
+    }
+    Some("Virtual key must be prism_<32 lowercase hex chars> (38 chars total)".into())
 }
 
 impl ConfigurationView {
@@ -578,7 +596,7 @@ impl ConfigurationView {
             InputField::new(
                 window,
                 cx,
-                "000000000000000000000000000000000000000000000000000",
+                "prism_00000000000000000000000000000000",
             )
         });
 
@@ -605,6 +623,7 @@ impl ConfigurationView {
             api_key_editor,
             state,
             load_credentials_task,
+            api_key_error: None,
         }
     }
 
@@ -613,6 +632,12 @@ impl ConfigurationView {
         if api_key.is_empty() {
             return;
         }
+        if let Some(error) = validate_prism_key(&api_key) {
+            self.api_key_error = Some(error);
+            cx.notify();
+            return;
+        }
+        self.api_key_error = None;
 
         self.api_key_editor
             .update(cx, |input, cx| input.set_text("", window, cx));
@@ -627,6 +652,7 @@ impl ConfigurationView {
     }
 
     fn reset_api_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.api_key_error = None;
         self.api_key_editor
             .update(cx, |input, cx| input.set_text("", window, cx));
 
@@ -655,7 +681,7 @@ impl Render for ConfigurationView {
             v_flex()
                 .on_action(cx.listener(Self::save_api_key))
                 .child(Label::new(
-                    "To use Zed's agent with PrisM, enter your PrisM API key.",
+                    "Enter a PrisM virtual key (prism_<32 hex chars>) or set the PRISM_API_KEY environment variable.",
                 ))
                 .child(
                     div()
@@ -669,6 +695,13 @@ impl Render for ConfigurationView {
                     .size(LabelSize::Small)
                     .color(Color::Muted),
                 )
+                .when_some(self.api_key_error.clone(), |this, error| {
+                    this.child(
+                        Label::new(error)
+                            .size(LabelSize::Small)
+                            .color(Color::Error),
+                    )
+                })
                 .into_any()
         } else {
             h_flex()
