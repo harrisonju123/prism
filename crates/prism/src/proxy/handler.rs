@@ -123,9 +123,9 @@ pub async fn chat_completions(
             ctx.budget_action,
         );
         match budget_result {
-            BudgetCheckResult::Exceeded { message } => {
+            BudgetCheckResult::Exceeded { message, limit, spent } => {
                 tracing::warn!(key_prefix = %ctx.key_prefix, %message, "budget exceeded");
-                return Err(PrismError::BudgetExceeded);
+                return Err(PrismError::BudgetExceeded { limit, spent });
             }
             BudgetCheckResult::Warning { message } => {
                 tracing::warn!(key_prefix = %ctx.key_prefix, %message, "budget warning");

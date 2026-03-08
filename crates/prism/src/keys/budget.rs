@@ -29,7 +29,7 @@ impl BudgetAction {
 pub enum BudgetCheckResult {
     Ok,
     Warning { message: String },
-    Exceeded { message: String },
+    Exceeded { message: String, limit: f64, spent: f64 },
 }
 
 /// Per-key spend state.
@@ -104,6 +104,8 @@ impl BudgetTracker {
                         "daily budget exceeded: ${:.4} / ${:.2}",
                         entry.daily_spend, limit
                     ),
+                    limit,
+                    spent: entry.daily_spend,
                 },
                 BudgetAction::Warn => BudgetCheckResult::Warning {
                     message: format!(
@@ -124,6 +126,8 @@ impl BudgetTracker {
                         "monthly budget exceeded: ${:.4} / ${:.2}",
                         entry.monthly_spend, limit
                     ),
+                    limit,
+                    spent: entry.monthly_spend,
                 },
                 BudgetAction::Warn => BudgetCheckResult::Warning {
                     message: format!(
