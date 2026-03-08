@@ -31,48 +31,6 @@ fn is_fim_request(request: &TextCompletionRequest) -> bool {
         || prompt.contains("<|fim_middle|>")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::types::TextCompletionRequest;
-
-    fn make_request(prompt: &str, suffix: Option<&str>) -> TextCompletionRequest {
-        TextCompletionRequest {
-            model: "gpt-4o-mini".into(),
-            prompt: prompt.into(),
-            suffix: suffix.map(String::from),
-            max_tokens: None,
-            temperature: None,
-            stop: vec![],
-            extra: Default::default(),
-        }
-    }
-
-    #[test]
-    fn fim_detected_by_suffix_field() {
-        let req = make_request("some code here", Some("// rest of function"));
-        assert!(is_fim_request(&req));
-    }
-
-    #[test]
-    fn fim_detected_by_fim_prefix_token() {
-        let req = make_request("<fim_prefix>def foo():<fim_suffix>    pass<fim_middle>", None);
-        assert!(is_fim_request(&req));
-    }
-
-    #[test]
-    fn fim_detected_by_pipe_fim_tokens() {
-        let req = make_request("<|fim_prefix|>let x = <|fim_suffix|>;<|fim_middle|>", None);
-        assert!(is_fim_request(&req));
-    }
-
-    #[test]
-    fn non_fim_request_not_detected() {
-        let req = make_request("Write a function to sort a list", None);
-        assert!(!is_fim_request(&req));
-    }
-}
-
 /// POST /v1/completions — OpenAI legacy text completions (used for FIM / edit predictions).
 pub async fn text_completions(
     State(state): State<Arc<AppState>>,
@@ -282,4 +240,46 @@ pub async fn text_completions(
         }],
         usage,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::TextCompletionRequest;
+
+    fn make_request(prompt: &str, suffix: Option<&str>) -> TextCompletionRequest {
+        TextCompletionRequest {
+            model: "gpt-4o-mini".into(),
+            prompt: prompt.into(),
+            suffix: suffix.map(String::from),
+            max_tokens: None,
+            temperature: None,
+            stop: vec![],
+            extra: Default::default(),
+        }
+    }
+
+    #[test]
+    fn fim_detected_by_suffix_field() {
+        let req = make_request("some code here", Some("// rest of function"));
+        assert!(is_fim_request(&req));
+    }
+
+    #[test]
+    fn fim_detected_by_fim_prefix_token() {
+        let req = make_request("<fim_prefix>def foo():<fim_suffix>    pass<fim_middle>", None);
+        assert!(is_fim_request(&req));
+    }
+
+    #[test]
+    fn fim_detected_by_pipe_fim_tokens() {
+        let req = make_request("<|fim_prefix|>let x = <|fim_suffix|>;<|fim_middle|>", None);
+        assert!(is_fim_request(&req));
+    }
+
+    #[test]
+    fn non_fim_request_not_detected() {
+        let req = make_request("Write a function to sort a list", None);
+        assert!(!is_fim_request(&req));
+    }
 }
