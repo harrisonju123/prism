@@ -77,7 +77,7 @@ impl PendingEdit {
 }
 
 pub enum MultiFileDiffReviewEvent {
-    Accepted,
+    Accepted { failed_paths: Vec<std::path::PathBuf> },
     Rejected,
 }
 
@@ -137,8 +137,9 @@ impl MultiFileDiffReview {
             edit.accepted = true;
         }
         let project = self.project.clone();
-        let edits: Vec<_> = self.pending_edits.clone();
+        let edits = std::mem::take(&mut self.pending_edits);
         self._apply_task = Some(cx.spawn(async move |this, cx| {
+            let mut failed_paths = Vec::new();
             for edit in edits {
                 if edit.accepted {
                     let task = edit.apply(&project);
@@ -147,10 +148,11 @@ impl MultiFileDiffReview {
                             "MultiFileDiffReview: failed to apply edit to {}: {err}",
                             edit.file_path.display()
                         );
+                        failed_paths.push(edit.file_path.clone());
                     }
                 }
             }
-            this.update(cx, |_, cx| cx.emit(MultiFileDiffReviewEvent::Accepted))
+            this.update(cx, |_, cx| cx.emit(MultiFileDiffReviewEvent::Accepted { failed_paths }))
                 .ok();
         }));
     }
@@ -306,9 +308,9 @@ impl Item for MultiFileDiffReview {
         format!("Review Edits ({count})").into()
     }
 
-    fn tab_content(&self, params: TabContentParams, _window: &Window, _cx: &App) -> AnyElement {
-        let count = self.pending_edits.len();
-        Label::new(format!("Review Edits ({count})"))
+    fn tab_content(&self, params: TabContentParams, _window: &Window, cx: &App) -> AnyElement {
+        let label = self.tab_content_text(0, cx);
+        Label::new(label)
             .color(if params.selected {
                 Color::Default
             } else {

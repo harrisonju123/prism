@@ -154,7 +154,7 @@ impl State {
                 }
                 Err(err) if is_connection_refused(&err) => {
                     for _ in 0..3 {
-                        smol::Timer::after(Duration::from_millis(500)).await;
+                        cx.background_executor().timer(Duration::from_millis(500)).await;
                         match do_fetch_models(&http_client, &api_url, &api_key).await {
                             Ok(result) => {
                                 return this.update(cx, |this, cx| {
