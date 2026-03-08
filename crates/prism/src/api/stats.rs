@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{PrismError, Result};
 use crate::proxy::handler::AppState;
-use prism_types::{StatGroup, SummaryResponse, TaskTypeStat, TaskTypeStatsResponse, WasteScoreResponse};
+use prism_types::{
+    AgentMetricStat, AgentMetricsResponse, StatGroup, SummaryResponse, TaskTypeStat,
+    TaskTypeStatsResponse, WasteScoreResponse,
+};
 
 // ---------------------------------------------------------------------------
 // Query params
@@ -509,6 +512,86 @@ pub async fn waste_score(
         waste_score: report.waste_percentage,
         total_cost_usd: report.total_cost_usd,
         estimated_waste_usd: report.estimated_waste_usd,
+    })
+    .into_response())
+}
+
+// ---------------------------------------------------------------------------
+// Agent metrics
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct AgentMetricsParams {
+    #[serde(default = "default_period_days")]
+    pub period_days: u32,
+}
+
+/// GET /api/v1/stats/agents
+///
+/// Returns per-agent cost/usage metrics grouped by `agent_framework` field.
+pub async fn agent_metrics(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<AgentMetricsParams>,
+) -> Result<Response> {
+    let client = &state.http_client;
+    let ch_url = &state.config.clickhouse.url;
+    let ch_db = &state.config.clickhouse.database;
+
+    let query = format!(
+        "SELECT agent_framework as agent_name, \
+                count() as request_count, \
+                sum(estimated_cost_usd) as total_cost_usd, \
+                avg(latency_ms) as avg_latency_ms, \
+                sum(input_tokens + output_tokens) as total_tokens, \
+                countIf(status = 'failure') as failure_count \
+         FROM {db}.inference_events \
+         WHERE timestamp >= now() - INTERVAL {days} DAY \
+           AND agent_framework IS NOT NULL \
+           AND agent_framework != '' \
+         GROUP BY agent_framework \
+         ORDER BY total_cost_usd DESC \
+         FORMAT JSONEachRow",
+        db = ch_db,
+        days = params.period_days,
+    );
+
+    let resp = client
+        .post(ch_url)
+        .body(query)
+        .send()
+        .await
+        .map_err(|e| PrismError::Internal(format!("clickhouse query failed: {e}")))?
+        .text()
+        .await
+        .map_err(|e| PrismError::Internal(format!("clickhouse response error: {e}")))?;
+
+    let mut agents = Vec::new();
+    for line in resp.lines() {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            agents.push(AgentMetricStat {
+                agent_name: v
+                    .get("agent_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+                request_count: v.get("request_count").and_then(|v| v.as_u64()).unwrap_or(0),
+                total_cost_usd: v
+                    .get("total_cost_usd")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                avg_latency_ms: v
+                    .get("avg_latency_ms")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                total_tokens: v.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                failure_count: v.get("failure_count").and_then(|v| v.as_u64()).unwrap_or(0),
+            });
+        }
+    }
+
+    Ok(Json(AgentMetricsResponse {
+        period_days: params.period_days,
+        agents,
     })
     .into_response())
 }

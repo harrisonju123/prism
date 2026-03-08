@@ -2,19 +2,19 @@ use crate::types::DashboardData;
 use anyhow::Result;
 use db::kvp::KEY_VALUE_STORE;
 use gpui::{
-    Action, App, AsyncWindowContext, ClickEvent, Context, ElementId, Entity, EventEmitter,
-    FocusHandle, Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Task, WeakEntity,
-    Window, actions, px,
+    actions, px, Action, App, AsyncWindowContext, ClickEvent, Context, ElementId, Entity,
+    EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Task,
+    WeakEntity, Window,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use ui::{
-    Color, Icon, IconButton, IconName, Label, LabelSize, Tooltip, h_flex, prelude::*, v_flex,
+    h_flex, prelude::*, v_flex, Color, Icon, IconButton, IconName, Label, LabelSize, Tooltip,
 };
 use util::{ResultExt, TryFutureExt};
 use workspace::{
-    Workspace,
     dock::{DockPosition, Panel, PanelEvent},
+    Workspace,
 };
 
 const PANEL_KEY: &str = "PrismDashboardPanel";
@@ -43,6 +43,7 @@ pub struct PrismDashboardPanel {
     models_expanded: bool,
     waste_expanded: bool,
     routing_expanded: bool,
+    agents_expanded: bool,
     refresh_task: Option<Task<()>>,
     _auto_refresh: Task<()>,
     pending_serialization: Task<Option<()>>,
@@ -59,6 +60,8 @@ struct SerializedPanel {
     waste_expanded: bool,
     #[serde(default = "default_true")]
     routing_expanded: bool,
+    #[serde(default = "default_true")]
+    agents_expanded: bool,
 }
 
 fn default_true() -> bool {
@@ -95,6 +98,7 @@ impl PrismDashboardPanel {
                 models_expanded: true,
                 waste_expanded: true,
                 routing_expanded: true,
+                agents_expanded: true,
                 refresh_task: None,
                 _auto_refresh: Task::ready(()),
                 pending_serialization: Task::ready(None),
@@ -133,6 +137,7 @@ impl PrismDashboardPanel {
                         panel.models_expanded = serialized.models_expanded;
                         panel.waste_expanded = serialized.waste_expanded;
                         panel.routing_expanded = serialized.routing_expanded;
+                        panel.agents_expanded = serialized.agents_expanded;
                         cx.notify();
                     });
                 }
@@ -147,6 +152,7 @@ impl PrismDashboardPanel {
         let models_expanded = self.models_expanded;
         let waste_expanded = self.waste_expanded;
         let routing_expanded = self.routing_expanded;
+        let agents_expanded = self.agents_expanded;
         self.pending_serialization = cx.background_spawn(
             async move {
                 KEY_VALUE_STORE
@@ -158,6 +164,7 @@ impl PrismDashboardPanel {
                             models_expanded,
                             waste_expanded,
                             routing_expanded,
+                            agents_expanded,
                         })?,
                     )
                     .await?;
@@ -187,22 +194,26 @@ impl PrismDashboardPanel {
                     if let Some(key) = api_key {
                         client = client.with_api_key(key);
                     }
-                    let summary = client.stats_summary(7).await;
-                    let waste = client.stats_waste_score(7).await;
-                    let task_types = client.stats_task_types(7).await;
-                    let policy = client.routing_policy().await;
-                    anyhow::Ok((summary, waste, task_types, policy))
+                    let (summary, waste, task_types, policy, agents) = futures::join!(
+                        client.stats_summary(7),
+                        client.stats_waste_score(7),
+                        client.stats_task_types(7),
+                        client.routing_policy(),
+                        client.stats_agents(7)
+                    );
+                    anyhow::Ok::<(_, _, _, _, _)>((summary, waste, task_types, policy, agents))
                 })
                 .await;
 
             this.update(cx, |this, cx| {
                 this.is_loading = false;
                 match result {
-                    Ok((summary, waste, task_types, policy)) => {
+                    Ok((summary, waste, task_types, policy, agents)) => {
                         this.data.summary = summary.ok();
                         this.data.waste_score = waste.ok();
                         this.data.task_types = task_types.ok();
                         this.data.policy = policy.ok();
+                        this.data.agent_metrics = agents.ok();
                         this.error = None;
                     }
                     Err(e) => {
@@ -320,11 +331,8 @@ impl PrismDashboardPanel {
                                             .color(Color::Muted),
                                     )
                                     .child(
-                                        Label::new(format!(
-                                            "{:.1}%",
-                                            summary.failure_rate * 100.0
-                                        ))
-                                        .size(LabelSize::Small),
+                                        Label::new(format!("{:.1}%", summary.failure_rate * 100.0))
+                                            .size(LabelSize::Small),
                                     ),
                             )
                             .child(
@@ -526,6 +534,108 @@ impl PrismDashboardPanel {
                 }
             })
     }
+
+    fn render_agents_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let agents_expanded = self.agents_expanded;
+        v_flex()
+            .w_full()
+            .child(Self::render_section_header(
+                "section-agents",
+                "Agent Performance",
+                agents_expanded,
+                cx.listener(|this, _, _, cx| {
+                    this.agents_expanded = !this.agents_expanded;
+                    this.serialize(cx);
+                    cx.notify();
+                }),
+                cx,
+            ))
+            .when(agents_expanded, |this| {
+                if let Some(metrics) = &self.data.agent_metrics {
+                    if metrics.agents.is_empty() {
+                        return this.child(
+                            div().px_3().pb_1().child(
+                                Label::new("No agent data yet")
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            ),
+                        );
+                    }
+                    let mut children = v_flex().w_full().px_3().pb_1().gap_0p5();
+                    for agent in metrics.agents.iter().take(8) {
+                        let failure_rate = if agent.request_count > 0 {
+                            agent.failure_count as f64 / agent.request_count as f64 * 100.0
+                        } else {
+                            0.0
+                        };
+                        children = children.child(
+                            v_flex()
+                                .w_full()
+                                .gap_0p5()
+                                .py_0p5()
+                                .border_b_1()
+                                .border_color(cx.theme().colors().border_variant)
+                                .child(
+                                    h_flex()
+                                        .w_full()
+                                        .justify_between()
+                                        .child(
+                                            Label::new(agent.agent_name.clone())
+                                                .size(LabelSize::Small)
+                                                .truncate(),
+                                        )
+                                        .child(
+                                            Label::new(format!("${:.3}", agent.total_cost_usd))
+                                                .size(LabelSize::Small),
+                                        ),
+                                )
+                                .child(
+                                    h_flex()
+                                        .w_full()
+                                        .gap_2()
+                                        .child(
+                                            Label::new(format!(
+                                                "{}req",
+                                                format_number(agent.request_count)
+                                            ))
+                                            .size(LabelSize::Small)
+                                            .color(Color::Muted),
+                                        )
+                                        .child(
+                                            Label::new(format!(
+                                                "{}tok",
+                                                format_tokens(agent.total_tokens)
+                                            ))
+                                            .size(LabelSize::Small)
+                                            .color(Color::Muted),
+                                        )
+                                        .child(
+                                            Label::new(format!("{:.0}ms", agent.avg_latency_ms))
+                                                .size(LabelSize::Small)
+                                                .color(Color::Muted),
+                                        )
+                                        .when(failure_rate > 0.0, |this| {
+                                            this.child(
+                                                Label::new(format!("{:.1}%err", failure_rate))
+                                                    .size(LabelSize::Small)
+                                                    .color(Color::Error),
+                                            )
+                                        }),
+                                ),
+                        );
+                    }
+                    this.child(children)
+                } else {
+                    this.child(
+                        div().px_3().pb_1().child(
+                            Label::new("No data")
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        ),
+                    )
+                }
+            })
+    }
 }
 
 fn format_number(n: u64) -> String {
@@ -608,9 +718,10 @@ impl Render for PrismDashboardPanel {
                     .overflow_y_scroll()
                     .when_some(self.error.clone(), |this, err| {
                         this.child(
-                            div().px_2().py_1().child(
-                                Label::new(err).size(LabelSize::Small).color(Color::Error),
-                            ),
+                            div()
+                                .px_2()
+                                .py_1()
+                                .child(Label::new(err).size(LabelSize::Small).color(Color::Error)),
                         )
                     })
                     .when(self.is_loading && self.data.summary.is_none(), |this| {
@@ -626,6 +737,7 @@ impl Render for PrismDashboardPanel {
                     .child(self.render_models_section(cx))
                     .child(self.render_waste_section(cx))
                     .child(self.render_routing_section(cx))
+                    .child(self.render_agents_section(cx))
                     .child(
                         div()
                             .px_2()
@@ -659,8 +771,7 @@ impl Panel for PrismDashboardPanel {
         matches!(position, DockPosition::Left | DockPosition::Right)
     }
 
-    fn set_position(&mut self, _position: DockPosition, _: &mut Window, _cx: &mut Context<Self>) {
-    }
+    fn set_position(&mut self, _position: DockPosition, _: &mut Window, _cx: &mut Context<Self>) {}
 
     fn size(&self, _: &Window, _cx: &App) -> Pixels {
         self.width.unwrap_or(px(320.))

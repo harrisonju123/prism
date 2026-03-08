@@ -1,4 +1,7 @@
-use prism_types::{PolicyResponse, SummaryResponse, TaskTypeStatsResponse, WasteScoreResponse};
+use prism_types::{
+    AgentMetricsResponse, PolicyResponse, SummaryResponse, TaskTypeStatsResponse,
+    WasteScoreResponse,
+};
 
 #[derive(Default)]
 pub struct DashboardData {
@@ -6,4 +9,5 @@ pub struct DashboardData {
     pub waste_score: Option<WasteScoreResponse>,
     pub task_types: Option<TaskTypeStatsResponse>,
     pub policy: Option<PolicyResponse>,
+    pub agent_metrics: Option<AgentMetricsResponse>,
 }

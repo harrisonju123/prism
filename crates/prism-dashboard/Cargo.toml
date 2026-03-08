@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 anyhow.workspace = true
 db.workspace = true
+futures.workspace = true
 gpui.workspace = true
 prism-client = { workspace = true }
 prism-types = { workspace = true }

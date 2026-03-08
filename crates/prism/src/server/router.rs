@@ -3,9 +3,9 @@ use std::sync::Arc;
 use axum::Router;
 use axum::extract::Request;
 use axum::middleware::from_fn;
-use axum::routing::{get, post};
 #[cfg(feature = "full")]
 use axum::routing::{delete, patch, put};
+use axum::routing::{get, post};
 use tower_http::trace::TraceLayer;
 
 use crate::api;
@@ -124,6 +124,7 @@ fn build_management_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/api/v1/stats/top-traces", get(api::stats::top_traces))
         .route("/api/v1/stats/waste-score", get(api::stats::waste_score))
         .route("/api/v1/stats/task-types", get(api::stats::task_type_stats))
+        .route("/api/v1/stats/agents", get(api::stats::agent_metrics))
         .route("/api/v1/alerts/rules", get(api::alerts::list_rules))
         .route("/api/v1/mcp/trace", get(api::mcp::mcp_trace))
         .route("/api/v1/routing/dry-run", post(api::routing::dry_run))

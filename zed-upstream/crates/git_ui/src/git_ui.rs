@@ -45,6 +45,7 @@ pub(crate) mod remote_output;
 pub mod repository_selector;
 pub mod stash_picker;
 pub mod text_diff_view;
+pub mod worktree_merge;
 pub mod worktree_picker;
 
 pub fn init(cx: &mut App) {
@@ -894,3 +895,13 @@ impl Render for GitCloneModal {
 impl EventEmitter<DismissEvent> for GitCloneModal {}
 
 impl ModalView for GitCloneModal {}
+
+pub(crate) fn uh_binary() -> std::path::PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        let p = std::path::PathBuf::from(home).join(".cargo/bin/uh");
+        if p.exists() {
+            return p;
+        }
+    }
+    "uh".into()
+}

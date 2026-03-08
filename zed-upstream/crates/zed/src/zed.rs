@@ -640,6 +640,10 @@ fn initialize_panels(
         let debug_panel = DebugPanel::load(workspace_handle.clone(), cx);
         let task_board_panel =
             uglyhat_panel::TaskBoardPanel::load(workspace_handle.clone(), cx.clone());
+        let agent_roster_panel =
+            uglyhat_panel::AgentRosterPanel::load(workspace_handle.clone(), cx.clone());
+        let session_history_panel =
+            uglyhat_panel::SessionHistoryPanel::load(workspace_handle.clone(), cx.clone());
         let prism_dashboard =
             prism_dashboard::PrismDashboardPanel::load(workspace_handle.clone(), cx.clone());
 
@@ -667,6 +671,8 @@ fn initialize_panels(
             add_panel_when_ready(notification_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(debug_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(task_board_panel, workspace_handle.clone(), cx.clone()),
+            add_panel_when_ready(agent_roster_panel, workspace_handle.clone(), cx.clone()),
+            add_panel_when_ready(session_history_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(prism_dashboard, workspace_handle.clone(), cx.clone()),
             initialize_agent_panel(workspace_handle, prompt_builder, cx.clone()).map(|r| r.log_err()),
         );

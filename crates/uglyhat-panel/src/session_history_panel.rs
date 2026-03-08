@@ -1,0 +1,497 @@
+use crate::types::{uh_binary, ActivityEntry, SessionEntry};
+use anyhow::Result;
+use db::kvp::KEY_VALUE_STORE;
+use gpui::{
+    actions, px, Action, App, AsyncWindowContext, Context, ElementId, Entity, EventEmitter,
+    FocusHandle, Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Task, WeakEntity,
+    Window,
+};
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
+use ui::{h_flex, prelude::*, v_flex, Color, IconButton, IconName, Label, LabelSize, Tooltip};
+use util::{ResultExt, TryFutureExt};
+use workspace::{
+    dock::{DockPosition, Panel, PanelEvent},
+    Workspace,
+};
+
+const PANEL_KEY: &str = "SessionHistoryPanel";
+const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
+
+actions!(
+    session_history,
+    [
+        /// Toggles the session history panel.
+        Toggle,
+        /// Toggles focus on the session history panel.
+        ToggleFocus
+    ]
+);
+
+#[derive(Default)]
+enum ViewState {
+    #[default]
+    List,
+    Detail(SessionEntry),
+}
+
+pub struct SessionHistoryPanel {
+    focus_handle: FocusHandle,
+    width: Option<Pixels>,
+    active: bool,
+    sessions: Vec<SessionEntry>,
+    is_loading: bool,
+    error: Option<String>,
+    search_query: String,
+    view_state: ViewState,
+    refresh_task: Option<Task<()>>,
+    _auto_refresh: Task<()>,
+    pending_serialization: Task<Option<()>>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SerializedPanel {
+    width: Option<Pixels>,
+}
+
+#[derive(Debug)]
+pub enum Event {
+    DockPositionChanged,
+    Focus,
+    Dismissed,
+}
+
+impl SessionHistoryPanel {
+    pub fn new(
+        _workspace: &mut Workspace,
+        _window: &mut Window,
+        cx: &mut Context<Workspace>,
+    ) -> Entity<Self> {
+        cx.new(|cx| {
+            let mut panel = Self {
+                focus_handle: cx.focus_handle(),
+                width: None,
+                active: false,
+                sessions: Vec::new(),
+                is_loading: false,
+                error: None,
+                search_query: String::new(),
+                view_state: ViewState::List,
+                refresh_task: None,
+                _auto_refresh: Task::ready(()),
+                pending_serialization: Task::ready(None),
+            };
+
+            let auto_refresh = cx.spawn(async move |this, cx| loop {
+                cx.background_executor().timer(AUTO_REFRESH_INTERVAL).await;
+                this.update(cx, |panel: &mut SessionHistoryPanel, cx| panel.refresh(cx))
+                    .ok();
+            });
+            panel._auto_refresh = auto_refresh;
+            panel.refresh(cx);
+            panel
+        })
+    }
+
+    pub fn load(
+        workspace: WeakEntity<Workspace>,
+        cx: AsyncWindowContext,
+    ) -> Task<Result<Entity<Self>>> {
+        cx.spawn(async move |cx| {
+            let serialized_panel = cx
+                .background_spawn(async move { KEY_VALUE_STORE.read_kvp(PANEL_KEY) })
+                .await
+                .log_err()
+                .flatten()
+                .and_then(|s| serde_json::from_str::<SerializedPanel>(&s).log_err());
+
+            workspace.update_in(cx, |workspace, window, cx| {
+                let panel = Self::new(workspace, window, cx);
+                if let Some(serialized) = serialized_panel {
+                    panel.update(cx, |panel, cx| {
+                        panel.width = serialized.width.map(|w| w.round());
+                        cx.notify();
+                    });
+                }
+                panel
+            })
+        })
+    }
+
+    fn serialize(&mut self, cx: &mut Context<Self>) {
+        let width = self.width;
+        self.pending_serialization = cx.background_spawn(
+            async move {
+                KEY_VALUE_STORE
+                    .write_kvp(
+                        PANEL_KEY.into(),
+                        serde_json::to_string(&SerializedPanel { width })?,
+                    )
+                    .await?;
+                anyhow::Ok(())
+            }
+            .log_err(),
+        );
+    }
+
+    fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.is_loading = true;
+        self.error = None;
+        cx.notify();
+
+        self.refresh_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    // Pull from uglyhat activity log — checkout events represent session ends
+                    let output = std::process::Command::new(uh_binary())
+                        .args(["activity", "--limit", "50"])
+                        .output()?;
+                    if !output.status.success() {
+                        anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr));
+                    }
+                    let activities = serde_json::from_slice::<Vec<ActivityEntry>>(&output.stdout)
+                        .unwrap_or_default();
+
+                    let sessions: Vec<SessionEntry> = activities
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, a)| {
+                            let date = a
+                                .created_at
+                                .split('T')
+                                .next()
+                                .unwrap_or(&a.created_at)
+                                .to_string();
+                            let summary = match a.entity_name.as_deref() {
+                                Some(name) => format!("{} {name}", a.action),
+                                None => a.action.clone(),
+                            };
+                            SessionEntry {
+                                id: format!("activity-{i}"),
+                                agent_name: a.actor.clone(),
+                                date,
+                                task_name: a.entity_name.clone(),
+                                task_id: None,
+                                action: a.action,
+                                summary,
+                            }
+                        })
+                        .collect();
+                    anyhow::Ok(sessions)
+                })
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.is_loading = false;
+                match result {
+                    Ok(sessions) => {
+                        this.sessions = sessions;
+                        this.error = None;
+                    }
+                    Err(e) => {
+                        this.error = Some(e.to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
+    }
+
+    fn filtered_sessions(&self) -> Vec<SessionEntry> {
+        if self.search_query.is_empty() {
+            return self.sessions.clone();
+        }
+        let q = self.search_query.to_lowercase();
+        self.sessions
+            .iter()
+            .filter(|s| {
+                s.agent_name.to_lowercase().contains(&q)
+                    || s.summary.to_lowercase().contains(&q)
+                    || s.task_name
+                        .as_deref()
+                        .map(|t| t.to_lowercase().contains(&q))
+                        .unwrap_or(false)
+                    || s.date.contains(&q)
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn open_detail(&mut self, session: SessionEntry, cx: &mut Context<Self>) {
+        self.view_state = ViewState::Detail(session);
+        cx.notify();
+    }
+
+    fn close_detail(&mut self, cx: &mut Context<Self>) {
+        self.view_state = ViewState::List;
+        cx.notify();
+    }
+
+    fn render_session_row(session: &SessionEntry, cx: &App) -> gpui::Div {
+        let dot_color = if session.action == "completed" {
+            Color::Success
+        } else if session.action == "created" {
+            Color::Accent
+        } else {
+            Color::Muted
+        };
+
+        h_flex()
+            .w_full()
+            .px_2()
+            .py_1()
+            .gap_2()
+            .hover(|style| style.bg(cx.theme().colors().element_hover))
+            .child(
+                div()
+                    .w(px(6.))
+                    .h(px(6.))
+                    .rounded_full()
+                    .flex_none()
+                    .bg(dot_color.color(cx)),
+            )
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        Label::new(session.agent_name.clone())
+                            .size(LabelSize::Small)
+                            .truncate(),
+                    )
+                    .child(
+                        Label::new(session.summary.clone())
+                            .size(LabelSize::Small)
+                            .color(Color::Muted)
+                            .truncate(),
+                    ),
+            )
+            .child(
+                Label::new(session.date.clone())
+                    .size(LabelSize::Small)
+                    .color(Color::Muted),
+            )
+    }
+
+    fn render_detail_view(session: &SessionEntry, cx: &mut Context<Self>) -> impl IntoElement {
+        let session = session.clone();
+
+        v_flex()
+            .size_full()
+            .child(
+                h_flex()
+                    .justify_between()
+                    .px_2()
+                    .py_1()
+                    .h(px(32.))
+                    .flex_none()
+                    .border_b_1()
+                    .border_color(cx.theme().colors().border)
+                    .child(
+                        ui::IconButton::new("back", IconName::ArrowLeft)
+                            .icon_size(ui::IconSize::Small)
+                            .icon_color(Color::Muted)
+                            .tooltip(Tooltip::text("Back to list"))
+                            .on_click(cx.listener(|this, _, _, cx| this.close_detail(cx))),
+                    )
+                    .child(
+                        Label::new(session.agent_name.clone())
+                            .size(LabelSize::Small)
+                            .truncate(),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .id("session-detail-body")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .px_2()
+                    .py_1()
+                    .gap_1()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Label::new("Date:")
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            )
+                            .child(Label::new(session.date.clone()).size(LabelSize::Small)),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Label::new("Action:")
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            )
+                            .child(Label::new(session.action.clone()).size(LabelSize::Small)),
+                    )
+                    .when_some(session.task_name.clone(), |this, t| {
+                        this.child(
+                            h_flex()
+                                .gap_2()
+                                .child(
+                                    Label::new("Task:")
+                                        .size(LabelSize::Small)
+                                        .color(Color::Muted),
+                                )
+                                .child(Label::new(t).size(LabelSize::Small)),
+                        )
+                    })
+                    .child(
+                        v_flex()
+                            .gap_0p5()
+                            .child(
+                                Label::new("Summary")
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted),
+                            )
+                            .child(Label::new(session.summary).size(LabelSize::Small)),
+                    ),
+            )
+    }
+}
+
+impl EventEmitter<Event> for SessionHistoryPanel {}
+impl EventEmitter<PanelEvent> for SessionHistoryPanel {}
+
+impl Focusable for SessionHistoryPanel {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for SessionHistoryPanel {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let ViewState::Detail(ref session) = self.view_state {
+            let session = session.clone();
+            return v_flex()
+                .key_context("SessionHistory")
+                .track_focus(&self.focus_handle)
+                .size_full()
+                .child(Self::render_detail_view(&session, cx))
+                .into_any_element();
+        }
+
+        let sessions = self.filtered_sessions();
+
+        v_flex()
+            .key_context("SessionHistory")
+            .track_focus(&self.focus_handle)
+            .size_full()
+            .child(
+                h_flex()
+                    .justify_between()
+                    .px_2()
+                    .py_1()
+                    .h(px(32.))
+                    .flex_none()
+                    .border_b_1()
+                    .border_color(cx.theme().colors().border)
+                    .child(Label::new("Session History").size(LabelSize::Small))
+                    .child(
+                        IconButton::new("refresh", IconName::ArrowCircle)
+                            .icon_size(ui::IconSize::Small)
+                            .icon_color(Color::Muted)
+                            .tooltip(Tooltip::text("Refresh"))
+                            .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                    ),
+            )
+            .child(
+                v_flex()
+                    .id("session-history-body")
+                    .flex_1()
+                    .overflow_y_scroll()
+                    .when_some(self.error.clone(), |this, err| {
+                        this.child(
+                            div()
+                                .px_2()
+                                .py_1()
+                                .child(Label::new(err).size(LabelSize::Small).color(Color::Error)),
+                        )
+                    })
+                    .when(self.is_loading && sessions.is_empty(), |this| {
+                        this.child(
+                            div().px_2().py_1().child(
+                                Label::new("Loading…")
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            ),
+                        )
+                    })
+                    .when(sessions.is_empty() && !self.is_loading, |this| {
+                        this.child(
+                            div().px_2().py_1().child(
+                                Label::new("No session history found.")
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            ),
+                        )
+                    })
+                    .children(sessions.iter().map(|session| {
+                        let session_clone = session.clone();
+                        Self::render_session_row(session, cx)
+                            .id(ElementId::Name(session.id.clone().into()))
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open_detail(session_clone.clone(), cx);
+                            }))
+                    })),
+            )
+            .into_any_element()
+    }
+}
+
+impl Panel for SessionHistoryPanel {
+    fn persistent_name() -> &'static str {
+        "SessionHistoryPanel"
+    }
+
+    fn panel_key() -> &'static str {
+        PANEL_KEY
+    }
+
+    fn position(&self, _: &Window, _cx: &App) -> DockPosition {
+        DockPosition::Right
+    }
+
+    fn position_is_valid(&self, position: DockPosition) -> bool {
+        matches!(position, DockPosition::Left | DockPosition::Right)
+    }
+
+    fn set_position(&mut self, _position: DockPosition, _: &mut Window, _cx: &mut Context<Self>) {}
+
+    fn size(&self, _: &Window, _cx: &App) -> Pixels {
+        self.width.unwrap_or(px(300.))
+    }
+
+    fn set_size(&mut self, size: Option<Pixels>, _: &mut Window, cx: &mut Context<Self>) {
+        self.width = size;
+        self.serialize(cx);
+        cx.notify();
+    }
+
+    fn set_active(&mut self, active: bool, _: &mut Window, cx: &mut Context<Self>) {
+        self.active = active;
+        cx.notify();
+    }
+
+    fn icon(&self, _: &Window, _cx: &App) -> Option<IconName> {
+        Some(IconName::HistoryRerun)
+    }
+
+    fn icon_tooltip(&self, _: &Window, _cx: &App) -> Option<&'static str> {
+        Some("Session History")
+    }
+
+    fn toggle_action(&self) -> Box<dyn Action> {
+        Box::new(ToggleFocus)
+    }
+
+    fn activation_priority(&self) -> u32 {
+        10
+    }
+}

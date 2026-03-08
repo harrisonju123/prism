@@ -289,6 +289,26 @@ pub struct TaskTypeStat {
 }
 
 // ---------------------------------------------------------------------------
+// Agent metrics types (shared between server and client)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMetricStat {
+    pub agent_name: String,
+    pub request_count: u64,
+    pub total_cost_usd: f64,
+    pub avg_latency_ms: f64,
+    pub total_tokens: u64,
+    pub failure_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentMetricsResponse {
+    pub period_days: u32,
+    pub agents: Vec<AgentMetricStat>,
+}
+
+// ---------------------------------------------------------------------------
 // Routing types (shared between server and client)
 // ---------------------------------------------------------------------------
 

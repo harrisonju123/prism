@@ -1,11 +1,11 @@
-use futures::{stream, Stream, StreamExt};
+use futures::{Stream, StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 
 // Re-export prism-types for consumers
 pub use prism_types::{
-    ChatCompletionRequest, ChatCompletionResponse, Choice, Message, PolicyResponse,
-    SummaryResponse, TaskTypeStatsResponse, Usage, WasteScoreResponse,
+    AgentMetricsResponse, ChatCompletionRequest, ChatCompletionResponse, Choice, Message,
+    PolicyResponse, SummaryResponse, TaskTypeStatsResponse, Usage, WasteScoreResponse,
 };
 
 // --- Error ---
@@ -47,7 +47,9 @@ pub struct ModelInfo {
 
 // --- SSE parsing ---
 
-fn parse_sse_bytes(item: std::result::Result<bytes::Bytes, reqwest::Error>) -> Vec<Result<StreamChunk>> {
+fn parse_sse_bytes(
+    item: std::result::Result<bytes::Bytes, reqwest::Error>,
+) -> Vec<Result<StreamChunk>> {
     let bytes = match item {
         Err(e) => return vec![Err(ClientError::Request(e))],
         Ok(b) => b,
@@ -151,7 +153,9 @@ impl PrismClient {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk>> + Send>>> {
         let mut stream_req = req.clone();
         stream_req.stream = true;
-        stream_req.stream_options = Some(prism_types::StreamOptions { include_usage: true });
+        stream_req.stream_options = Some(prism_types::StreamOptions {
+            include_usage: true,
+        });
 
         let resp = self
             .request(reqwest::Method::POST, "/v1/chat/completions")
@@ -198,9 +202,7 @@ impl PrismClient {
         Ok(resp.status().is_success())
     }
 
-    async fn handle_response<T: serde::de::DeserializeOwned>(
-        resp: reqwest::Response,
-    ) -> Result<T> {
+    async fn handle_response<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> Result<T> {
         let status = resp.status().as_u16();
         if !resp.status().is_success() {
             let msg = resp.text().await.unwrap_or_default();
@@ -248,6 +250,17 @@ impl PrismClient {
     pub async fn routing_policy(&self) -> Result<PolicyResponse> {
         let resp = self
             .request(reqwest::Method::GET, "/api/v1/routing/policy")
+            .send()
+            .await?;
+        Self::handle_response(resp).await
+    }
+
+    pub async fn stats_agents(&self, period_days: u32) -> Result<AgentMetricsResponse> {
+        let resp = self
+            .request(
+                reqwest::Method::GET,
+                &format!("/api/v1/stats/agents?period_days={period_days}"),
+            )
             .send()
             .await?;
         Self::handle_response(resp).await

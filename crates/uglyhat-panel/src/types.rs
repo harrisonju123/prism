@@ -1,4 +1,15 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+pub fn uh_binary() -> PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        let p = PathBuf::from(home).join(".cargo/bin/uh");
+        if p.exists() {
+            return p;
+        }
+    }
+    "uh".into()
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct WorkspaceContext {
@@ -18,7 +29,22 @@ pub struct AgentStatus {
     #[serde(default)]
     pub current_task_name: Option<String>,
     #[serde(default)]
+    pub current_task_id: Option<String>,
+    #[serde(default)]
     pub last_checkin: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SessionEntry {
+    pub id: String,
+    pub agent_name: String,
+    pub date: String,
+    #[serde(default)]
+    pub task_name: Option<String>,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    pub action: String,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
