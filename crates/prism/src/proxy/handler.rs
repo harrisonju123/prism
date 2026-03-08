@@ -357,147 +357,169 @@ pub async fn chat_completions(
         request.stream_options = Some(crate::types::StreamOptions { include_usage: true });
     }
 
-    // --- Provider call with retry + failover ---
+    // --- Provider call with retry + failover + circuit breaker ---
+    // Build the full ordered candidate list: primary first, then per-model fallbacks,
+    // then the global routing.fallback_chain (skipping providers already tried).
+    let global_chain = state.config.routing.fallback_chain.clone();
+    let all_candidates: Vec<(String, String)> = {
+        let mut seen = std::collections::HashSet::new();
+        let mut candidates = Vec::new();
+
+        // Primary
+        seen.insert(primary_provider_name.clone());
+        candidates.push((primary_provider_name.clone(), primary_model_id.clone()));
+
+        // Per-model fallbacks
+        for (fp, fm) in &fallback_providers {
+            if seen.insert(fp.clone()) {
+                candidates.push((fp.clone(), fm.clone()));
+            }
+        }
+
+        // Global fallback chain — reuse the request model_id against each provider
+        for chain_provider in &global_chain {
+            if seen.insert(chain_provider.clone()) {
+                // Resolve the model_id for this provider using the original request model
+                match resolve_model_for_provider(&state.config, &request.model, chain_provider) {
+                    Some(mid) => candidates.push((chain_provider.clone(), mid)),
+                    None => candidates.push((chain_provider.clone(), request.model.clone())),
+                }
+            }
+        }
+
+        candidates
+    };
+
     let retry_config = &state.config.retry;
     let provider_result = if request.stream {
-        // Streaming path: try primary, then fallbacks on error
-        match provider.chat_completion(&request, &model_id).await {
-            Ok(resp) => resp,
-            Err(primary_err) if primary_err.is_retryable() && !fallback_providers.is_empty() => {
-                tracing::warn!(
-                    provider = %provider_name,
-                    error = %primary_err,
-                    "streaming primary provider failed, trying fallbacks"
+        // Streaming path: iterate candidates in order, skip circuit-open providers
+        let mut last_err: Option<PrismError> = None;
+        let mut stream_result = None;
+
+        for (candidate_provider, candidate_model) in &all_candidates {
+            if !state.circuit_breaker.is_allowed(candidate_provider).await {
+                tracing::info!(
+                    provider = %candidate_provider,
+                    "circuit open, skipping provider"
                 );
+                continue;
+            }
 
-                let mut last_err = primary_err;
-                let mut fallback_result = None;
-
-                for (fb_provider_name, fb_model_id) in &fallback_providers {
-                    let fb_provider = match state.providers.get(fb_provider_name) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            tracing::warn!(
-                                fallback_provider = %fb_provider_name,
-                                error = %e,
-                                "streaming fallback provider not available, skipping"
-                            );
-                            continue;
-                        }
-                    };
-
-                    tracing::info!(
-                        fallback_provider = %fb_provider_name,
-                        fallback_model = %fb_model_id,
-                        "attempting streaming fallback provider"
+            let cand_provider = match state.providers.get(candidate_provider) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %candidate_provider,
+                        error = %e,
+                        "provider not available, skipping"
                     );
-
-                    match fb_provider.chat_completion(&request, fb_model_id).await {
-                        Ok(resp) => {
-                            provider_name = fb_provider_name.clone();
-                            tracing::info!(
-                                fallback_provider = %fb_provider_name,
-                                "streaming failover succeeded"
-                            );
-                            fallback_result = Some(resp);
-                            break;
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                fallback_provider = %fb_provider_name,
-                                error = %e,
-                                "streaming fallback provider failed"
-                            );
-                            last_err = e;
-                        }
-                    }
+                    continue;
                 }
+            };
 
-                if let Some(result) = fallback_result {
-                    result
-                } else {
-                    return Err(last_err);
+            match cand_provider.chat_completion(&request, candidate_model).await {
+                Ok(resp) => {
+                    state.circuit_breaker.record_success(candidate_provider).await;
+                    if candidate_provider != &primary_provider_name {
+                        tracing::info!(
+                            fallback_provider = %candidate_provider,
+                            "streaming failover succeeded"
+                        );
+                        provider_name = candidate_provider.clone();
+                    }
+                    stream_result = Some(resp);
+                    break;
+                }
+                Err(e) if e.is_retryable() => {
+                    tracing::warn!(
+                        provider = %candidate_provider,
+                        error = %e,
+                        "streaming provider failed, trying next"
+                    );
+                    state.circuit_breaker.record_failure(candidate_provider).await;
+                    last_err = Some(e);
+                }
+                Err(e) => {
+                    // Non-retryable: record failure and stop immediately.
+                    state.circuit_breaker.record_failure(candidate_provider).await;
+                    return Err(e);
                 }
             }
-            Err(e) => return Err(e),
+        }
+
+        match stream_result {
+            Some(r) => r,
+            None => return Err(last_err.unwrap_or_else(|| {
+                PrismError::Provider("all providers unavailable or circuit open".to_string())
+            })),
         }
     } else {
-        let primary_result = crate::proxy::retry::with_retry(retry_config, || {
-            let req = &request;
-            let mid = &model_id;
-            let prov = &provider;
-            async move { prov.chat_completion(req, mid).await }
-        })
-        .await;
+        let mut last_err: Option<PrismError> = None;
+        let mut non_stream_result = None;
 
-        match primary_result {
-            Ok(resp) => resp,
-            Err(primary_err) if primary_err.is_retryable() && !fallback_providers.is_empty() => {
-                tracing::warn!(
-                    provider = %provider_name,
-                    error = %primary_err,
-                    "primary provider exhausted retries, trying fallbacks"
+        for (candidate_provider, candidate_model) in &all_candidates {
+            if !state.circuit_breaker.is_allowed(candidate_provider).await {
+                tracing::info!(
+                    provider = %candidate_provider,
+                    "circuit open, skipping provider"
                 );
+                continue;
+            }
 
-                let mut last_err = primary_err;
-                let mut succeeded = false;
-                let mut fallback_result = None;
-
-                for (fb_provider_name, fb_model_id) in &fallback_providers {
-                    let fb_provider = match state.providers.get(fb_provider_name) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            tracing::warn!(
-                                fallback_provider = %fb_provider_name,
-                                error = %e,
-                                "fallback provider not available, skipping"
-                            );
-                            continue;
-                        }
-                    };
-
-                    tracing::info!(
-                        fallback_provider = %fb_provider_name,
-                        fallback_model = %fb_model_id,
-                        "attempting fallback provider"
+            let cand_provider = match state.providers.get(candidate_provider) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %candidate_provider,
+                        error = %e,
+                        "provider not available, skipping"
                     );
-
-                    match crate::proxy::retry::with_retry(retry_config, || {
-                        let req = &request;
-                        let mid = fb_model_id;
-                        let prov = &fb_provider;
-                        async move { prov.chat_completion(req, mid).await }
-                    })
-                    .await
-                    {
-                        Ok(resp) => {
-                            provider_name = fb_provider_name.clone();
-                            tracing::info!(
-                                fallback_provider = %fb_provider_name,
-                                "failover succeeded"
-                            );
-                            fallback_result = Some(resp);
-                            succeeded = true;
-                            break;
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                fallback_provider = %fb_provider_name,
-                                error = %e,
-                                "fallback provider failed"
-                            );
-                            last_err = e;
-                        }
-                    }
+                    continue;
                 }
+            };
 
-                if succeeded {
-                    fallback_result.unwrap()
-                } else {
-                    return Err(last_err);
+            let result = crate::proxy::retry::with_retry(retry_config, || {
+                let req = &request;
+                let mid = candidate_model.as_str();
+                let prov = cand_provider;
+                async move { prov.chat_completion(req, mid).await }
+            })
+            .await;
+
+            match result {
+                Ok(resp) => {
+                    state.circuit_breaker.record_success(candidate_provider).await;
+                    if candidate_provider != &primary_provider_name {
+                        tracing::info!(
+                            fallback_provider = %candidate_provider,
+                            "failover succeeded"
+                        );
+                        provider_name = candidate_provider.clone();
+                    }
+                    non_stream_result = Some(resp);
+                    break;
+                }
+                Err(e) if e.is_retryable() => {
+                    tracing::warn!(
+                        provider = %candidate_provider,
+                        error = %e,
+                        "provider exhausted retries, trying next"
+                    );
+                    state.circuit_breaker.record_failure(candidate_provider).await;
+                    last_err = Some(e);
+                }
+                Err(e) => {
+                    state.circuit_breaker.record_failure(candidate_provider).await;
+                    return Err(e);
                 }
             }
-            Err(e) => return Err(e),
+        }
+
+        match non_stream_result {
+            Some(r) => r,
+            None => return Err(last_err.unwrap_or_else(|| {
+                PrismError::Provider("all providers unavailable or circuit open".to_string())
+            })),
         }
     };
 
@@ -931,6 +953,30 @@ pub(crate) fn resolve_model(config: &Config, model: &str) -> Result<(String, Str
     Ok((provider.to_string(), model.to_string()))
 }
 
+/// For the global fallback chain: given a request model name and a target provider,
+/// attempt to resolve what model_id to use for that provider.
+/// Returns None if no mapping can be found.
+pub(crate) fn resolve_model_for_provider(
+    config: &Config,
+    request_model: &str,
+    target_provider: &str,
+) -> Option<String> {
+    // If a model config entry explicitly maps to this provider, use its model_id
+    for (_alias, mc) in &config.models {
+        if mc.provider == target_provider {
+            return Some(mc.model.clone());
+        }
+    }
+    // Try resolving via the static catalog for the request_model on this provider
+    if let Some(info) = crate::models::lookup_model(request_model) {
+        if info.provider == target_provider {
+            return Some(info.model_id.to_string());
+        }
+    }
+    // Fall through: caller will use the request model name as-is
+    None
+}
+
 /// Resolve a model to its primary provider + any fallback providers.
 pub(crate) fn resolve_model_with_fallbacks(
     config: &Config,
@@ -1263,6 +1309,7 @@ pub struct AppState {
     pub interop_metering: Option<Arc<crate::interop::metering::MeteringStore>>,
     pub metrics: Option<Arc<crate::observability::metrics::MetricsCollector>>,
     pub session_cost_usd: Arc<std::sync::atomic::AtomicU64>,
+    pub circuit_breaker: Arc<crate::proxy::circuit_breaker::CircuitBreaker>,
 }
 
 #[cfg(test)]

@@ -4,7 +4,10 @@ use edit_prediction_types::{
     EditPrediction, EditPredictionDelegate, EditPredictionDiscardReason, EditPredictionIconSet,
 };
 use futures::{AsyncReadExt, FutureExt, StreamExt, future::BoxFuture};
-use gpui::{AnyView, App, AsyncApp, Context, Entity, Global, SharedString, Task, WeakEntity, Window};
+use gpui::{
+    AnyView, App, AsyncApp, Context, DismissEvent, Entity, EventEmitter, Focusable, FocusHandle,
+    Global, SharedString, Task, WeakEntity, Window,
+};
 use http_client::{AsyncBody, HttpClient, Method, Request as HttpRequest};
 use ui::IconName;
 use language::{Anchor, Buffer, BufferSnapshot, EditPreview, OffsetRangeExt, ToOffset, ToPoint};
@@ -25,10 +28,21 @@ use open_ai::{
     stream_completion,
 };
 use fs::Fs;
-use settings::{Settings, SettingsStore, update_settings_file};
+use settings::{
+    LanguageModelProviderSetting, LanguageModelSelection, Settings, SettingsStore,
+    update_settings_file,
+};
 use ui::{ElevationIndex, List, ListBulletItem, Tooltip, prelude::*};
 use ui_input::InputField;
 use util::ResultExt;
+
+actions!(
+    prism,
+    [
+        /// Switch the active PrisM model from the command palette.
+        SwitchModel
+    ]
+);
 
 use crate::provider::open_ai::{
     OpenAiEventMapper, OpenAiResponseEventMapper, into_open_ai, into_open_ai_response,
@@ -627,6 +641,7 @@ struct ConfigurationView {
     state: Entity<State>,
     load_credentials_task: Option<Task<()>>,
     api_key_error: Option<SharedString>,
+    switch_model_modal: Option<Entity<SwitchModelModal>>,
 }
 
 fn is_valid_prism_key(key: &str) -> bool {
@@ -690,7 +705,26 @@ impl ConfigurationView {
             state,
             load_credentials_task,
             api_key_error: None,
+            switch_model_modal: None,
         }
+    }
+
+    fn open_switch_model_modal(
+        &mut self,
+        _: &SwitchModel,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = self.state.clone();
+        let fs = <dyn Fs>::global(cx);
+        let modal = cx.new(|cx| SwitchModelModal::new(state, fs, window, cx));
+        cx.subscribe(&modal, |this, _, _: &DismissEvent, cx| {
+            this.switch_model_modal = None;
+            cx.notify();
+        })
+        .detach();
+        self.switch_model_modal = Some(modal);
+        cx.notify();
     }
 
     fn save_api_key(&mut self, _: &menu::Confirm, window: &mut Window, cx: &mut Context<Self>) {
@@ -764,6 +798,7 @@ impl Render for ConfigurationView {
         let env_var_set = state.api_key_state.is_from_env_var();
         let env_var_name = state.api_key_state.env_var_name();
         let sidecar_status = state.sidecar_status.clone();
+        let switch_model_modal = self.switch_model_modal.clone();
 
         let api_key_section = if self.should_render_editor(cx) {
             v_flex()
@@ -903,13 +938,138 @@ impl Render for ConfigurationView {
         } else {
             v_flex()
                 .size_full()
+                .on_action(cx.listener(Self::open_switch_model_modal))
                 .child(api_key_section)
                 .child(api_url_section)
                 .when_some(sidecar_status_label, |this, label| {
                     this.child(div().pt(DynamicSpacing::Base04.rems(cx)).child(label))
                 })
+                .when_some(switch_model_modal, |this, modal| {
+                    this.child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .flex()
+                            .items_start()
+                            .justify_center()
+                            .pt(rems(2.))
+                            .child(modal),
+                    )
+                })
                 .into_any()
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SwitchModel command palette action — modal model picker
+// ---------------------------------------------------------------------------
+
+/// Modal that lets the user pick a PrisM model from the list returned by
+/// /v1/models and sets it as the agent default model in settings.
+struct SwitchModelModal {
+    state: Entity<State>,
+    fs: Arc<dyn Fs>,
+    focus_handle: FocusHandle,
+    query: String,
+}
+
+impl SwitchModelModal {
+    fn new(state: Entity<State>, fs: Arc<dyn Fs>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let focus_handle = cx.focus_handle();
+        focus_handle.focus(window, cx);
+        Self {
+            state,
+            fs,
+            focus_handle,
+            query: String::new(),
+        }
+    }
+
+    fn filtered_models(&self, cx: &App) -> Vec<String> {
+        let models = self.state.read(cx).fetched_models.clone();
+        if self.query.is_empty() {
+            return models;
+        }
+        let query_lower = self.query.to_lowercase();
+        models
+            .into_iter()
+            .filter(|m| m.to_lowercase().contains(&query_lower))
+            .collect()
+    }
+
+    fn select_model(&mut self, model_id: String, window: &mut Window, cx: &mut Context<Self>) {
+        let fs = self.fs.clone();
+        update_settings_file(fs, cx, move |settings, _| {
+            settings
+                .agent
+                .get_or_insert_default()
+                .set_model(LanguageModelSelection {
+                    provider: LanguageModelProviderSetting("prism".to_string()),
+                    model: model_id.clone(),
+                    enable_thinking: false,
+                    effort: None,
+                });
+        });
+        cx.emit(DismissEvent);
+        let _ = window;
+    }
+}
+
+impl EventEmitter<DismissEvent> for SwitchModelModal {}
+
+impl Focusable for SwitchModelModal {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+impl Render for SwitchModelModal {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let models = self.filtered_models(cx);
+
+        let query = self.query.clone();
+        let model_list = div()
+            .flex_1()
+            .overflow_y_scroll()
+            .children(models.into_iter().enumerate().map(|(ix, model_id)| {
+                let model_id_clone = model_id.clone();
+                div()
+                    .id(("prism-model-item", ix))
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .hover(|style| style.bg(cx.theme().colors().element_hover))
+                    .child(Label::new(model_id.clone()))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.select_model(model_id_clone.clone(), window, cx);
+                    }))
+            }));
+
+        v_flex()
+            .key_context("SwitchModelModal")
+            .track_focus(&self.focus_handle)
+            .elevation_3(cx)
+            .w(rems(24.))
+            .max_h(rems(20.))
+            .p_2()
+            .gap_2()
+            .on_action(cx.listener(|this, _: &menu::Cancel, window, cx| {
+                cx.emit(DismissEvent);
+                let _ = (this, window);
+            }))
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(Icon::new(IconName::MagnifyingGlass).size(IconSize::Small).color(Color::Muted))
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(Label::new(if query.is_empty() { "Search PrisM models…".to_string() } else { query }))
+                    ),
+            )
+            .child(model_list)
     }
 }
 

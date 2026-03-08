@@ -404,6 +404,29 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // --- LLM-judge feedback loop on live traffic ---
+    if config.benchmark.live_judge_enabled && !config.clickhouse.url.is_empty() {
+        tracing::info!(
+            interval_secs = config.benchmark.live_judge_interval_secs,
+            max_calls_per_minute = config.benchmark.live_judge_max_calls_per_minute,
+            judge_model = %config.benchmark.judge_model,
+            "live judge feedback loop enabled"
+        );
+
+        let live_judge = routing::live_judge::LiveJudgeTask::new(
+            registry.clone(),
+            config.clone(),
+            fitness_cache.clone(),
+            cancel.clone(),
+            config.benchmark.live_judge_interval_secs,
+            config.benchmark.live_judge_max_calls_per_minute,
+            config.benchmark.live_judge_lookback_secs,
+            config.clickhouse.url.clone(),
+            config.clickhouse.database.clone(),
+        );
+        tokio::spawn(live_judge.run());
+    }
+
     // --- Feedback Adjuster ---
     if config.feedback_adjuster.enabled {
         tracing::info!(

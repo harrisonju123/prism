@@ -1,0 +1,15 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "PrisM Postgres",
+      "Group": "Servers",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "prism",
+      "Username": "prism",
+      "Password": "prism",
+      "SSLMode": "prefer",
+      "SavePassword": true
+    }
+  }
+}

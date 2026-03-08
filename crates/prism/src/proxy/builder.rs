@@ -18,6 +18,7 @@ use crate::observability::callbacks::CallbackRegistry;
 use crate::observability::metrics::MetricsCollector;
 use crate::prompts::store::PromptStore;
 use crate::providers::ProviderRegistry;
+use crate::proxy::circuit_breaker::CircuitBreaker;
 use crate::proxy::handler::AppState;
 use crate::routing::session::SessionTracker;
 use crate::routing::types::RoutingPolicy;
@@ -58,6 +59,7 @@ pub struct AppStateBuilder {
     interop_metering: Option<Arc<MeteringStore>>,
     metrics: Option<Arc<MetricsCollector>>,
     session_cost_usd: Option<Arc<std::sync::atomic::AtomicU64>>,
+    circuit_breaker: Option<Arc<CircuitBreaker>>,
 }
 
 impl AppStateBuilder {
@@ -85,6 +87,7 @@ impl AppStateBuilder {
             interop_metering: None,
             metrics: None,
             session_cost_usd: None,
+            circuit_breaker: None,
         }
     }
 
@@ -300,6 +303,11 @@ impl AppStateBuilder {
         self
     }
 
+    pub fn with_circuit_breaker(mut self, cb: Arc<CircuitBreaker>) -> Self {
+        self.circuit_breaker = Some(cb);
+        self
+    }
+
     // --- build() ---
 
     pub fn build(self) -> Result<AppState, AppStateBuildError> {
@@ -324,6 +332,13 @@ impl AppStateBuilder {
         let session_tracker = self
             .session_tracker
             .unwrap_or_else(|| Arc::new(Mutex::new(SessionTracker::new())));
+        let cb_cfg = &self.config.routing.circuit_breaker;
+        let circuit_breaker = self.circuit_breaker.unwrap_or_else(|| {
+            Arc::new(CircuitBreaker::new(
+                cb_cfg.failure_threshold,
+                cb_cfg.open_duration_secs,
+            ))
+        });
 
         Ok(AppState {
             config: self.config,
@@ -351,6 +366,7 @@ impl AppStateBuilder {
             session_cost_usd: self
                 .session_cost_usd
                 .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicU64::new(0))),
+            circuit_breaker,
         })
     }
 }

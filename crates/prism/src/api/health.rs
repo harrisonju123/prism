@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,6 +21,9 @@ pub struct HealthResponse {
     status: &'static str,
     version: &'static str,
     uptime_secs: u64,
+    /// Per-provider circuit breaker states ("closed", "open", "half_open").
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    circuit_breakers: HashMap<String, &'static str>,
 }
 
 pub async fn health() -> Json<HealthResponse> {
@@ -28,6 +32,18 @@ pub async fn health() -> Json<HealthResponse> {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
         uptime_secs: uptime,
+        circuit_breakers: HashMap::new(),
+    })
+}
+
+pub async fn health_with_state(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
+    let uptime = START_TIME.get().map(|t| t.elapsed().as_secs()).unwrap_or(0);
+    let circuit_breakers = state.circuit_breaker.snapshot().await;
+    Json(HealthResponse {
+        status: "ok",
+        version: env!("CARGO_PKG_VERSION"),
+        uptime_secs: uptime,
+        circuit_breakers,
     })
 }
 

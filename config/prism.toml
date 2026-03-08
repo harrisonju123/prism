@@ -1,0 +1,66 @@
+# PrisM Gateway — Docker Compose local dev config
+# Overrides are also available via PRISM_* environment variables.
+
+[gateway]
+address = "0.0.0.0:9100"
+
+[clickhouse]
+url = "http://clickhouse:8123"
+database = "prism"
+
+[postgres]
+url = "postgres://prism:prism@postgres:5432/prism"
+max_connections = 10
+
+[pipeline]
+batch_size = 50
+flush_interval_ms = 100
+queue_size = 10000
+
+[keys]
+enabled = true
+master_key = "${PRISM_MASTER_KEY:-dev-master-key}"
+cache_capacity = 10000
+budget_reconcile_interval_secs = 300
+
+[providers.openai]
+api_key = "${OPENAI_API_KEY}"
+
+[providers.anthropic]
+api_key = "${ANTHROPIC_API_KEY}"
+
+[models.sonnet]
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"
+tier = 2
+
+[models.haiku]
+provider = "anthropic"
+model = "claude-3-5-haiku-20241022"
+tier = 3
+
+[models.gpt4o]
+provider = "openai"
+model = "gpt-4o"
+tier = 2
+
+[models.gpt4o-mini]
+provider = "openai"
+model = "gpt-4o-mini"
+tier = 3
+
+[routing]
+enabled = false
+
+[cache]
+enabled = false
+
+[benchmark]
+enabled = false
+
+[waste]
+enabled = true
+
+[dashboard]
+enabled = true
+dist_path = "/usr/share/prism/dashboard"
