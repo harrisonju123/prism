@@ -34,7 +34,7 @@ pub struct RulesClassifier;
 
 impl RulesClassifier {
     pub fn classify(input: &ClassifierInput) -> ClassificationResult {
-        let mut scores: HashMap<TaskType, f64> = HashMap::new();
+        let mut scores: HashMap<TaskType, f64> = HashMap::with_capacity(24);
         let mut signals: Vec<String> = Vec::new();
 
         // Signal: tool_array_present
@@ -109,10 +109,9 @@ impl RulesClassifier {
             TaskType::Debugging,
         ];
         if let Some(system_text) = &input.system_prompt_text {
-            let lower = system_text.to_lowercase();
             for (task_type, regexes) in KEYWORD_REGEXES.iter() {
                 for (re, _) in regexes {
-                    if re.is_match(&lower) {
+                    if re.is_match(system_text) {
                         let boost = if boost_types.contains(task_type) {
                             0.30
                         } else {
@@ -130,7 +129,7 @@ impl RulesClassifier {
         let user_lower = input.last_user_message.to_lowercase();
         for (task_type, regexes) in KEYWORD_REGEXES.iter() {
             for (re, _) in regexes {
-                if re.is_match(&user_lower) {
+                if re.is_match(&input.last_user_message) {
                     *scores.entry(*task_type).or_default() += 0.50;
                     signals.push(format!("user_kw_{}", task_type));
                     break; // once per task type
@@ -149,33 +148,15 @@ impl RulesClassifier {
         }
 
         // Signal: inline_code_edit (short prompt + edit keyword → CodeEdit)
-        let edit_keywords = [
-            "fix this",
-            "refactor this",
-            "rename this",
-            "rewrite this",
-            "update this code",
-            "change this",
-            "modify this",
-            "edit this",
-            "replace this",
-            "update this function",
-            "update this method",
-            "update this class",
-            "change the function",
-            "modify the code",
-            "fix the function",
-            "rename the variable",
-            "replace the implementation",
-            "inline edit",
-        ];
-        if input.prompt_tokens < 500
-            && edit_keywords
-                .iter()
-                .any(|kw| user_lower.contains(kw))
-        {
-            *scores.entry(TaskType::CodeEdit).or_default() += 0.60;
-            signals.push("inline_code_edit".into());
+        if input.prompt_tokens < 500 {
+            let is_edit_request = TASK_KEYWORDS
+                .get(&TaskType::CodeEdit)
+                .map(|kws| kws.iter().any(|kw| user_lower.contains(*kw)))
+                .unwrap_or(false);
+            if is_edit_request {
+                *scores.entry(TaskType::CodeEdit).or_default() += 0.60;
+                signals.push("inline_code_edit".into());
+            }
         }
 
         // Signal: no_strong_signals_fallback
