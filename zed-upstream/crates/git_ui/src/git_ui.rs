@@ -64,6 +64,10 @@ pub fn init(cx: &mut App) {
         repository_selector::register(workspace);
         git_picker::register(workspace);
 
+        workspace.register_action(|workspace, _: &zed_actions::worktree::Switch, window, cx| {
+            worktree_picker::open(workspace, &zed_actions::git::Worktree, window, cx);
+        });
+
         let project = workspace.project().read(cx);
         if project.is_read_only(cx) {
             return;

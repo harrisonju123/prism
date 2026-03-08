@@ -27,6 +27,7 @@ use zed_actions::agent::{OpenClaudeAgentOnboardingModal, ReauthenticateAgent, Re
 
 use crate::ManageProfiles;
 use crate::ui::{AcpOnboardingModal, ClaudeCodeOnboardingModal};
+use crate::worktree_spawn;
 use crate::{
     AddContextServer, AgentDiffPane, ConnectionView, CopyThreadToClipboard, Follow,
     InlineAssistant, LoadThreadFromClipboard, NewTextThread, NewThread, OpenActiveThreadAsMarkdown,
@@ -86,7 +87,7 @@ use workspace::{
 };
 use zed_actions::{
     DecreaseBufferFontSize, IncreaseBufferFontSize, ResetBufferFontSize,
-    agent::{OpenAcpOnboardingModal, OpenSettings, ResetAgentZoom, ResetOnboarding},
+    agent::{OpenAcpOnboardingModal, OpenSettings, ResetAgentZoom, ResetOnboarding, SpawnInNewWorktree},
     assistant::{OpenRulesLibrary, Toggle, ToggleFocus},
 };
 
@@ -352,6 +353,9 @@ pub fn init(cx: &mut App) {
                             panel.set_start_thread_in(action, cx);
                         });
                     }
+                })
+                .register_action(|workspace, _: &SpawnInNewWorktree, window, cx| {
+                    worktree_spawn::open(workspace, window, cx);
                 });
         },
     )
