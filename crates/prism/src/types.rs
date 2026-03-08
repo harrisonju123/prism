@@ -224,6 +224,7 @@ impl TaskType {
         TaskType::Documentation,
         TaskType::Testing,
         TaskType::ToolSelection,
+        TaskType::FillInTheMiddle,
     ];
 
     /// Parse a task type from a snake_case string, returning Unknown for unrecognized values.
@@ -251,6 +252,8 @@ impl std::fmt::Display for TaskType {
 pub struct TextCompletionRequest {
     pub model: String,
     pub prompt: String,
+    #[serde(default)]
+    pub suffix: Option<String>,
     #[serde(default)]
     pub max_tokens: Option<u32>,
     #[serde(default)]

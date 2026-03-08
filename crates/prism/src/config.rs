@@ -23,6 +23,8 @@ pub struct Config {
     #[serde(default)]
     pub models: HashMap<String, ModelConfig>,
     #[serde(default)]
+    pub aliases: HashMap<String, String>,
+    #[serde(default)]
     pub pipeline: PipelineConfig,
     #[serde(default)]
     pub routing: RoutingConfig,
@@ -1077,5 +1079,39 @@ mod tests {
         assert!((config.waste.quality_tolerance - 0.05).abs() < f64::EPSILON);
         assert!((config.waste.cost_ratio_threshold - 0.5).abs() < f64::EPSILON);
         assert!((config.waste.overspend_multiplier - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_aliases_empty_by_default() {
+        let config: Config = Figment::new().extract().unwrap();
+        assert!(config.aliases.is_empty());
+    }
+
+    #[test]
+    fn test_aliases_from_toml() {
+        use figment::providers::Format;
+        let config: Config = Figment::new()
+            .merge(figment::providers::Toml::string(
+                r#"
+[aliases]
+"fast" = "claude-haiku-4-5-20251001"
+"smart" = "claude-opus-4-6"
+"code" = "claude-sonnet-4-6"
+"#,
+            ))
+            .extract()
+            .unwrap();
+        assert_eq!(
+            config.aliases.get("fast").map(|s| s.as_str()),
+            Some("claude-haiku-4-5-20251001")
+        );
+        assert_eq!(
+            config.aliases.get("smart").map(|s| s.as_str()),
+            Some("claude-opus-4-6")
+        );
+        assert_eq!(
+            config.aliases.get("code").map(|s| s.as_str()),
+            Some("claude-sonnet-4-6")
+        );
     }
 }
