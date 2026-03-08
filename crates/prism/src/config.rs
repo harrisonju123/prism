@@ -154,6 +154,12 @@ pub struct RoutingConfig {
     pub llm_classifier: LlmClassifierConfig,
     #[serde(default)]
     pub embedding_classifier: EmbeddingClassifierConfig,
+    /// Global fallback chain: ordered list of provider names to try when the
+    /// primary provider fails.  e.g. ["anthropic", "openai", "groq"].
+    #[serde(default)]
+    pub fallback_chain: Vec<String>,
+    #[serde(default)]
+    pub circuit_breaker: CircuitBreakerConfig,
 }
 
 impl Default for RoutingConfig {
@@ -166,8 +172,39 @@ impl Default for RoutingConfig {
             rules: Vec::new(),
             llm_classifier: LlmClassifierConfig::default(),
             embedding_classifier: EmbeddingClassifierConfig::default(),
+            fallback_chain: Vec::new(),
+            circuit_breaker: CircuitBreakerConfig::default(),
         }
     }
+}
+
+// --- Circuit Breaker ---
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CircuitBreakerConfig {
+    /// Number of consecutive failures before tripping the circuit open.
+    #[serde(default = "default_cb_failure_threshold")]
+    pub failure_threshold: u32,
+    /// Seconds to keep the circuit open before allowing a probe (half-open).
+    #[serde(default = "default_cb_open_duration_secs")]
+    pub open_duration_secs: u64,
+}
+
+impl Default for CircuitBreakerConfig {
+    fn default() -> Self {
+        Self {
+            failure_threshold: default_cb_failure_threshold(),
+            open_duration_secs: default_cb_open_duration_secs(),
+        }
+    }
+}
+
+fn default_cb_failure_threshold() -> u32 {
+    5
+}
+
+fn default_cb_open_duration_secs() -> u64 {
+    30
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -426,6 +463,18 @@ pub struct BenchmarkConfig {
     pub traffic_fitness_min_samples: u32,
     #[serde(default = "default_traffic_fitness_lookback_days")]
     pub traffic_fitness_lookback_days: u32,
+    /// Enable the live-traffic LLM-judge feedback loop.
+    #[serde(default)]
+    pub live_judge_enabled: bool,
+    /// How often (seconds) to run the live judge cycle.
+    #[serde(default = "default_live_judge_interval_secs")]
+    pub live_judge_interval_secs: u64,
+    /// Maximum judge calls per minute (rate limit).
+    #[serde(default = "default_live_judge_max_calls_per_minute")]
+    pub live_judge_max_calls_per_minute: u32,
+    /// How far back to look in inference_events (seconds).
+    #[serde(default = "default_live_judge_lookback_secs")]
+    pub live_judge_lookback_secs: u64,
 }
 
 impl Default for BenchmarkConfig {
@@ -441,6 +490,10 @@ impl Default for BenchmarkConfig {
             traffic_fitness_refresh_interval_secs: default_traffic_fitness_refresh_interval_secs(),
             traffic_fitness_min_samples: default_traffic_fitness_min_samples(),
             traffic_fitness_lookback_days: default_traffic_fitness_lookback_days(),
+            live_judge_enabled: false,
+            live_judge_interval_secs: default_live_judge_interval_secs(),
+            live_judge_max_calls_per_minute: default_live_judge_max_calls_per_minute(),
+            live_judge_lookback_secs: default_live_judge_lookback_secs(),
         }
     }
 }
@@ -471,6 +524,15 @@ fn default_traffic_fitness_min_samples() -> u32 {
 }
 fn default_traffic_fitness_lookback_days() -> u32 {
     7
+}
+fn default_live_judge_interval_secs() -> u64 {
+    300
+}
+fn default_live_judge_max_calls_per_minute() -> u32 {
+    10
+}
+fn default_live_judge_lookback_secs() -> u64 {
+    3600
 }
 
 // --- Alerts ---

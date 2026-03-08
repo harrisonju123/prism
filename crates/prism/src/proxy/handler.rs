@@ -471,7 +471,39 @@ pub async fn chat_completions(
         });
     }
 
-    // --- Provider call with retry + failover ---
+    // --- Provider call with retry + failover + circuit breaker ---
+    // Build the full ordered candidate list: primary first, then per-model fallbacks,
+    // then the global routing.fallback_chain (skipping providers already tried).
+    let global_chain = state.config.routing.fallback_chain.clone();
+    let all_candidates: Vec<(String, String)> = {
+        let mut seen = std::collections::HashSet::new();
+        let mut candidates = Vec::new();
+
+        // Primary
+        seen.insert(primary_provider_name.clone());
+        candidates.push((primary_provider_name.clone(), primary_model_id.clone()));
+
+        // Per-model fallbacks
+        for (fp, fm) in &fallback_providers {
+            if seen.insert(fp.clone()) {
+                candidates.push((fp.clone(), fm.clone()));
+            }
+        }
+
+        // Global fallback chain — reuse the request model_id against each provider
+        for chain_provider in &global_chain {
+            if seen.insert(chain_provider.clone()) {
+                // Resolve the model_id for this provider using the original request model
+                match resolve_model_for_provider(&state.config, &request.model, chain_provider) {
+                    Some(mid) => candidates.push((chain_provider.clone(), mid)),
+                    None => candidates.push((chain_provider.clone(), request.model.clone())),
+                }
+            }
+        }
+
+        candidates
+    };
+
     let retry_config = &state.config.retry;
 
     // Circuit breaker check for primary provider
@@ -1106,6 +1138,30 @@ pub(crate) fn resolve_model(config: &Config, model: &str) -> Result<(String, Str
     // Fall back to provider inference from model name
     let provider = models::infer_provider(model);
     Ok((provider.to_string(), model.to_string()))
+}
+
+/// For the global fallback chain: given a request model name and a target provider,
+/// attempt to resolve what model_id to use for that provider.
+/// Returns None if no mapping can be found.
+pub(crate) fn resolve_model_for_provider(
+    config: &Config,
+    request_model: &str,
+    target_provider: &str,
+) -> Option<String> {
+    // If a model config entry explicitly maps to this provider, use its model_id
+    for (_alias, mc) in &config.models {
+        if mc.provider == target_provider {
+            return Some(mc.model.clone());
+        }
+    }
+    // Try resolving via the static catalog for the request_model on this provider
+    if let Some(info) = crate::models::lookup_model(request_model) {
+        if info.provider == target_provider {
+            return Some(info.model_id.to_string());
+        }
+    }
+    // Fall through: caller will use the request model name as-is
+    None
 }
 
 /// Resolve a model to its primary provider + any fallback providers.

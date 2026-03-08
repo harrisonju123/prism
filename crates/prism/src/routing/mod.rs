@@ -1,6 +1,7 @@
 pub mod balancer;
 pub mod engine;
 pub mod fitness;
+pub mod live_judge;
 pub mod policy;
 pub mod session;
 pub mod traffic;

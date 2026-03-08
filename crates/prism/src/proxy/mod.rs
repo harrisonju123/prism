@@ -1,6 +1,7 @@
 pub mod anthropic_handler;
 pub mod batch;
 pub mod builder;
+pub mod circuit_breaker;
 pub mod completions_handler;
 pub mod context_window;
 pub mod cost;
@@ -10,3 +11,4 @@ pub mod retry;
 pub mod streaming;
 
 pub use builder::{AppStateBuildError, AppStateBuilder};
+pub use circuit_breaker::CircuitBreaker;
