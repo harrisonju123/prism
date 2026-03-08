@@ -120,9 +120,9 @@ pub async fn chat_completions(
             ctx.budget_action,
         );
         match budget_result {
-            BudgetCheckResult::Exceeded { message } => {
+            BudgetCheckResult::Exceeded { message, limit, spent } => {
                 tracing::warn!(key_prefix = %ctx.key_prefix, %message, "budget exceeded");
-                return Err(PrismError::BudgetExceeded);
+                return Err(PrismError::BudgetExceeded { limit, spent });
             }
             BudgetCheckResult::Warning { message } => {
                 tracing::warn!(key_prefix = %ctx.key_prefix, %message, "budget warning");
@@ -723,7 +723,9 @@ pub async fn chat_completions(
                             .filter_map(|block| {
                                 block
                                     .lines()
-                                    .find_map(|line| line.strip_prefix("data: ").map(str::to_string))
+                                    .find_map(|line| {
+                                        line.strip_prefix("data: ").map(str::to_string)
+                                    })
                                     .map(|payload| Ok(Event::default().data(payload)))
                             })
                             .collect()

@@ -22,8 +22,8 @@ pub enum PrismError {
     #[error("rate limit exceeded")]
     RateLimited { retry_after_secs: Option<u64> },
 
-    #[error("budget exceeded")]
-    BudgetExceeded,
+    #[error("budget exceeded: spent ${spent:.4} of ${limit:.2} limit")]
+    BudgetExceeded { limit: f64, spent: f64 },
 
     #[error("authentication required")]
     Unauthorized,
@@ -83,10 +83,10 @@ impl IntoResponse for PrismError {
                 "rate_limit_exceeded",
                 "rate limit exceeded".into(),
             ),
-            PrismError::BudgetExceeded => (
+            PrismError::BudgetExceeded { limit, spent } => (
                 StatusCode::PAYMENT_REQUIRED,
                 "budget_exceeded",
-                "budget exceeded".into(),
+                format!("budget exceeded: spent ${spent:.4} of ${limit:.2} limit"),
             ),
             PrismError::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
@@ -168,7 +168,7 @@ impl PrismError {
             | PrismError::ProviderNotConfigured(_)
             | PrismError::BadRequest(_)
             | PrismError::RateLimited { .. }
-            | PrismError::BudgetExceeded
+            | PrismError::BudgetExceeded { .. }
             | PrismError::Unauthorized
             | PrismError::SchemaValidationFailed(_)
             | PrismError::ContentFiltered(_)
