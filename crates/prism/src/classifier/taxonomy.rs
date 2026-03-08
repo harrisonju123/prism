@@ -289,5 +289,29 @@ pub static TASK_KEYWORDS: LazyLock<HashMap<TaskType, Vec<&'static str>>> = LazyL
         vec!["use tool", "function call", "tool_use", "run tool"],
     );
 
+    m.insert(
+        TaskType::CodeEdit,
+        vec![
+            "fix this",
+            "refactor this",
+            "rename this",
+            "rewrite this",
+            "update this code",
+            "change this",
+            "modify this",
+            "edit this",
+            "replace this",
+            "update this function",
+            "update this method",
+            "update this class",
+            "change the function",
+            "modify the code",
+            "fix the function",
+            "rename the variable",
+            "replace the implementation",
+            "inline edit",
+        ],
+    );
+
     m
 });

@@ -199,6 +199,7 @@ pub enum TaskType {
     Testing,
     ToolSelection,
     FillInTheMiddle,
+    CodeEdit,
     Unknown,
 }
 
@@ -224,6 +225,7 @@ impl TaskType {
         TaskType::Documentation,
         TaskType::Testing,
         TaskType::ToolSelection,
+        TaskType::CodeEdit,
     ];
 
     /// Parse a task type from a snake_case string, returning Unknown for unrecognized values.

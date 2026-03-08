@@ -895,6 +895,13 @@
     },
   },
   {
+    "context": "Editor && selection",
+    "use_key_equivalents": true,
+    "bindings": {
+      "cmd-k": "assistant::InlineAssist"
+    },
+  },
+  {
     "context": "InlineAssistant > Editor",
     "use_key_equivalents": true,
     "bindings": {
