@@ -86,6 +86,7 @@ fn build_default_policy() -> RoutingPolicy {
         "architecture",
         "debugging",
         "refactoring",
+        "code_edit",
     ];
 
     let mut rules = Vec::new();

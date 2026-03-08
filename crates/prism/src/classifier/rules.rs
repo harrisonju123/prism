@@ -148,6 +148,36 @@ impl RulesClassifier {
             }
         }
 
+        // Signal: inline_code_edit (short prompt + edit keyword → CodeEdit)
+        let edit_keywords = [
+            "fix this",
+            "refactor this",
+            "rename this",
+            "rewrite this",
+            "update this code",
+            "change this",
+            "modify this",
+            "edit this",
+            "replace this",
+            "update this function",
+            "update this method",
+            "update this class",
+            "change the function",
+            "modify the code",
+            "fix the function",
+            "rename the variable",
+            "replace the implementation",
+            "inline edit",
+        ];
+        if input.prompt_tokens < 500
+            && edit_keywords
+                .iter()
+                .any(|kw| user_lower.contains(kw))
+        {
+            *scores.entry(TaskType::CodeEdit).or_default() += 0.60;
+            signals.push("inline_code_edit".into());
+        }
+
         // Signal: no_strong_signals_fallback
         let max_score = scores.values().copied().fold(0.0_f64, f64::max);
         if max_score < 0.3 {
@@ -246,6 +276,15 @@ mod tests {
         input.has_tool_calls = true;
         let result = RulesClassifier::classify(&input);
         assert_eq!(result.task_type, TaskType::ToolSelection);
+    }
+
+    #[test]
+    fn classify_code_edit() {
+        let mut input = input_with_user_message("refactor this to use an iterator instead");
+        input.prompt_tokens = 120;
+        let result = RulesClassifier::classify(&input);
+        assert_eq!(result.task_type, TaskType::CodeEdit);
+        assert!(result.confidence > 0.3, "confidence={}", result.confidence);
     }
 
     #[test]
