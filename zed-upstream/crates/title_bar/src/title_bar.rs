@@ -157,6 +157,8 @@ pub struct TitleBar {
     banner: Entity<OnboardingBanner>,
     update_version: Entity<UpdateVersion>,
     screen_share_popover_handle: PopoverMenuHandle<ContextMenu>,
+    /// Cached result of reading `.prism-session.json`, refreshed at most once per second.
+    prism_session_cache: Option<(std::time::Instant, Option<String>)>,
 }
 
 impl Render for TitleBar {
@@ -412,6 +414,7 @@ impl TitleBar {
             banner,
             update_version,
             screen_share_popover_handle: PopoverMenuHandle::default(),
+            prism_session_cache: None,
         }
     }
 
@@ -1162,7 +1165,7 @@ impl TitleBar {
 
     /// Read `.prism-session.json` from the first visible worktree root and
     /// return a label string, or `None` when no active session file is found.
-    fn prism_session_label(&self, cx: &App) -> Option<String> {
+    fn read_prism_session_label(&self, cx: &App) -> Option<String> {
         let worktree_root: PathBuf = self
             .project
             .read(cx)
@@ -1214,9 +1217,23 @@ impl TitleBar {
 
     /// Render a compact PrisM session indicator in the title bar when an active
     /// `.prism-session.json` file is present in the worktree root.
-    pub fn render_prism_session_indicator(&self, cx: &App) -> Option<impl IntoElement> {
-        let label = self.prism_session_label(cx)?;
-        let display = util::truncate_and_trailoff(&label, 60);
+    /// The session file is re-read at most once per second to avoid blocking renders.
+    pub fn render_prism_session_indicator(&mut self, cx: &App) -> Option<impl IntoElement> {
+        const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(1);
+        let now = std::time::Instant::now();
+        let needs_refresh = self
+            .prism_session_cache
+            .as_ref()
+            .map(|(ts, _)| now.duration_since(*ts) >= CACHE_TTL)
+            .unwrap_or(true);
+
+        if needs_refresh {
+            let label = self.read_prism_session_label(cx);
+            self.prism_session_cache = Some((now, label));
+        }
+
+        let label = self.prism_session_cache.as_ref()?.1.as_ref()?;
+        let display = util::truncate_and_trailoff(label, 60);
         Some(
             div()
                 .id("prism-session-indicator")

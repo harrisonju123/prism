@@ -61,7 +61,7 @@ impl PrismSessionFile {
     /// Returns true when the session file is still fresh (< 24h old).
     pub fn is_fresh(&self) -> bool {
         let age = Utc::now().signed_duration_since(self.updated_at);
-        age < chrono::Duration::from_std(SESSION_MAX_AGE).unwrap_or(chrono::Duration::hours(24))
+        age.num_seconds() < SESSION_MAX_AGE.as_secs() as i64
     }
 
     /// Write the session file synchronously.  Errors are logged and ignored so
@@ -79,8 +79,8 @@ impl PrismSessionFile {
 
     /// Delete the session file.  Errors are logged and ignored.
     pub fn delete_at(path: &Path) {
-        if path.exists() {
-            if let Err(err) = std::fs::remove_file(path) {
+        if let Err(err) = std::fs::remove_file(path) {
+            if err.kind() != std::io::ErrorKind::NotFound {
                 log::warn!("Failed to delete prism session file at {path:?}: {err}");
             }
         }
