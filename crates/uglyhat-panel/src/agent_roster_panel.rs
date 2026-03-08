@@ -93,8 +93,12 @@ impl AgentRosterPanel {
 
             let auto_refresh = cx.spawn(async move |this, cx| loop {
                 cx.background_executor().timer(REFRESH_INTERVAL).await;
-                this.update(cx, |panel: &mut AgentRosterPanel, cx| panel.refresh(cx))
-                    .ok();
+                this.update(cx, |panel: &mut AgentRosterPanel, cx| {
+                    if panel.active {
+                        panel.refresh(cx);
+                    }
+                })
+                .ok();
             });
             panel._auto_refresh = auto_refresh;
             panel.refresh(cx);
@@ -194,6 +198,7 @@ impl AgentRosterPanel {
     fn close_messaging(&mut self, cx: &mut Context<Self>) {
         self.view_state = ViewState::Roster;
         self.send_task = None;
+        self.error = None;
         cx.notify();
     }
 

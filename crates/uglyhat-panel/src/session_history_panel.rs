@@ -84,8 +84,12 @@ impl SessionHistoryPanel {
 
             let auto_refresh = cx.spawn(async move |this, cx| loop {
                 cx.background_executor().timer(AUTO_REFRESH_INTERVAL).await;
-                this.update(cx, |panel: &mut SessionHistoryPanel, cx| panel.refresh(cx))
-                    .ok();
+                this.update(cx, |panel: &mut SessionHistoryPanel, cx| {
+                    if panel.active {
+                        panel.refresh(cx);
+                    }
+                })
+                .ok();
             });
             panel._auto_refresh = auto_refresh;
             panel.refresh(cx);

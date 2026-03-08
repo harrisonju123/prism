@@ -1,35 +1,27 @@
-use crate::types::{AgentStatus, DependencyInfo, StatusCount, TaskContext, TaskSummary, WorkspaceContext};
+use crate::types::{
+    uh_binary, AgentStatus, DependencyInfo, StatusCount, TaskContext, TaskSummary, WorkspaceContext,
+};
 use anyhow::Result;
 use db::kvp::KEY_VALUE_STORE;
 use gpui::{
-    Action, App, AsyncWindowContext, ClickEvent, Context, ElementId, Entity, EventEmitter,
-    FocusHandle, Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Task, WeakEntity,
-    Window, actions, px,
+    actions, px, Action, App, AsyncWindowContext, ClickEvent, Context, ElementId, Entity,
+    EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Task,
+    WeakEntity, Window,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use ui::{
-    Button, ButtonStyle, Color, Icon, IconButton, IconName, Label, LabelSize, Tooltip, h_flex,
-    prelude::*, v_flex,
+    h_flex, prelude::*, v_flex, Button, ButtonStyle, Color, Icon, IconButton, IconName, Label,
+    LabelSize, Tooltip,
 };
 use util::{ResultExt, TryFutureExt};
 use workspace::{
-    Workspace,
     dock::{DockPosition, Panel, PanelEvent},
+    Workspace,
 };
 
 const TASK_BOARD_PANEL_KEY: &str = "TaskBoardPanel";
 const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
-
-fn uh_binary() -> std::path::PathBuf {
-    if let Ok(home) = std::env::var("HOME") {
-        let p = std::path::PathBuf::from(home).join(".cargo/bin/uh");
-        if p.exists() {
-            return p;
-        }
-    }
-    "uh".into()
-}
 
 actions!(
     uglyhat_panel,
@@ -139,9 +131,7 @@ impl TaskBoardPanel {
     ) -> Task<Result<Entity<Self>>> {
         cx.spawn(async move |cx| {
             let serialized_panel = cx
-                .background_spawn(async move {
-                    KEY_VALUE_STORE.read_kvp(TASK_BOARD_PANEL_KEY)
-                })
+                .background_spawn(async move { KEY_VALUE_STORE.read_kvp(TASK_BOARD_PANEL_KEY) })
                 .await
                 .log_err()
                 .flatten()
@@ -191,12 +181,11 @@ impl TaskBoardPanel {
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
             let context_result = cx
                 .background_spawn(async move {
-                    let output = std::process::Command::new(uh_binary()).arg("context").output()?;
+                    let output = std::process::Command::new(uh_binary())
+                        .arg("context")
+                        .output()?;
                     if !output.status.success() {
-                        anyhow::bail!(
-                            "{}",
-                            String::from_utf8_lossy(&output.stderr)
-                        );
+                        anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr));
                     }
                     serde_json::from_slice::<WorkspaceContext>(&output.stdout)
                         .map_err(anyhow::Error::from)
@@ -205,7 +194,9 @@ impl TaskBoardPanel {
 
             let next_result = cx
                 .background_spawn(async move {
-                    let output = std::process::Command::new(uh_binary()).arg("next").output()?;
+                    let output = std::process::Command::new(uh_binary())
+                        .arg("next")
+                        .output()?;
                     if !output.status.success() {
                         return Ok(Vec::new());
                     }
@@ -309,7 +300,13 @@ impl TaskBoardPanel {
             let result = cx
                 .background_spawn(async move {
                     let output = std::process::Command::new(uh_binary())
-                        .args(["checkout", "--name", &name, "--summary", "Zed session ended"])
+                        .args([
+                            "checkout",
+                            "--name",
+                            &name,
+                            "--summary",
+                            "Zed session ended",
+                        ])
                         .output()?;
                     if !output.status.success() {
                         anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr));
@@ -358,11 +355,7 @@ impl TaskBoardPanel {
                     .flex_none()
                     .bg(color.color(cx)),
             )
-            .child(
-                Label::new(task_name)
-                    .size(LabelSize::Small)
-                    .truncate(),
-            )
+            .child(Label::new(task_name).size(LabelSize::Small).truncate())
             .when(!epic_name.is_empty(), |this| {
                 this.child(
                     Label::new(epic_name)
@@ -433,7 +426,11 @@ impl TaskBoardPanel {
                     .flex_none()
                     .bg(dot_color.color(cx)),
             )
-            .child(Label::new(agent.name.clone()).size(LabelSize::Small).color(name_color))
+            .child(
+                Label::new(agent.name.clone())
+                    .size(LabelSize::Small)
+                    .color(name_color),
+            )
             .child(
                 Label::new(task_label)
                     .size(LabelSize::Small)
@@ -448,16 +445,11 @@ impl TaskBoardPanel {
             .collect();
         let summary = parts.join(" · ");
 
-        h_flex()
-            .w_full()
-            .px_2()
-            .py_1()
-            .border_t_1()
-            .child(
-                Label::new(summary)
-                    .size(LabelSize::Small)
-                    .color(Color::Muted),
-            )
+        h_flex().w_full().px_2().py_1().border_t_1().child(
+            Label::new(summary)
+                .size(LabelSize::Small)
+                .color(Color::Muted),
+        )
     }
 
     fn render_section_header(
@@ -530,11 +522,7 @@ impl TaskBoardPanel {
                             .tooltip(Tooltip::text("Back to board"))
                             .on_click(cx.listener(|this, _, _, cx| this.close_detail(cx))),
                     )
-                    .child(
-                        Label::new(task_name)
-                            .size(LabelSize::Small)
-                            .truncate(),
-                    ),
+                    .child(Label::new(task_name).size(LabelSize::Small).truncate()),
             )
             // Scrollable body
             .child(
@@ -564,14 +552,10 @@ impl TaskBoardPanel {
                                 .gap_1()
                                 .when_some(initiative_name, |this: gpui::Div, init| {
                                     this.child(
-                                        Label::new(init)
-                                            .size(LabelSize::Small)
-                                            .color(Color::Muted),
+                                        Label::new(init).size(LabelSize::Small).color(Color::Muted),
                                     )
                                     .child(
-                                        Label::new("›")
-                                            .size(LabelSize::Small)
-                                            .color(Color::Muted),
+                                        Label::new("›").size(LabelSize::Small).color(Color::Muted),
                                     )
                                 })
                                 .child(Label::new(e).size(LabelSize::Small).color(Color::Muted)),
@@ -653,62 +637,75 @@ impl TaskBoardPanel {
                         )
                     })
                     // Latest handoff
-                    .when_some(handoffs.first().cloned(), |this: gpui::Stateful<gpui::Div>, h| {
-                        this.child(
-                            v_flex()
-                                .px_2()
-                                .py_1()
-                                .child(
-                                    Label::new("Last Handoff")
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Muted),
-                                )
-                                .child(
-                                    Label::new(format!("↳ {}", h.agent_name))
-                                        .size(LabelSize::Small)
-                                        .color(Color::Muted),
-                                )
-                                .child(Label::new(h.summary.clone()).size(LabelSize::Small))
-                                .children(h.next_steps.iter().take(3).map(|s: &String| {
-                                    h_flex()
-                                        .gap_1()
-                                        .child(
-                                            Label::new("·")
-                                                .size(LabelSize::Small)
-                                                .color(Color::Muted),
-                                        )
-                                        .child(Label::new(s.clone()).size(LabelSize::Small))
-                                })),
-                        )
-                    })
-                    // Recent activity
-                    .when(!recent_activity.is_empty(), |this: gpui::Stateful<gpui::Div>| {
-                        this.child(
-                            v_flex()
-                                .px_2()
-                                .py_1()
-                                .child(
-                                    Label::new("Activity")
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Muted),
-                                )
-                                .children(recent_activity.iter().take(5).map(|e| {
-                                    h_flex()
-                                        .gap_1()
-                                        .child(Label::new(e.actor.clone()).size(LabelSize::Small))
-                                        .child(
-                                            Label::new(e.action.clone())
-                                                .size(LabelSize::Small)
-                                                .color(Color::Muted),
-                                        )
-                                        .when_some(e.entity_name.clone(), |this: gpui::Div, n| {
-                                            this.child(
-                                                Label::new(n).size(LabelSize::Small).truncate(),
+                    .when_some(
+                        handoffs.first().cloned(),
+                        |this: gpui::Stateful<gpui::Div>, h| {
+                            this.child(
+                                v_flex()
+                                    .px_2()
+                                    .py_1()
+                                    .child(
+                                        Label::new("Last Handoff")
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Muted),
+                                    )
+                                    .child(
+                                        Label::new(format!("↳ {}", h.agent_name))
+                                            .size(LabelSize::Small)
+                                            .color(Color::Muted),
+                                    )
+                                    .child(Label::new(h.summary.clone()).size(LabelSize::Small))
+                                    .children(h.next_steps.iter().take(3).map(|s: &String| {
+                                        h_flex()
+                                            .gap_1()
+                                            .child(
+                                                Label::new("·")
+                                                    .size(LabelSize::Small)
+                                                    .color(Color::Muted),
                                             )
-                                        })
-                                })),
-                        )
-                    }),
+                                            .child(Label::new(s.clone()).size(LabelSize::Small))
+                                    })),
+                            )
+                        },
+                    )
+                    // Recent activity
+                    .when(
+                        !recent_activity.is_empty(),
+                        |this: gpui::Stateful<gpui::Div>| {
+                            this.child(
+                                v_flex()
+                                    .px_2()
+                                    .py_1()
+                                    .child(
+                                        Label::new("Activity")
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Muted),
+                                    )
+                                    .children(recent_activity.iter().take(5).map(|e| {
+                                        h_flex()
+                                            .gap_1()
+                                            .child(
+                                                Label::new(e.actor.clone()).size(LabelSize::Small),
+                                            )
+                                            .child(
+                                                Label::new(e.action.clone())
+                                                    .size(LabelSize::Small)
+                                                    .color(Color::Muted),
+                                            )
+                                            .when_some(
+                                                e.entity_name.clone(),
+                                                |this: gpui::Div, n| {
+                                                    this.child(
+                                                        Label::new(n)
+                                                            .size(LabelSize::Small)
+                                                            .truncate(),
+                                                    )
+                                                },
+                                            )
+                                    })),
+                            )
+                        },
+                    ),
             )
     }
 
@@ -741,11 +738,18 @@ impl TaskBoardPanel {
                             .truncate(),
                     )
                     .child(if is_busy {
-                        Button::new("checkin-busy", if is_in { "Checking out..." } else { "Checking in..." })
-                            .style(ButtonStyle::Subtle)
-                            .label_size(LabelSize::Small)
-                            .disabled(true)
-                            .into_any_element()
+                        Button::new(
+                            "checkin-busy",
+                            if is_in {
+                                "Checking out..."
+                            } else {
+                                "Checking in..."
+                            },
+                        )
+                        .style(ButtonStyle::Subtle)
+                        .label_size(LabelSize::Small)
+                        .disabled(true)
+                        .into_any_element()
                     } else if is_in {
                         Button::new("checkout", "Check Out")
                             .style(ButtonStyle::Subtle)
@@ -832,8 +836,7 @@ impl Render for TaskBoardPanel {
             // Body
             .map(|container| {
                 // Detail / loading states bypass the board entirely
-                let loading_detail =
-                    matches!(&self.view_state, ViewState::LoadingDetail { .. });
+                let loading_detail = matches!(&self.view_state, ViewState::LoadingDetail { .. });
                 let detail_ctx = if let ViewState::Detail(ctx) = &self.view_state {
                     Some(ctx.clone())
                 } else {
@@ -927,7 +930,11 @@ impl Render for TaskBoardPanel {
                                 ),
                             )
                         } else {
-                            this.children(agents.iter().map(|a| Self::render_agent_row(a, &my_agent_name, cx)))
+                            this.children(
+                                agents
+                                    .iter()
+                                    .map(|a| Self::render_agent_row(a, &my_agent_name, cx)),
+                            )
                         }
                     })
                     // Stale Tasks section (hidden when empty)
