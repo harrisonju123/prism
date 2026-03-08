@@ -1860,15 +1860,15 @@ impl InlineAssist {
                                 if let Some(model) = LanguageModelRegistry::read_global(cx)
                                     .inline_assistant_model()
                                 {
-                                    let model_name = model.model.name().to_string();
+                                    let model_name = model.model.name().0.to_string();
                                     let provider = model.model.provider_id().to_string();
                                     // TODO(prism): Once model_cost_info() returns pricing data,
                                     // compute dollar cost from token usage and display it.
-                                    tracing::info!(
-                                        model = %model_name,
-                                        provider = %provider,
-                                        assist_id = assist_id.0,
-                                        "Inline assist completed"
+                                    log::info!(
+                                        "Inline assist completed: model={} provider={} assist_id={}",
+                                        model_name,
+                                        provider,
+                                        assist_id.0,
                                     );
                                 }
                             }

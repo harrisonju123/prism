@@ -243,6 +243,19 @@ pub mod workspace {
     );
 }
 
+pub mod worktree {
+    use gpui::actions;
+
+    actions!(
+        worktree,
+        [
+            /// Opens the git worktree picker, listing all worktrees with branch name
+            /// and HEAD sha. Selecting one opens it in the current or a new window.
+            Switch,
+        ]
+    );
+}
+
 pub mod git {
     use gpui::actions;
 
@@ -434,6 +447,11 @@ pub mod agent {
             /// Opens the agent settings panel.
             #[action(deprecated_aliases = ["agent::OpenConfiguration"])]
             OpenSettings,
+            /// Spawns a new Claude Code agent session in a fresh git worktree.
+            /// Prompts for a feature name, creates .worktrees/<name>, claims or
+            /// creates a matching uglyhat task, and opens a terminal with the
+            /// agent pre-configured.
+            SpawnInNewWorktree,
             /// Opens the agent onboarding modal.
             OpenOnboardingModal,
             /// Opens the ACP onboarding modal.
