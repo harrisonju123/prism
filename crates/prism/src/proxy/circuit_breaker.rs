@@ -32,6 +32,9 @@ struct Breaker {
     state: CircuitState,
     consecutive_failures: u32,
     last_failure_at: Option<Instant>,
+    /// True while exactly one probe request is in-flight during HalfOpen state.
+    /// Prevents multiple concurrent probes from getting through simultaneously.
+    probe_in_flight: bool,
 }
 
 impl Breaker {
@@ -40,6 +43,7 @@ impl Breaker {
             state: CircuitState::Closed,
             consecutive_failures: 0,
             last_failure_at: None,
+            probe_in_flight: false,
         }
     }
 }
@@ -66,6 +70,20 @@ impl CircuitBreaker {
 
     /// Returns `true` if the request is allowed through for `provider`.
     pub async fn is_allowed(&self, provider: &str) -> bool {
+        // Fast path: read lock for the common Closed case to avoid write contention.
+        {
+            let map = self.breakers.read().await;
+            if let Some(b) = map.get(provider) {
+                if matches!(b.state, CircuitState::Closed) {
+                    return true;
+                }
+            } else {
+                // Provider not yet tracked — always allowed.
+                return true;
+            }
+        }
+
+        // Non-Closed state: take write lock to check transitions.
         let mut map = self.breakers.write().await;
         let b = map.entry(provider.to_string()).or_insert_with(Breaker::new);
         match &b.state {
@@ -73,12 +91,23 @@ impl CircuitBreaker {
             CircuitState::Open { retry_at, .. } => {
                 if Instant::now() >= *retry_at {
                     b.state = CircuitState::HalfOpen;
+                    b.probe_in_flight = false;
+                    // Allow this request through as the first probe.
+                    b.probe_in_flight = true;
                     true
                 } else {
                     false
                 }
             }
-            CircuitState::HalfOpen => true,
+            // Only allow one probe at a time through HalfOpen state.
+            CircuitState::HalfOpen => {
+                if b.probe_in_flight {
+                    false
+                } else {
+                    b.probe_in_flight = true;
+                    true
+                }
+            }
         }
     }
 
@@ -88,6 +117,7 @@ impl CircuitBreaker {
         if let Some(b) = map.get_mut(provider) {
             b.state = CircuitState::Closed;
             b.consecutive_failures = 0;
+            b.probe_in_flight = false;
         }
     }
 
