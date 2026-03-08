@@ -598,11 +598,20 @@ impl LanguageModel for PrismLanguageModel {
     }
 }
 
+#[derive(Debug, Clone)]
+enum ConnectionStatus {
+    Testing,
+    Success,
+    Failed(String),
+}
+
 struct ConfigurationView {
     api_key_editor: Entity<InputField>,
     state: Entity<State>,
     load_credentials_task: Option<Task<()>>,
     api_key_error: Option<SharedString>,
+    connection_status: Option<ConnectionStatus>,
+    test_connection_task: Option<Task<()>>,
 }
 
 fn is_valid_prism_key(key: &str) -> bool {
@@ -656,6 +665,8 @@ impl ConfigurationView {
             state,
             load_credentials_task,
             api_key_error: None,
+            connection_status: None,
+            test_connection_task: None,
         }
     }
 
@@ -695,6 +706,51 @@ impl ConfigurationView {
                 .await
         })
         .detach_and_log_err(cx);
+    }
+
+    fn test_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.state.read(cx);
+        let api_url = state.settings.api_url.clone();
+        let api_key = state.effective_api_key();
+        drop(state);
+
+        let Some(api_key) = api_key else {
+            self.connection_status = Some(ConnectionStatus::Failed("No API key configured".to_string()));
+            cx.notify();
+            return;
+        };
+
+        let http_client = self.state.read(cx).http_client.clone();
+        self.connection_status = Some(ConnectionStatus::Testing);
+        cx.notify();
+
+        self.test_connection_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let health_url = format!("{}/health", api_url.trim_end_matches('/'));
+            let request = HttpRequest::builder()
+                .method(Method::GET)
+                .uri(health_url)
+                .header("x-api-key", api_key.as_ref())
+                .body(AsyncBody::default());
+
+            let status = match request {
+                Ok(req) => match http_client.send(req).await {
+                    Ok(response) if response.status().is_success() => ConnectionStatus::Success,
+                    Ok(response) => ConnectionStatus::Failed(format!(
+                        "HTTP {}",
+                        response.status().as_u16()
+                    )),
+                    Err(err) => ConnectionStatus::Failed(err.to_string()),
+                },
+                Err(err) => ConnectionStatus::Failed(err.to_string()),
+            };
+
+            this.update(cx, |this, cx| {
+                this.connection_status = Some(status);
+                this.test_connection_task = None;
+                cx.notify();
+            })
+            .log_err();
+        }));
     }
 
     fn should_render_editor(&self, cx: &Context<Self>) -> bool {
@@ -814,12 +870,64 @@ impl Render for ConfigurationView {
             SidecarStatus::Unknown => None,
         };
 
+        let connection_status_indicator = match &self.connection_status {
+            Some(ConnectionStatus::Testing) => Some(
+                h_flex()
+                    .gap_1()
+                    .child(
+                        Label::new("Testing…")
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    )
+                    .into_any_element(),
+            ),
+            Some(ConnectionStatus::Success) => Some(
+                h_flex()
+                    .gap_1()
+                    .child(Icon::new(IconName::Check).color(Color::Success).size(IconSize::Small))
+                    .child(
+                        Label::new("Connected")
+                            .size(LabelSize::Small)
+                            .color(Color::Success),
+                    )
+                    .into_any_element(),
+            ),
+            Some(ConnectionStatus::Failed(message)) => Some(
+                h_flex()
+                    .gap_1()
+                    .child(Icon::new(IconName::XCircle).color(Color::Error).size(IconSize::Small))
+                    .child(
+                        Label::new(format!("Failed: {message}"))
+                            .size(LabelSize::Small)
+                            .color(Color::Error),
+                    )
+                    .into_any_element(),
+            ),
+            None => None,
+        };
+
+        let test_connection_button = h_flex()
+            .pt(DynamicSpacing::Base04.rems(cx))
+            .gap_2()
+            .child(
+                Button::new("test-connection", "Test Connection")
+                    .label_size(LabelSize::Small)
+                    .layer(ElevationIndex::ModalSurface)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.test_connection(window, cx);
+                    })),
+            )
+            .when_some(connection_status_indicator, |this, indicator| {
+                this.child(indicator)
+            });
+
         if self.load_credentials_task.is_some() {
             div().child(Label::new("Loading credentials…")).into_any()
         } else {
             v_flex()
                 .size_full()
                 .child(api_key_section)
+                .child(test_connection_button)
                 .when_some(sidecar_status_label, |this, label| {
                     this.child(div().pt(DynamicSpacing::Base04.rems(cx)).child(label))
                 })
