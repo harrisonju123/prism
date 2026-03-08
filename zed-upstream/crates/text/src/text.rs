@@ -129,6 +129,8 @@ pub struct HistoryEntry {
     first_edit_at: Instant,
     last_edit_at: Instant,
     suppress_grouping: bool,
+    /// Human-readable label for this undo group, shown in undo history UI.
+    pub description: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -252,6 +254,7 @@ impl History {
                 first_edit_at: now,
                 last_edit_at: now,
                 suppress_grouping: false,
+                description: None,
             });
             Some(id)
         } else {
@@ -350,6 +353,7 @@ impl History {
             first_edit_at: now,
             last_edit_at: now,
             suppress_grouping: false,
+            description: None,
         });
     }
 
@@ -382,6 +386,7 @@ impl History {
             first_edit_at: now,
             last_edit_at: now,
             suppress_grouping: false,
+            description: None,
         });
         id
     }
@@ -474,6 +479,30 @@ impl History {
                     .rfind(|entry| entry.transaction.id == transaction_id)
             })?;
         Some(&mut entry.transaction)
+    }
+
+    fn history_entry_mut(
+        &mut self,
+        transaction_id: TransactionId,
+    ) -> Option<&mut HistoryEntry> {
+        self.undo_stack
+            .iter_mut()
+            .rfind(|entry| entry.transaction.id == transaction_id)
+            .or_else(|| {
+                self.redo_stack
+                    .iter_mut()
+                    .rfind(|entry| entry.transaction.id == transaction_id)
+            })
+    }
+
+    pub fn set_transaction_description(
+        &mut self,
+        transaction_id: TransactionId,
+        description: String,
+    ) {
+        if let Some(entry) = self.history_entry_mut(transaction_id) {
+            entry.description = Some(description);
+        }
     }
 
     fn merge_transactions(&mut self, transaction: TransactionId, destination: TransactionId) {
@@ -1582,6 +1611,15 @@ impl Buffer {
 
     pub fn merge_transactions(&mut self, transaction: TransactionId, destination: TransactionId) {
         self.history.merge_transactions(transaction, destination);
+    }
+
+    pub fn set_transaction_description(
+        &mut self,
+        transaction_id: TransactionId,
+        description: String,
+    ) {
+        self.history
+            .set_transaction_description(transaction_id, description);
     }
 
     pub fn redo(&mut self) -> Option<(TransactionId, Operation)> {

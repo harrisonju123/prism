@@ -37,6 +37,7 @@ use project::{
 use remote::RemoteConnectionOptions;
 use settings::Settings;
 use settings::WorktreeId;
+use std::path::PathBuf;
 use std::sync::Arc;
 use theme::ActiveTheme;
 use title_bar_settings::TitleBarSettings;
@@ -198,6 +199,10 @@ impl Render for TitleBar {
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .into_any_element(),
         );
+
+        if let Some(indicator) = self.render_prism_session_indicator(cx) {
+            children.push(indicator.into_any_element());
+        }
 
         children.push(self.render_collaborator_list(window, cx).into_any_element());
 
@@ -1153,5 +1158,72 @@ impl TitleBar {
                 }
             })
             .anchor(gpui::Corner::TopRight)
+    }
+
+    /// Read `.prism-session.json` from the first visible worktree root and
+    /// return a label string, or `None` when no active session file is found.
+    fn prism_session_label(&self, cx: &App) -> Option<String> {
+        let worktree_root: PathBuf = self
+            .project
+            .read(cx)
+            .visible_worktrees(cx)
+            .next()?
+            .read(cx)
+            .abs_path()
+            .to_path_buf();
+
+        let session_path = worktree_root.join(".prism-session.json");
+        let contents = std::fs::read_to_string(&session_path).ok()?;
+        let value: serde_json::Value = serde_json::from_str(&contents).ok()?;
+
+        // Respect the 24-hour freshness check by comparing updated_at.
+        let updated_at_str = value.get("updated_at").and_then(|v| v.as_str())?;
+        let updated_at = chrono::DateTime::parse_from_rfc3339(updated_at_str).ok()?;
+        let age = chrono::Utc::now().signed_duration_since(updated_at.with_timezone(&chrono::Utc));
+        if age > chrono::Duration::hours(24) {
+            return None;
+        }
+
+        let branch = value
+            .get("branch")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let task_name = value.get("task_name").and_then(|v| v.as_str()).unwrap_or("");
+        let agent = value
+            .get("agent_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("claude");
+
+        let mut parts = Vec::new();
+        if !branch.is_empty() {
+            parts.push(format!("[{branch}]"));
+        }
+        if !task_name.is_empty() {
+            parts.push(format!("Task: {task_name}"));
+        }
+        if !agent.is_empty() {
+            parts.push(format!("Agent: {agent}"));
+        }
+
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" · "))
+        }
+    }
+
+    /// Render a compact PrisM session indicator in the title bar when an active
+    /// `.prism-session.json` file is present in the worktree root.
+    pub fn render_prism_session_indicator(&self, cx: &App) -> Option<impl IntoElement> {
+        let label = self.prism_session_label(cx)?;
+        let display = util::truncate_and_trailoff(&label, 60);
+        Some(
+            div()
+                .id("prism-session-indicator")
+                .px_2()
+                .text_color(cx.theme().colors().text_muted)
+                .text_size(gpui::rems(0.75))
+                .child(display),
+        )
     }
 }
