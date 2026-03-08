@@ -62,7 +62,6 @@ async fn spawn_agent(args: SpawnAgentArgs) -> Result<()> {
 
     // Resolve the git repo root by walking up from the worktree path or its parent.
     let repo_root = find_git_root(worktree)
-        .await
         .context("Could not determine git repository root")?;
 
     // Step 1: create the git worktree if it does not exist.
@@ -181,7 +180,7 @@ async fn create_worktree(repo_root: &PathBuf, path: &PathBuf, branch: &str) -> R
 }
 
 /// Walks up from `start` to find the nearest `.git` directory or file.
-async fn find_git_root(start: &PathBuf) -> Option<PathBuf> {
+fn find_git_root(start: &PathBuf) -> Option<PathBuf> {
     // Start from the parent if the worktree doesn't exist yet.
     let start = if start.exists() {
         start.clone()
