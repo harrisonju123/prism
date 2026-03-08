@@ -99,8 +99,6 @@ pub struct ModelConfig {
     #[serde(default)]
     pub tier: Option<u8>,
     #[serde(default)]
-    pub fallback: Option<String>,
-    #[serde(default)]
     pub max_tokens: Option<u32>,
     #[serde(default)]
     pub context_window: Option<u32>,

@@ -352,10 +352,75 @@ pub async fn chat_completions(
         }
     }
 
+    // Inject stream_options to request usage data in the final streaming chunk
+    if request.stream && request.stream_options.is_none() {
+        request.stream_options = Some(crate::types::StreamOptions { include_usage: true });
+    }
+
     // --- Provider call with retry + failover ---
     let retry_config = &state.config.retry;
     let provider_result = if request.stream {
-        provider.chat_completion(&request, &model_id).await?
+        // Streaming path: try primary, then fallbacks on error
+        match provider.chat_completion(&request, &model_id).await {
+            Ok(resp) => resp,
+            Err(primary_err) if primary_err.is_retryable() && !fallback_providers.is_empty() => {
+                tracing::warn!(
+                    provider = %provider_name,
+                    error = %primary_err,
+                    "streaming primary provider failed, trying fallbacks"
+                );
+
+                let mut last_err = primary_err;
+                let mut fallback_result = None;
+
+                for (fb_provider_name, fb_model_id) in &fallback_providers {
+                    let fb_provider = match state.providers.get(fb_provider_name) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            tracing::warn!(
+                                fallback_provider = %fb_provider_name,
+                                error = %e,
+                                "streaming fallback provider not available, skipping"
+                            );
+                            continue;
+                        }
+                    };
+
+                    tracing::info!(
+                        fallback_provider = %fb_provider_name,
+                        fallback_model = %fb_model_id,
+                        "attempting streaming fallback provider"
+                    );
+
+                    match fb_provider.chat_completion(&request, fb_model_id).await {
+                        Ok(resp) => {
+                            provider_name = fb_provider_name.clone();
+                            tracing::info!(
+                                fallback_provider = %fb_provider_name,
+                                "streaming failover succeeded"
+                            );
+                            fallback_result = Some(resp);
+                            break;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                fallback_provider = %fb_provider_name,
+                                error = %e,
+                                "streaming fallback provider failed"
+                            );
+                            last_err = e;
+                        }
+                    }
+                }
+
+                if let Some(result) = fallback_result {
+                    result
+                } else {
+                    return Err(last_err);
+                }
+            }
+            Err(e) => return Err(e),
+        }
     } else {
         let primary_result = crate::proxy::retry::with_retry(retry_config, || {
             let req = &request;
@@ -849,6 +914,13 @@ pub(crate) fn resolve_model(config: &Config, model: &str) -> Result<(String, Str
         return Ok((model_config.provider.clone(), model_config.model.clone()));
     }
 
+    // Check semantic aliases (fast, smart, cheap, etc.)
+    if let Some(resolved) = models::resolve_alias(model) {
+        if let Some(info) = models::lookup_model(resolved) {
+            return Ok((info.provider.to_string(), info.model_id.to_string()));
+        }
+    }
+
     // Check the static catalog
     if let Some(info) = models::lookup_model(model) {
         return Ok((info.provider.to_string(), info.model_id.to_string()));
@@ -1282,7 +1354,6 @@ mod tests {
                 provider: "anthropic".to_string(),
                 model: "claude-sonnet-4-20250514".to_string(),
                 tier: None,
-                fallback: None,
                 max_tokens: None,
                 context_window: None,
                 fallback_providers: vec![
@@ -1320,7 +1391,6 @@ mod tests {
                 provider: "openai".to_string(),
                 model: "gpt-4o".to_string(),
                 tier: None,
-                fallback: None,
                 max_tokens: None,
                 context_window: None,
                 fallback_providers: vec![],

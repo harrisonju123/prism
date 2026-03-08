@@ -149,27 +149,6 @@ fn edit_prediction_provider_config_for_settings(cx: &App) -> Option<EditPredicti
         EditPredictionProvider::Mercury => Some(EditPredictionProviderConfig::Zed(
             EditPredictionModel::Mercury,
         )),
-        EditPredictionProvider::Prism => {
-            let prism_settings = settings.prism.as_ref()?;
-            let mut format = prism_settings.prompt_format;
-            if format == EditPredictionPromptFormat::Infer {
-                if let Some(inferred_format) = infer_prompt_format(&prism_settings.model) {
-                    format = inferred_format;
-                } else {
-                    return None;
-                }
-            }
-            if matches!(
-                format,
-                EditPredictionPromptFormat::Zeta | EditPredictionPromptFormat::Zeta2
-            ) {
-                Some(EditPredictionProviderConfig::Zed(EditPredictionModel::Zeta))
-            } else {
-                Some(EditPredictionProviderConfig::Zed(
-                    EditPredictionModel::Fim { format },
-                ))
-            }
-        }
         EditPredictionProvider::Experimental(_) => None,
     }
 }

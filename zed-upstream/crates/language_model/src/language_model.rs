@@ -896,6 +896,20 @@ pub enum LanguageModelCostInfo {
 }
 
 impl LanguageModelCostInfo {
+    pub fn compute_dollar_cost(&self, usage: &TokenUsage) -> f64 {
+        match self {
+            LanguageModelCostInfo::TokenCost {
+                input_token_cost_per_1m,
+                output_token_cost_per_1m,
+            } => {
+                let input = usage.input_tokens as f64 * input_token_cost_per_1m / 1_000_000.0;
+                let output = usage.output_tokens as f64 * output_token_cost_per_1m / 1_000_000.0;
+                input + output
+            }
+            LanguageModelCostInfo::RequestCost { cost_per_request } => *cost_per_request,
+        }
+    }
+
     pub fn to_shared_string(&self) -> SharedString {
         match self {
             LanguageModelCostInfo::RequestCost { cost_per_request } => {

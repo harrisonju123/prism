@@ -40,8 +40,10 @@ struct AnthropicRequest {
     model: String,
     max_tokens: u32,
     messages: Vec<AnthropicMessage>,
+    /// System prompt — serialized as a JSON array of content blocks with cache_control
+    /// for prompt caching support, or as a plain string.
     #[serde(skip_serializing_if = "Option::is_none")]
-    system: Option<String>,
+    system: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -404,9 +406,15 @@ fn to_anthropic_request(req: &ChatCompletionRequest, model_id: &str) -> Anthropi
 
     for msg in &req.messages {
         if msg.role == "system" {
-            // Anthropic uses a top-level system field
+            // Anthropic uses a top-level system field.
+            // Format as content block array with cache_control for prompt caching.
             if let Some(content) = &msg.content {
-                system = Some(content_to_string(content));
+                let text = content_to_string(content);
+                system = Some(serde_json::json!([{
+                    "type": "text",
+                    "text": text,
+                    "cache_control": {"type": "ephemeral"}
+                }]));
             }
         } else if msg.role == "tool" {
             // OpenAI tool result → Anthropic tool_result block in a user turn
@@ -582,6 +590,7 @@ impl Provider for AnthropicProvider {
             .post(&url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_API_VERSION)
+            .header("anthropic-beta", "prompt-caching-2024-07-31")
             .header("Content-Type", "application/json")
             .json(&body)
             .send()

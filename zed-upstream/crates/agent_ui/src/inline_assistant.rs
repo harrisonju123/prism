@@ -1856,6 +1856,21 @@ impl InlineAssist {
                                 if let Some(sender) = &mut this._inline_assistant_completions {
                                     sender.unbounded_send(Ok(assist_id)).ok();
                                 }
+
+                                if let Some(model) = LanguageModelRegistry::read_global(cx)
+                                    .inline_assistant_model()
+                                {
+                                    let model_name = model.model.name().to_string();
+                                    let provider = model.model.provider_id().to_string();
+                                    // TODO(prism): Once model_cost_info() returns pricing data,
+                                    // compute dollar cost from token usage and display it.
+                                    tracing::info!(
+                                        model = %model_name,
+                                        provider = %provider,
+                                        assist_id = assist_id.0,
+                                        "Inline assist completed"
+                                    );
+                                }
                             }
 
                             if assist.decorations.is_none() {

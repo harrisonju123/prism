@@ -217,6 +217,22 @@ static MISTRAL_SMALL_QUALITIES: &[(&str, f64)] = &[
     ("testing", 0.59),
 ];
 
+/// Semantic aliases map human-friendly names to concrete models.
+pub static SEMANTIC_ALIASES: &[(&str, &str)] = &[
+    ("fast", "claude-3-5-haiku-latest"),
+    ("smart", "claude-sonnet-4-6"),
+    ("cheap", "claude-3-5-haiku-latest"),
+    ("balanced", "claude-sonnet-4-6"),
+    ("powerful", "claude-opus-4-6"),
+];
+
+pub fn resolve_alias(name: &str) -> Option<&'static str> {
+    SEMANTIC_ALIASES
+        .iter()
+        .find(|(k, _)| *k == name)
+        .map(|(_, v)| *v)
+}
+
 /// Static model catalog with pricing and capabilities.
 /// Pricing as of early 2026 — update as needed.
 pub static MODEL_CATALOG: LazyLock<HashMap<&'static str, ModelInfo>> = LazyLock::new(|| {
@@ -976,5 +992,15 @@ mod tests {
     fn lookup_by_model_id_prefix() {
         let info = lookup_model("claude-opus-4-20250514").unwrap();
         assert_eq!(info.display_name, "Claude Opus 4");
+    }
+
+    #[test]
+    fn test_resolve_alias() {
+        assert_eq!(resolve_alias("fast"), Some("claude-3-5-haiku-latest"));
+        assert_eq!(resolve_alias("smart"), Some("claude-sonnet-4-6"));
+        assert_eq!(resolve_alias("cheap"), Some("claude-3-5-haiku-latest"));
+        assert_eq!(resolve_alias("balanced"), Some("claude-sonnet-4-6"));
+        assert_eq!(resolve_alias("powerful"), Some("claude-opus-4-6"));
+        assert_eq!(resolve_alias("unknown"), None);
     }
 }

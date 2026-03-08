@@ -14,18 +14,19 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use language_model::{
     ApiKeyState, AuthenticateError, EnvVar, IconOrSvg, LanguageModel, LanguageModelCompletionError,
-    LanguageModelCompletionEvent, LanguageModelId, LanguageModelName, LanguageModelProvider,
-    LanguageModelProviderId, LanguageModelProviderName, LanguageModelProviderState,
-    LanguageModelRequest, LanguageModelToolChoice, LanguageModelToolSchemaFormat, RateLimiter,
-    env_var,
+    LanguageModelCompletionEvent, LanguageModelCostInfo, LanguageModelId, LanguageModelName,
+    LanguageModelProvider, LanguageModelProviderId, LanguageModelProviderName,
+    LanguageModelProviderState, LanguageModelRequest, LanguageModelToolChoice,
+    LanguageModelToolSchemaFormat, RateLimiter, env_var,
 };
 use open_ai::{
     ResponseStreamEvent,
     responses::{Request as ResponseRequest, StreamEvent as ResponsesStreamEvent, stream_response},
     stream_completion,
 };
-use settings::{Settings, SettingsStore};
-use ui::{ElevationIndex, Tooltip, prelude::*};
+use fs::Fs;
+use settings::{Settings, SettingsStore, update_settings_file};
+use ui::{ElevationIndex, List, ListBulletItem, Tooltip, prelude::*};
 use ui_input::InputField;
 use util::ResultExt;
 
@@ -520,6 +521,28 @@ impl LanguageModel for PrismLanguageModel {
         true
     }
 
+    fn model_cost_info(&self) -> Option<LanguageModelCostInfo> {
+        let (input, output) = match self.model.name.as_str() {
+            s if s.contains("claude-3-5-haiku") => (0.80, 4.00),
+            s if s.contains("claude-sonnet-4") => (3.00, 15.00),
+            s if s.contains("claude-opus-4") => (15.00, 75.00),
+            s if s.contains("gpt-4o-mini") => (0.15, 0.60),
+            s if s.contains("gpt-4o") => (2.50, 10.00),
+            s if s.contains("gpt-4.1-mini") => (0.40, 1.60),
+            s if s.contains("gpt-4.1-nano") => (0.10, 0.40),
+            s if s.contains("gpt-4.1") => (2.00, 8.00),
+            s if s.contains("o3-mini") => (1.10, 4.40),
+            s if s.contains("o4-mini") => (1.10, 4.40),
+            s if s.contains("gemini-2.5-pro") => (1.25, 10.00),
+            s if s.contains("gemini-2.5-flash") => (0.15, 0.60),
+            _ => return None,
+        };
+        Some(LanguageModelCostInfo::TokenCost {
+            input_token_cost_per_1m: input,
+            output_token_cost_per_1m: output,
+        })
+    }
+
     fn telemetry_id(&self) -> String {
         format!("prism/{}", self.model.name)
     }
@@ -600,6 +623,7 @@ impl LanguageModel for PrismLanguageModel {
 
 struct ConfigurationView {
     api_key_editor: Entity<InputField>,
+    api_url_editor: Entity<InputField>,
     state: Entity<State>,
     load_credentials_task: Option<Task<()>>,
     api_key_error: Option<SharedString>,
@@ -632,6 +656,15 @@ impl ConfigurationView {
             )
         });
 
+        let current_api_url = state.read(cx).settings.api_url.clone();
+        let api_url_editor = cx.new(|cx| {
+            InputField::new(
+                window,
+                cx,
+                &current_api_url,
+            )
+        });
+
         cx.observe(&state, |_, _, cx| {
             cx.notify();
         })
@@ -653,6 +686,7 @@ impl ConfigurationView {
 
         Self {
             api_key_editor,
+            api_url_editor,
             state,
             load_credentials_task,
             api_key_error: None,
@@ -697,13 +731,35 @@ impl ConfigurationView {
         .detach_and_log_err(cx);
     }
 
+    fn save_api_url(&mut self, _: &menu::Confirm, _window: &mut Window, cx: &mut Context<Self>) {
+        let api_url = self.api_url_editor.read(cx).text(cx).trim().to_string();
+        let current_url = self.state.read(cx).settings.api_url.clone();
+
+        if !api_url.is_empty() && api_url != current_url {
+            // When URL changes, clear stored key (it's bound to the old URL)
+            self.state
+                .update(cx, |state, cx| state.set_api_key(None, cx))
+                .detach_and_log_err(cx);
+
+            let fs = <dyn Fs>::global(cx);
+            update_settings_file(fs, cx, move |settings, _| {
+                settings
+                    .language_models
+                    .get_or_insert_default()
+                    .prism
+                    .get_or_insert_default()
+                    .api_url = Some(api_url);
+            });
+        }
+    }
+
     fn should_render_editor(&self, cx: &Context<Self>) -> bool {
         !self.state.read(cx).is_authenticated()
     }
 }
 
 impl Render for ConfigurationView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.state.read(cx);
         let env_var_set = state.api_key_state.is_from_env_var();
         let env_var_name = state.api_key_state.env_var_name();
@@ -712,13 +768,32 @@ impl Render for ConfigurationView {
         let api_key_section = if self.should_render_editor(cx) {
             v_flex()
                 .on_action(cx.listener(Self::save_api_key))
+                .on_action(cx.listener(Self::save_api_url))
                 .child(Label::new(
-                    "Enter a PrisM virtual key (prism_<32 hex chars>) or set the PRISM_API_KEY environment variable.",
+                    "To use PrisM, enter a virtual key or configure the gateway URL:",
                 ))
+                .child(
+                    List::new()
+                        .child(ListBulletItem::new(
+                            "Get a virtual key (prism_<32 hex>) from your PrisM administrator",
+                        ))
+                        .child(ListBulletItem::new(
+                            "Or use the default localhost URL for the embedded gateway (no key needed)",
+                        ))
+                        .child(ListBulletItem::new(
+                            "Paste your key below and hit Enter to save",
+                        )),
+                )
                 .child(
                     div()
                         .pt(DynamicSpacing::Base04.rems(cx))
                         .child(self.api_key_editor.clone()),
+                )
+                .child(
+                    div()
+                        .pt(DynamicSpacing::Base04.rems(cx))
+                        .child(Label::new("Gateway URL").size(LabelSize::Small))
+                        .child(self.api_url_editor.clone()),
                 )
                 .child(
                     Label::new(format!(
@@ -814,12 +889,22 @@ impl Render for ConfigurationView {
             SidecarStatus::Unknown => None,
         };
 
+        let api_url_section = div()
+            .pt(DynamicSpacing::Base04.rems(cx))
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(Label::new("Gateway URL").size(LabelSize::Small))
+                    .child(self.api_url_editor.clone()),
+            );
+
         if self.load_credentials_task.is_some() {
             div().child(Label::new("Loading credentials…")).into_any()
         } else {
             v_flex()
                 .size_full()
                 .child(api_key_section)
+                .child(api_url_section)
                 .when_some(sidecar_status_label, |this, label| {
                     this.child(div().pt(DynamicSpacing::Base04.rems(cx)).child(label))
                 })

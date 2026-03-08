@@ -19,6 +19,7 @@ use crate::keys::budget::BudgetCheckResult;
 use crate::models;
 use crate::proxy::cost::compute_cost;
 use crate::proxy::handler::AppState;
+use crate::proxy::streaming::StreamRelay;
 use crate::types::{EventStatus, InferenceEvent, Usage};
 
 // ---------------------------------------------------------------------------
@@ -197,10 +198,113 @@ pub async fn anthropic_messages(
             _ => return Err(PrismError::Internal("expected stream from provider".into())),
         };
 
-        let msg_id = format!("msg_{}", Uuid::new_v4().simple());
-        let anthropic_stream = openai_sse_to_anthropic_sse(raw_stream, msg_id, model_id.clone());
+        // Use StreamRelay to intercept usage data from the OpenAI-format stream
+        let (relay, result_rx) = StreamRelay::start(raw_stream);
 
-        // Convert raw Anthropic SSE bytes to axum SSE Event objects
+        // Spawn task to emit InferenceEvent after stream completes
+        let event_tx = state.event_tx.clone();
+        let rate_limiter = state.rate_limiter.clone();
+        let budget_tracker = state.budget_tracker.clone();
+        let request_model_owned = request_model.clone();
+        let provider_name_owned = provider_name.clone();
+        let key_hash_owned = key_hash.clone();
+        let team_id_owned = team_id.clone();
+        let end_user_id_owned = end_user_id.clone();
+        let trace_id_owned = trace_id.clone();
+        let span_id_owned = span_id.clone();
+        let session_id_owned = session_id.clone();
+        let session_cost_usd = state.session_cost_usd.clone();
+        let request_messages = request.messages.clone();
+        let tool_calls_json_owned = request.tools.as_ref()
+            .and_then(|tools| serde_json::to_string(tools).ok());
+
+        tokio::spawn(async move {
+            if let Ok(result) = result_rx.await {
+                let latency_ms = start.elapsed().as_millis() as u32;
+                let usage = result.usage.unwrap_or_default();
+
+                // Build prompt hash
+                let prompt_hash = {
+                    let mut hasher = Sha256::new();
+                    for msg in &request_messages {
+                        hasher.update(msg.role.as_bytes());
+                        hasher.update(msg.content.to_string().as_bytes());
+                    }
+                    hex::encode(hasher.finalize())
+                };
+
+                // Build completion hash
+                let completion_hash = if result.completion_text.is_empty() {
+                    String::new()
+                } else {
+                    let mut hasher = Sha256::new();
+                    hasher.update(result.completion_text.as_bytes());
+                    hex::encode(hasher.finalize())
+                };
+
+                let cost = compute_cost(&request_model_owned, &usage);
+
+                if let Some(ref kh) = key_hash_owned {
+                    budget_tracker.record_spend(kh, cost);
+                    rate_limiter.record_tokens(kh, usage.total_tokens).await;
+                }
+
+                let event = InferenceEvent {
+                    id: Uuid::new_v4(),
+                    timestamp: Utc::now(),
+                    provider: provider_name_owned,
+                    model: request_model_owned,
+                    status: EventStatus::Success,
+                    input_tokens: usage.prompt_tokens,
+                    output_tokens: usage.completion_tokens,
+                    total_tokens: usage.total_tokens,
+                    cache_read_input_tokens: usage.cache_read_input_tokens,
+                    cache_creation_input_tokens: usage.cache_creation_input_tokens,
+                    estimated_cost_usd: cost,
+                    latency_ms,
+                    prompt_hash,
+                    completion_hash,
+                    task_type: None,
+                    routing_decision: Some("anthropic_native".into()),
+                    variant_name: None,
+                    virtual_key_hash: key_hash_owned,
+                    team_id: team_id_owned,
+                    end_user_id: end_user_id_owned,
+                    episode_id,
+                    metadata: String::new(),
+                    trace_id: trace_id_owned,
+                    span_id: span_id_owned,
+                    parent_span_id: None,
+                    agent_framework: None,
+                    tool_calls_json: tool_calls_json_owned,
+                    ttft_ms: result.ttft_ms,
+                    session_id: session_id_owned,
+                    provider_attempted: None,
+                };
+
+                let event_cost = event.estimated_cost_usd;
+                let _ = event_tx.send(event).await;
+
+                // Increment session cost (micro-dollars)
+                session_cost_usd.fetch_add(
+                    (event_cost * 1_000_000.0) as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+
+                tracing::info!(
+                    input_tokens = usage.prompt_tokens,
+                    output_tokens = usage.completion_tokens,
+                    latency_ms,
+                    ttft_ms = ?result.ttft_ms,
+                    "anthropic native stream completed"
+                );
+            }
+        });
+
+        // Convert relay (OpenAI SSE) → Anthropic SSE → axum SSE Events
+        let msg_id = format!("msg_{}", Uuid::new_v4().simple());
+        let anthropic_stream = openai_sse_to_anthropic_sse(relay_to_stream(relay), msg_id, model_id.clone());
+
         let sse_stream = anthropic_stream.flat_map(|item| {
             let events: Vec<std::result::Result<Event, std::convert::Infallible>> = match item {
                 Ok(bytes) => {
@@ -233,11 +337,6 @@ pub async fn anthropic_messages(
             };
             futures::stream::iter(events)
         });
-
-        // TODO: Token recording for streaming paths requires buffering final usage from the stream.
-        // See handler.rs for the pattern using tokio::spawn to capture stream completion.
-        // For now, streaming token accounting is deferred to a future task.
-        // TODO: MCP call tracing for this path (requires access to emit_mcp_calls from handler.rs)
 
         return Ok(Sse::new(sse_stream)
             .keep_alive(KeepAlive::default())
@@ -643,6 +742,15 @@ fn to_anthropic_response(resp: &crate::types::ChatCompletionResponse) -> Anthrop
 // ---------------------------------------------------------------------------
 // Streaming: OpenAI SSE → Anthropic SSE converter
 // ---------------------------------------------------------------------------
+
+/// Convert a StreamRelay into a pinned stream compatible with openai_sse_to_anthropic_sse.
+fn relay_to_stream(
+    relay: StreamRelay,
+) -> std::pin::Pin<
+    Box<dyn futures::Stream<Item = std::result::Result<bytes::Bytes, crate::types::PrismStreamError>> + Send>,
+> {
+    Box::pin(relay)
+}
 
 fn format_sse(event_type: &str, data: &serde_json::Value) -> bytes::Bytes {
     let json = serde_json::to_string(data).unwrap_or_default();

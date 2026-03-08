@@ -878,6 +878,7 @@ pub struct Thread {
     request_token_usage: HashMap<UserMessageId, language_model::TokenUsage>,
     #[allow(unused)]
     cumulative_token_usage: TokenUsage,
+    cumulative_cost_usd: f64,
     #[allow(unused)]
     initial_project_snapshot: Shared<Task<Option<Arc<ProjectSnapshot>>>>,
     pub(crate) context_server_registry: Entity<ContextServerRegistry>,
@@ -993,6 +994,7 @@ impl Thread {
             tools: BTreeMap::default(),
             request_token_usage: HashMap::default(),
             cumulative_token_usage: TokenUsage::default(),
+            cumulative_cost_usd: 0.0,
             initial_project_snapshot: {
                 let project_snapshot = Self::project_snapshot(project.clone(), cx);
                 cx.foreground_executor()
