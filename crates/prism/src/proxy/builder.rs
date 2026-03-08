@@ -10,18 +10,18 @@ use crate::experiment::engine::ExperimentEngine;
 use crate::experiment::feedback::FeedbackEvent;
 use crate::interop::bridge::DiscoveryBridge;
 use crate::interop::metering::MeteringStore;
+use crate::keys::KeyService;
 use crate::keys::budget::BudgetTracker;
 use crate::keys::rate_limit::RateLimiter;
-use crate::keys::KeyService;
 use crate::mcp::types::McpCall;
 use crate::observability::callbacks::CallbackRegistry;
 use crate::observability::metrics::MetricsCollector;
 use crate::prompts::store::PromptStore;
-use crate::providers::ProviderRegistry;
+use crate::providers::{CircuitBreakerMap, ProviderRegistry, new_circuit_breaker_map};
 use crate::proxy::handler::AppState;
+use crate::routing::FitnessCache;
 use crate::routing::session::SessionTracker;
 use crate::routing::types::RoutingPolicy;
-use crate::routing::FitnessCache;
 use crate::types::InferenceEvent;
 
 #[derive(Debug, thiserror::Error)]
@@ -58,6 +58,8 @@ pub struct AppStateBuilder {
     interop_metering: Option<Arc<MeteringStore>>,
     metrics: Option<Arc<MetricsCollector>>,
     session_cost_usd: Option<Arc<std::sync::atomic::AtomicU64>>,
+    circuit_breakers: Option<CircuitBreakerMap>,
+    session_spend: Option<Arc<dashmap::DashMap<uuid::Uuid, f64>>>,
 }
 
 impl AppStateBuilder {
@@ -85,6 +87,8 @@ impl AppStateBuilder {
             interop_metering: None,
             metrics: None,
             session_cost_usd: None,
+            circuit_breakers: None,
+            session_spend: None,
         }
     }
 
@@ -157,10 +161,7 @@ impl AppStateBuilder {
         self
     }
 
-    pub fn with_response_cache_opt(
-        mut self,
-        response_cache: Option<Arc<ResponseCache>>,
-    ) -> Self {
+    pub fn with_response_cache_opt(mut self, response_cache: Option<Arc<ResponseCache>>) -> Self {
         self.response_cache = response_cache;
         self
     }
@@ -202,10 +203,7 @@ impl AppStateBuilder {
         self
     }
 
-    pub fn with_mcp_tx_opt(
-        mut self,
-        mcp_tx: Option<tokio::sync::mpsc::Sender<McpCall>>,
-    ) -> Self {
+    pub fn with_mcp_tx_opt(mut self, mcp_tx: Option<tokio::sync::mpsc::Sender<McpCall>>) -> Self {
         self.mcp_tx = mcp_tx;
         self
     }
@@ -264,10 +262,7 @@ impl AppStateBuilder {
         self
     }
 
-    pub fn with_interop_bridge_opt(
-        mut self,
-        interop_bridge: Option<Arc<DiscoveryBridge>>,
-    ) -> Self {
+    pub fn with_interop_bridge_opt(mut self, interop_bridge: Option<Arc<DiscoveryBridge>>) -> Self {
         self.interop_bridge = interop_bridge;
         self
     }
@@ -351,6 +346,12 @@ impl AppStateBuilder {
             session_cost_usd: self
                 .session_cost_usd
                 .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicU64::new(0))),
+            circuit_breakers: self
+                .circuit_breakers
+                .unwrap_or_else(new_circuit_breaker_map),
+            session_spend: self
+                .session_spend
+                .unwrap_or_else(|| Arc::new(dashmap::DashMap::new())),
         })
     }
 }

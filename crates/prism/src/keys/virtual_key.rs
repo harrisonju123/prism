@@ -353,6 +353,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             expires_at: None,
+            session_budget_usd: None,
         };
         cache.insert("hash1".into(), key.clone()).await;
         let got = cache.get("hash1").await;
@@ -386,6 +387,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             expires_at: None,
+            session_budget_usd: None,
         };
         cache.insert("hash1".into(), key).await;
         cache.invalidate("hash1").await;
@@ -413,6 +415,7 @@ mod tests {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 expires_at: None,
+                session_budget_usd: None,
             };
             cache.insert(format!("hash{i}"), key).await;
         }
@@ -442,6 +445,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             expires_at: None,
+            session_budget_usd: None,
         };
         cache.insert("hash1".into(), key).await;
         // With 0s TTL, the entry should be expired immediately

@@ -42,6 +42,11 @@ pub struct VirtualKey {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
+    /// Optional per-session spend cap in USD. Enforced against the in-memory
+    /// session spend accumulated since the process started or the key was last
+    /// used in a fresh session. `None` means no session cap.
+    #[cfg_attr(feature = "postgres", sqlx(default))]
+    pub session_budget_usd: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -60,6 +65,7 @@ pub struct AuthContext {
     pub monthly_budget_usd: Option<f64>,
     pub budget_action: budget::BudgetAction,
     pub allowed_models: Vec<String>,
+    pub session_budget_usd: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +134,7 @@ impl<S: Send + Sync> FromRequestParts<S> for MaybeAuth {
             monthly_budget_usd: vk.monthly_budget_usd,
             budget_action: budget::BudgetAction::from_str_lossy(&vk.budget_action),
             allowed_models: vk.allowed_models,
+            session_budget_usd: vk.session_budget_usd,
         })))
     }
 }

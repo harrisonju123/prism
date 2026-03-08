@@ -266,7 +266,13 @@ mod tests {
             }
             .is_retryable()
         );
-        assert!(!PrismError::BudgetExceeded.is_retryable());
+        assert!(
+            !PrismError::BudgetExceeded {
+                limit: 5.0,
+                spent: 6.0
+            }
+            .is_retryable()
+        );
         assert!(!PrismError::Internal("oops".into()).is_retryable());
     }
 }

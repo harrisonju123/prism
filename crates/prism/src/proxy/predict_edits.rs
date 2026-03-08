@@ -81,7 +81,14 @@ pub async fn predict_edits(
         match budget_result {
             BudgetCheckResult::Exceeded { message } => {
                 tracing::warn!(key_prefix = %ctx.key_prefix, %message, "budget exceeded");
-                return Err(PrismError::BudgetExceeded);
+                let limit = ctx
+                    .daily_budget_usd
+                    .or(ctx.monthly_budget_usd)
+                    .unwrap_or(0.0);
+                return Err(PrismError::BudgetExceeded {
+                    limit,
+                    spent: limit,
+                });
             }
             BudgetCheckResult::Warning { message } => {
                 tracing::warn!(key_prefix = %ctx.key_prefix, %message, "budget warning");

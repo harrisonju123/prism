@@ -22,8 +22,14 @@ pub enum PrismError {
     #[error("rate limit exceeded")]
     RateLimited { retry_after_secs: Option<u64> },
 
-    #[error("budget exceeded")]
-    BudgetExceeded,
+    #[error("budget exceeded: spent ${spent:.4} of ${limit:.2} limit")]
+    BudgetExceeded { limit: f64, spent: f64 },
+
+    #[error("provider circuit open: {provider} is unavailable, retry after {retry_after_secs}s")]
+    CircuitOpen {
+        provider: String,
+        retry_after_secs: u64,
+    },
 
     #[error("authentication required")]
     Unauthorized,
@@ -83,10 +89,20 @@ impl IntoResponse for PrismError {
                 "rate_limit_exceeded",
                 "rate limit exceeded".into(),
             ),
-            PrismError::BudgetExceeded => (
+            PrismError::BudgetExceeded { limit, spent } => (
                 StatusCode::PAYMENT_REQUIRED,
                 "budget_exceeded",
-                "budget exceeded".into(),
+                format!("session budget exceeded: spent ${spent:.4} of ${limit:.2} limit"),
+            ),
+            PrismError::CircuitOpen {
+                provider,
+                retry_after_secs,
+            } => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "circuit_open",
+                format!(
+                    "provider {provider} is currently unavailable, retry after {retry_after_secs}s"
+                ),
             ),
             PrismError::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
@@ -136,11 +152,17 @@ impl IntoResponse for PrismError {
 
         let mut response = (status, axum::Json(body)).into_response();
 
-        // Add Retry-After header for rate-limited responses
-        if let PrismError::RateLimited {
-            retry_after_secs: Some(secs),
-        } = &self
-        {
+        // Add Retry-After header for rate-limited and circuit-open responses
+        let retry_after = match &self {
+            PrismError::RateLimited {
+                retry_after_secs: Some(secs),
+            } => Some(*secs),
+            PrismError::CircuitOpen {
+                retry_after_secs, ..
+            } => Some(*retry_after_secs),
+            _ => None,
+        };
+        if let Some(secs) = retry_after {
             response.headers_mut().insert(
                 "retry-after",
                 axum::http::HeaderValue::from_str(&secs.to_string()).unwrap(),
@@ -168,7 +190,8 @@ impl PrismError {
             | PrismError::ProviderNotConfigured(_)
             | PrismError::BadRequest(_)
             | PrismError::RateLimited { .. }
-            | PrismError::BudgetExceeded
+            | PrismError::BudgetExceeded { .. }
+            | PrismError::CircuitOpen { .. }
             | PrismError::Unauthorized
             | PrismError::SchemaValidationFailed(_)
             | PrismError::ContentFiltered(_)

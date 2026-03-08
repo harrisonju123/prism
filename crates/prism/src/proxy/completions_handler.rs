@@ -7,8 +7,8 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::error::{PrismError, Result};
-use crate::keys::budget::BudgetCheckResult;
 use crate::keys::MaybeAuth;
+use crate::keys::budget::BudgetCheckResult;
 use crate::proxy::cost::compute_cost;
 use crate::proxy::handler::{AppState, resolve_model};
 use crate::types::{
@@ -45,7 +45,14 @@ pub async fn text_completions(
         match budget_result {
             BudgetCheckResult::Exceeded { message } => {
                 tracing::warn!(key_prefix = %ctx.key_prefix, %message, "budget exceeded");
-                return Err(PrismError::BudgetExceeded);
+                let limit = ctx
+                    .daily_budget_usd
+                    .or(ctx.monthly_budget_usd)
+                    .unwrap_or(0.0);
+                return Err(PrismError::BudgetExceeded {
+                    limit,
+                    spent: limit,
+                });
             }
             BudgetCheckResult::Warning { message } => {
                 tracing::warn!(key_prefix = %ctx.key_prefix, %message, "budget warning");

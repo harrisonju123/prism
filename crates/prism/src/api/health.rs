@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -20,14 +21,25 @@ pub struct HealthResponse {
     status: &'static str,
     version: &'static str,
     uptime_secs: u64,
+    circuit_breakers: HashMap<String, String>,
 }
 
-pub async fn health() -> Json<HealthResponse> {
+pub async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
     let uptime = START_TIME.get().map(|t| t.elapsed().as_secs()).unwrap_or(0);
+
+    // Collect circuit breaker states
+    let mut circuit_breakers = HashMap::new();
+    for entry in state.circuit_breakers.iter() {
+        let name = entry.key().clone();
+        let cb_state = entry.value().state_name().await.to_string();
+        circuit_breakers.insert(name, cb_state);
+    }
+
     Json(HealthResponse {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
         uptime_secs: uptime,
+        circuit_breakers,
     })
 }
 
@@ -182,11 +194,27 @@ mod tests {
 
     #[tokio::test]
     async fn health_returns_version() {
+        use crate::providers::ProviderRegistry;
+        use crate::proxy::builder::AppStateBuilder;
+        use std::collections::HashMap;
+
         init_start_time();
-        let Json(resp) = health().await;
+        let providers = Arc::new(ProviderRegistry::from_config(
+            &HashMap::new(),
+            reqwest::Client::new(),
+        ));
+        let (event_tx, _rx) = tokio::sync::mpsc::channel(1);
+        let state = AppStateBuilder::new(figment::Figment::new().extract().unwrap())
+            .with_providers(providers)
+            .with_event_tx(event_tx)
+            .build()
+            .unwrap();
+        let state = Arc::new(state);
+        let Json(resp) = health(State(state)).await;
         assert_eq!(resp.status, "ok");
         assert_eq!(resp.version, env!("CARGO_PKG_VERSION"));
         assert!(resp.uptime_secs < 5); // just started
+        assert!(resp.circuit_breakers.is_empty()); // no providers active
     }
 
     #[test]

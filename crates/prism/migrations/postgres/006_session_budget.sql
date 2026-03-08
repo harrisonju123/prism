@@ -1,0 +1,1 @@
+ALTER TABLE virtual_keys ADD COLUMN IF NOT EXISTS session_budget_usd DOUBLE PRECISION;
