@@ -178,6 +178,19 @@ impl IntoResponse for PrismError {
 }
 
 impl PrismError {
+    pub fn is_provider_server_error(&self) -> bool {
+        match self {
+            PrismError::Provider(msg) => {
+                msg.contains("500")
+                    || msg.contains("502")
+                    || msg.contains("503")
+                    || msg.contains("504")
+                    || msg.contains("529")
+            }
+            _ => false,
+        }
+    }
+
     pub fn is_retryable(&self) -> bool {
         match self {
             PrismError::Timeout(_) => true,

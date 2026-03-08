@@ -29,9 +29,7 @@ use crate::mcp::types::McpCall;
 use crate::models;
 use crate::models::alias::{AliasCache, AliasRepository};
 use crate::providers::ProviderRegistry;
-use crate::providers::circuit_breaker::{
-    CircuitBreakerMap, get_or_create as get_or_create_cb, is_provider_5xx,
-};
+use crate::providers::circuit_breaker::{CircuitBreakerMap, get_or_create as get_or_create_cb};
 use crate::providers::health::ProviderHealthTracker;
 use crate::proxy::cost::compute_cost;
 use crate::proxy::streaming::StreamRelay;
@@ -478,7 +476,7 @@ pub async fn chat_completions(
 
     // Circuit breaker check for primary provider
     let primary_cb = get_or_create_cb(&state.circuit_breakers, &provider_name);
-    if let Err(retry_after_secs) = primary_cb.check().await {
+    if let Err(retry_after_secs) = primary_cb.check() {
         tracing::warn!(
             provider = %provider_name,
             retry_after_secs,
@@ -494,12 +492,12 @@ pub async fn chat_completions(
         let result = provider.chat_completion(&request, &model_id).await;
         match result {
             Ok(resp) => {
-                primary_cb.record_success().await;
+                primary_cb.record_success();
                 resp
             }
             Err(e) => {
-                if is_provider_5xx(&e) {
-                    primary_cb.record_failure().await;
+                if e.is_provider_server_error() {
+                    primary_cb.record_failure();
                 }
                 return Err(e);
             }
@@ -515,12 +513,12 @@ pub async fn chat_completions(
 
         match primary_result {
             Ok(resp) => {
-                primary_cb.record_success().await;
+                primary_cb.record_success();
                 resp
             }
             Err(primary_err) if primary_err.is_retryable() && !fallback_providers.is_empty() => {
-                if is_provider_5xx(&primary_err) {
-                    primary_cb.record_failure().await;
+                if primary_err.is_provider_server_error() {
+                    primary_cb.record_failure();
                 }
                 tracing::warn!(
                     provider = %provider_name,
@@ -546,7 +544,7 @@ pub async fn chat_completions(
 
                     // Circuit breaker check for fallback provider
                     let fb_cb = get_or_create_cb(&state.circuit_breakers, fb_provider_name);
-                    if let Err(retry_after_secs) = fb_cb.check().await {
+                    if let Err(retry_after_secs) = fb_cb.check() {
                         tracing::warn!(
                             fallback_provider = %fb_provider_name,
                             retry_after_secs,
@@ -586,7 +584,7 @@ pub async fn chat_completions(
                     .await
                     {
                         Ok(resp) => {
-                            fb_cb.record_success().await;
+                            fb_cb.record_success();
                             provider_name = fb_provider_name.clone();
                             if let Some(ref ht) = state.health_tracker {
                                 ht.record_success(fb_provider_name);
@@ -603,8 +601,8 @@ pub async fn chat_completions(
                             if let Some(ref ht) = state.health_tracker {
                                 ht.record_failure(fb_provider_name, e.to_string());
                             }
-                            if is_provider_5xx(&e) {
-                                fb_cb.record_failure().await;
+                            if e.is_provider_server_error() {
+                                fb_cb.record_failure();
                             }
                             tracing::warn!(
                                 fallback_provider = %fb_provider_name,
@@ -623,8 +621,8 @@ pub async fn chat_completions(
                 }
             }
             Err(e) => {
-                if is_provider_5xx(&e) {
-                    primary_cb.record_failure().await;
+                if e.is_provider_server_error() {
+                    primary_cb.record_failure();
                 }
                 return Err(e);
             }
@@ -690,6 +688,12 @@ pub async fn chat_completions(
                     .record_spend(&ctx.key_hash, event.estimated_cost_usd);
                 // Accumulate session spend for per-key hard cap
                 *state.session_spend.entry(ctx.key_id).or_insert(0.0) += event.estimated_cost_usd;
+                if state.session_spend.len() > 10_000 {
+                    tracing::warn!(
+                        len = state.session_spend.len(),
+                        "session_spend map exceeds 10,000 entries — possible key churn"
+                    );
+                }
             }
 
             let event_id = event.id;
@@ -861,6 +865,12 @@ pub async fn chat_completions(
                         budget_tracker.record_spend(&ctx.key_hash, event.estimated_cost_usd);
                         // Accumulate session spend for per-key hard cap
                         *session_spend.entry(ctx.key_id).or_insert(0.0) += event.estimated_cost_usd;
+                        if session_spend.len() > 10_000 {
+                            tracing::warn!(
+                                len = session_spend.len(),
+                                "session_spend map exceeds 10,000 entries — possible key churn"
+                            );
+                        }
                     }
 
                     let event_id = event.id;

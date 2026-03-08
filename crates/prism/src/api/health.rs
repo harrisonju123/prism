@@ -39,7 +39,7 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> 
     let mut circuit_breakers = HashMap::new();
     for entry in state.circuit_breakers.iter() {
         let name = entry.key().clone();
-        let cb_state = entry.value().state_name().await.to_string();
+        let cb_state = entry.value().state_name().to_string();
         circuit_breakers.insert(name, cb_state);
     }
 

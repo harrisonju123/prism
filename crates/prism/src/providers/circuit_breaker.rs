@@ -1,8 +1,8 @@
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use dashmap::DashMap;
-use tokio::sync::Mutex;
 use tokio::time::Instant;
 
 // ---------------------------------------------------------------------------
@@ -60,8 +60,8 @@ impl ProviderCircuitBreaker {
 
     /// Returns `Ok(())` if the circuit allows the request through.
     /// Returns `Err(retry_after_secs)` if it is Open.
-    pub async fn check(&self) -> Result<(), u64> {
-        let mut guard = self.state.lock().await;
+    pub fn check(&self) -> Result<(), u64> {
+        let mut guard = self.state.lock().expect("circuit breaker lock poisoned");
         match &*guard {
             CircuitState::Closed { .. } => Ok(()),
             CircuitState::Open { opened_at } => {
@@ -83,8 +83,8 @@ impl ProviderCircuitBreaker {
     }
 
     /// Call this after a successful provider response.
-    pub async fn record_success(&self) {
-        let mut guard = self.state.lock().await;
+    pub fn record_success(&self) {
+        let mut guard = self.state.lock().expect("circuit breaker lock poisoned");
         match &*guard {
             CircuitState::HalfOpen => {
                 tracing::info!(
@@ -110,8 +110,8 @@ impl ProviderCircuitBreaker {
     }
 
     /// Call this after a 5xx provider error. Trips open after threshold.
-    pub async fn record_failure(&self) {
-        let mut guard = self.state.lock().await;
+    pub fn record_failure(&self) {
+        let mut guard = self.state.lock().expect("circuit breaker lock poisoned");
         match &*guard {
             CircuitState::Closed {
                 consecutive_failures,
@@ -146,8 +146,8 @@ impl ProviderCircuitBreaker {
     }
 
     /// Return the state name as a string for health reporting.
-    pub async fn state_name(&self) -> &'static str {
-        self.state.lock().await.name()
+    pub fn state_name(&self) -> &'static str {
+        self.state.lock().expect("circuit breaker lock poisoned").name()
     }
 }
 
@@ -165,96 +165,72 @@ pub fn new_circuit_breaker_map() -> CircuitBreakerMap {
 
 /// Get or create the circuit breaker for `provider`.
 pub fn get_or_create(map: &CircuitBreakerMap, provider: &str) -> Arc<ProviderCircuitBreaker> {
-    if let Some(cb) = map.get(provider) {
-        return cb.clone();
-    }
-    let cb = Arc::new(ProviderCircuitBreaker::new(provider));
-    map.insert(provider.to_string(), cb.clone());
-    cb
-}
-
-// ---------------------------------------------------------------------------
-// Helpers — classify a PrismError as a provider 5xx
-// ---------------------------------------------------------------------------
-
-/// Returns `true` if the error should trip the circuit breaker (provider 5xx).
-pub fn is_provider_5xx(err: &crate::error::PrismError) -> bool {
-    match err {
-        crate::error::PrismError::Provider(msg) => {
-            msg.contains("500")
-                || msg.contains("502")
-                || msg.contains("503")
-                || msg.contains("504")
-                || msg.contains("529")
-        }
-        crate::error::PrismError::Timeout(_) => false,
-        _ => false,
-    }
+    map.entry(provider.to_string())
+        .or_insert_with(|| Arc::new(ProviderCircuitBreaker::new(provider)))
+        .clone()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn starts_closed() {
+    #[test]
+    fn starts_closed() {
         let cb = ProviderCircuitBreaker::new("anthropic");
-        assert!(cb.check().await.is_ok());
-    }
-
-    #[tokio::test]
-    async fn trips_open_after_threshold() {
-        let cb = ProviderCircuitBreaker::new("anthropic");
-        for _ in 0..FAILURE_THRESHOLD {
-            cb.record_failure().await;
-        }
-        // Now it should be open
-        assert!(cb.check().await.is_err());
-    }
-
-    #[tokio::test]
-    async fn resets_on_success() {
-        let cb = ProviderCircuitBreaker::new("openai");
-        for _ in 0..(FAILURE_THRESHOLD - 1) {
-            cb.record_failure().await;
-        }
-        cb.record_success().await;
-        // One more failure should not trip
-        cb.record_failure().await;
-        assert!(cb.check().await.is_ok());
-    }
-
-    #[tokio::test]
-    async fn half_open_to_closed_on_success() {
-        let cb = ProviderCircuitBreaker::new("openai");
-        // Force into HalfOpen by manipulating state directly
-        {
-            let mut guard = cb.state.lock().await;
-            *guard = CircuitState::HalfOpen;
-        }
-        cb.record_success().await;
-        assert_eq!(cb.state_name().await, "closed");
-    }
-
-    #[tokio::test]
-    async fn half_open_to_open_on_failure() {
-        let cb = ProviderCircuitBreaker::new("openai");
-        {
-            let mut guard = cb.state.lock().await;
-            *guard = CircuitState::HalfOpen;
-        }
-        cb.record_failure().await;
-        assert_eq!(cb.state_name().await, "open");
+        assert!(cb.check().is_ok());
     }
 
     #[test]
-    fn is_provider_5xx_detects_server_errors() {
+    fn trips_open_after_threshold() {
+        let cb = ProviderCircuitBreaker::new("anthropic");
+        for _ in 0..FAILURE_THRESHOLD {
+            cb.record_failure();
+        }
+        // Now it should be open
+        assert!(cb.check().is_err());
+    }
+
+    #[test]
+    fn resets_on_success() {
+        let cb = ProviderCircuitBreaker::new("openai");
+        for _ in 0..(FAILURE_THRESHOLD - 1) {
+            cb.record_failure();
+        }
+        cb.record_success();
+        // One more failure should not trip
+        cb.record_failure();
+        assert!(cb.check().is_ok());
+    }
+
+    #[test]
+    fn half_open_to_closed_on_success() {
+        let cb = ProviderCircuitBreaker::new("openai");
+        // Force into HalfOpen by manipulating state directly
+        {
+            let mut guard = cb.state.lock().expect("circuit breaker lock poisoned");
+            *guard = CircuitState::HalfOpen;
+        }
+        cb.record_success();
+        assert_eq!(cb.state_name(), "closed");
+    }
+
+    #[test]
+    fn half_open_to_open_on_failure() {
+        let cb = ProviderCircuitBreaker::new("openai");
+        {
+            let mut guard = cb.state.lock().expect("circuit breaker lock poisoned");
+            *guard = CircuitState::HalfOpen;
+        }
+        cb.record_failure();
+        assert_eq!(cb.state_name(), "open");
+    }
+
+    #[test]
+    fn is_provider_server_error_detects_server_errors() {
         use crate::error::PrismError;
-        assert!(is_provider_5xx(&PrismError::Provider("HTTP 500".into())));
-        assert!(is_provider_5xx(&PrismError::Provider(
-            "503 service unavailable".into()
-        )));
-        assert!(!is_provider_5xx(&PrismError::Provider("HTTP 429".into())));
-        assert!(!is_provider_5xx(&PrismError::Unauthorized));
+        assert!(PrismError::Provider("HTTP 500".into()).is_provider_server_error());
+        assert!(PrismError::Provider("503 service unavailable".into()).is_provider_server_error());
+        assert!(!PrismError::Provider("HTTP 429".into()).is_provider_server_error());
+        assert!(!PrismError::Unauthorized.is_provider_server_error());
     }
 }
