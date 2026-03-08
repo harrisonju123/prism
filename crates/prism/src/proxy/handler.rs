@@ -1073,10 +1073,18 @@ fn build_classifier_input(request: &ChatCompletionRequest) -> ClassifierInput {
 
 /// Resolve a user-facing model name to (provider_name, provider_model_id).
 pub(crate) fn resolve_model(config: &Config, model: &str) -> Result<(String, String)> {
-    // Check config-defined aliases first (e.g. [aliases] "fast" = "claude-haiku-4-5-20251001")
-    if let Some(aliased) = config.aliases.get(model) {
-        return resolve_model(config, aliased);
+    // Resolve config-defined aliases iteratively to support chains and detect cycles.
+    let mut current = model;
+    let mut seen = std::collections::HashSet::new();
+    while let Some(aliased) = config.aliases.get(current) {
+        if !seen.insert(current) {
+            return Err(PrismError::BadRequest(format!(
+                "alias cycle detected: '{current}' appears more than once in the alias chain"
+            )));
+        }
+        current = aliased.as_str();
     }
+    let model = current;
 
     // Check configured model overrides
     if let Some(model_config) = config.models.get(model) {
