@@ -14042,6 +14042,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "db",
+ "futures 0.3.32",
  "gpui",
  "prism-client",
  "prism-types",

@@ -91,7 +91,7 @@ pub async fn dispatch(name: &str, args: &serde_json::Value) -> String {
     match name {
         "read_file" => {
             let offset = args["offset"].as_u64().map(|n| n as usize);
-            let limit  = args["limit"].as_u64().map(|n| n as usize);
+            let limit = args["limit"].as_u64().map(|n| n as usize);
             files::read_file(args["path"].as_str().unwrap_or(""), offset, limit).await
         }
         "write_file" => {
@@ -106,7 +106,11 @@ pub async fn dispatch(name: &str, args: &serde_json::Value) -> String {
             let cmd = args["command"].as_str().unwrap_or("");
             let raw_args: Vec<String> = args["args"]
                 .as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
                 .unwrap_or_default();
             let timeout = args["timeout_secs"].as_u64().unwrap_or(30).min(120);
             let cwd = args["cwd"].as_str();
@@ -119,7 +123,7 @@ pub async fn dispatch(name: &str, args: &serde_json::Value) -> String {
             shell::bash(cmd, timeout, cwd).await
         }
         "edit_file" => {
-            let path       = args["path"].as_str().unwrap_or("");
+            let path = args["path"].as_str().unwrap_or("");
             let old_string = args["old_string"].as_str().unwrap_or("");
             let new_string = args["new_string"].as_str().unwrap_or("");
             files::edit_file(path, old_string, new_string).await

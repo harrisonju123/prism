@@ -59,7 +59,10 @@ pub async fn list_handoffs(
     Path(workspace_id): Path<Uuid>,
     Query(q): Query<HandoffQuery>,
 ) -> Result<impl IntoResponse, Error> {
-    let since = q.since.map(|s| crate::api::parse_rfc3339_param(&s)).transpose()?;
+    let since = q
+        .since
+        .map(|s| crate::api::parse_rfc3339_param(&s))
+        .transpose()?;
 
     let filters = HandoffFilters {
         since,

@@ -8,8 +8,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::{Config, ProviderConfig};
 use crate::error::{PrismError, Result};
-use crate::proxy::builder::AppStateBuilder;
 use crate::providers::ProviderRegistry;
+use crate::proxy::builder::AppStateBuilder;
 use crate::types::InferenceEvent;
 
 /// A PrisM gateway running in-process on a random loopback port.
@@ -112,7 +112,10 @@ pub async fn start_embedded_with(
         .build()
         .map_err(|e| PrismError::Internal(e.to_string()))?;
 
-    let registry = Arc::new(ProviderRegistry::from_config(&config.providers, http_client));
+    let registry = Arc::new(ProviderRegistry::from_config(
+        &config.providers,
+        http_client,
+    ));
     let (event_tx, _event_rx) = tokio::sync::mpsc::channel::<InferenceEvent>(512);
 
     let state = Arc::new(

@@ -7,8 +7,8 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::error::{PrismError, Result};
-use crate::keys::budget::BudgetCheckResult;
 use crate::keys::MaybeAuth;
+use crate::keys::budget::BudgetCheckResult;
 use crate::proxy::cost::compute_cost;
 use crate::proxy::handler::{AppState, resolve_model};
 use crate::types::{

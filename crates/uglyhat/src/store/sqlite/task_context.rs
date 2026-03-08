@@ -127,6 +127,8 @@ impl SqliteStore {
         .fetch_all(&self.pool)
         .await?;
 
-        rows.iter().map(super::activity::row_to_activity_entry).collect()
+        rows.iter()
+            .map(super::activity::row_to_activity_entry)
+            .collect()
     }
 }

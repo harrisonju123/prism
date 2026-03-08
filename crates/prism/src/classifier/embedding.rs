@@ -114,8 +114,7 @@ mod tests {
     fn test_classify_summarization_semantic() {
         let clf = EmbeddingClassifier::build(128);
         let input = ClassifierInput {
-            last_user_message: "give me an overview of the key points in this document"
-                .to_string(),
+            last_user_message: "give me an overview of the key points in this document".to_string(),
             ..Default::default()
         };
         let result = clf.classify(&input);

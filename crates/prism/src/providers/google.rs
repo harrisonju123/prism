@@ -372,9 +372,7 @@ impl GeminiStreamConverter {
         // Content / tool-call chunks
         for part in parts {
             if let Some(text) = &part.text {
-                out.push(
-                    self.make_chunk(serde_json::json!({"content": text}), None, None),
-                );
+                out.push(self.make_chunk(serde_json::json!({"content": text}), None, None));
             } else if let Some(fc) = &part.function_call {
                 let name = fc.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let args = fc
@@ -993,10 +991,7 @@ mod tests {
             let finish_s = std::str::from_utf8(&out[out.len() - 2]).unwrap();
             let finish_chunk: ChatCompletionChunk =
                 serde_json::from_str(finish_s.strip_prefix("data: ").unwrap().trim()).unwrap();
-            assert_eq!(
-                finish_chunk.choices[0].finish_reason.as_deref(),
-                Some(*oai)
-            );
+            assert_eq!(finish_chunk.choices[0].finish_reason.as_deref(), Some(*oai));
         }
     }
 

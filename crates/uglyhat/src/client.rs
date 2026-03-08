@@ -37,10 +37,7 @@ impl HttpClient {
     }
 
     fn ws_url(&self, suffix: &str) -> String {
-        self.url(&format!(
-            "/workspaces/{}{suffix}",
-            self.workspace_id
-        ))
+        self.url(&format!("/workspaces/{}{suffix}", self.workspace_id))
     }
 
     async fn get<T: DeserializeOwned>(&self, url: &str) -> Result<T, ClientError> {
@@ -160,17 +157,11 @@ impl HttpClient {
             "assignee": assignee,
             "domain_tags": tags,
         });
-        self.post(
-            &self.url(&format!("/epics/{epic_id}/tasks")),
-            &body,
-        )
-        .await
+        self.post(&self.url(&format!("/epics/{epic_id}/tasks")), &body)
+            .await
     }
 
-    pub async fn get_task_deps(
-        &self,
-        id: Uuid,
-    ) -> Result<Value, ClientError> {
+    pub async fn get_task_deps(&self, id: Uuid) -> Result<Value, ClientError> {
         self.get(&self.url(&format!("/tasks/{id}/dependencies")))
             .await
     }
@@ -324,9 +315,7 @@ impl HttpClient {
     }
 }
 
-async fn handle_response<T: DeserializeOwned>(
-    resp: reqwest::Response,
-) -> Result<T, ClientError> {
+async fn handle_response<T: DeserializeOwned>(resp: reqwest::Response) -> Result<T, ClientError> {
     let status = resp.status();
     if status.is_success() {
         Ok(resp.json::<T>().await?)

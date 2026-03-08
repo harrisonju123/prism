@@ -6,9 +6,9 @@ use assistant_slash_command::{
 };
 use client::{self, proto};
 use clock::ReplicaId;
-use language_model::CompletionIntent;
 use collections::{HashMap, HashSet};
 use fs::{Fs, RenameOptions};
+use language_model::CompletionIntent;
 
 use futures::{FutureExt, StreamExt, future::Shared};
 use gpui::{

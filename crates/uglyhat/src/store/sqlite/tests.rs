@@ -69,14 +69,8 @@ async fn workspace_create_get() {
 #[tokio::test]
 async fn workspace_list() {
     let (store, _) = setup().await;
-    store
-        .create_workspace_impl("WS-A", "", None)
-        .await
-        .unwrap();
-    store
-        .create_workspace_impl("WS-B", "", None)
-        .await
-        .unwrap();
+    store.create_workspace_impl("WS-A", "", None).await.unwrap();
+    store.create_workspace_impl("WS-B", "", None).await.unwrap();
     let list = store.list_workspaces_impl().await.unwrap();
     // Original bootstrap workspace + 2 new ones
     assert!(list.len() >= 3);
@@ -191,10 +185,7 @@ async fn initiative_delete() {
 #[tokio::test]
 async fn initiative_not_found() {
     let (store, _) = setup().await;
-    let err = store
-        .get_initiative_impl(Uuid::new_v4())
-        .await
-        .unwrap_err();
+    let err = store.get_initiative_impl(Uuid::new_v4()).await.unwrap_err();
     assert!(matches!(err, Error::NotFound(_)));
 }
 
@@ -911,7 +902,15 @@ async fn activity_filter_by_actor() {
     let id1 = Uuid::new_v4();
     let id2 = Uuid::new_v4();
     store
-        .log_activity_impl(result.workspace.id, "alice", "created", "task", id1, "", None)
+        .log_activity_impl(
+            result.workspace.id,
+            "alice",
+            "created",
+            "task",
+            id1,
+            "",
+            None,
+        )
         .await
         .unwrap();
     store
@@ -966,7 +965,15 @@ async fn activity_filter_since() {
     let before = Utc::now();
     let entity_id = Uuid::new_v4();
     store
-        .log_activity_impl(result.workspace.id, "", "updated", "task", entity_id, "", None)
+        .log_activity_impl(
+            result.workspace.id,
+            "",
+            "updated",
+            "task",
+            entity_id,
+            "",
+            None,
+        )
         .await
         .unwrap();
     let entries = store
@@ -1072,14 +1079,7 @@ async fn decision_list_by_workspace() {
 async fn decision_update() {
     let (store, result) = setup().await;
     let d = store
-        .create_decision_impl(
-            Some(result.workspace.id),
-            None,
-            None,
-            "Old Title",
-            "",
-            None,
-        )
+        .create_decision_impl(Some(result.workspace.id), None, None, "Old Title", "", None)
         .await
         .unwrap();
     let updated = store
@@ -1094,14 +1094,7 @@ async fn decision_update() {
 async fn decision_delete() {
     let (store, result) = setup().await;
     let d = store
-        .create_decision_impl(
-            Some(result.workspace.id),
-            None,
-            None,
-            "To Delete",
-            "",
-            None,
-        )
+        .create_decision_impl(Some(result.workspace.id), None, None, "To Delete", "", None)
         .await
         .unwrap();
     store.delete_decision_impl(d.id).await.unwrap();
@@ -1112,10 +1105,7 @@ async fn decision_delete() {
 #[tokio::test]
 async fn decision_not_found() {
     let (store, _) = setup().await;
-    let err = store
-        .get_decision_impl(Uuid::new_v4())
-        .await
-        .unwrap_err();
+    let err = store.get_decision_impl(Uuid::new_v4()).await.unwrap_err();
     assert!(matches!(err, Error::NotFound(_)));
 }
 
@@ -1306,11 +1296,7 @@ async fn agent_checkin_upsert() {
         .unwrap();
     // Second checkin should update capabilities
     let resp = store
-        .checkin_agent_impl(
-            result.workspace.id,
-            "agent-x",
-            vec!["rust".to_string()],
-        )
+        .checkin_agent_impl(result.workspace.id, "agent-x", vec!["rust".to_string()])
         .await
         .unwrap();
     assert_eq!(resp.agent.capabilities, vec!["rust"]);
@@ -1530,10 +1516,7 @@ async fn apikey_delete() {
         .await
         .unwrap();
     store.delete_api_key_impl(key.id).await.unwrap();
-    let err = store
-        .get_api_key_by_hash_impl("delhash")
-        .await
-        .unwrap_err();
+    let err = store.get_api_key_by_hash_impl("delhash").await.unwrap_err();
     assert!(matches!(err, Error::NotFound(_)));
 }
 

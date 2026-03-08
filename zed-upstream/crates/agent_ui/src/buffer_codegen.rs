@@ -3,7 +3,6 @@ use agent_settings::AgentSettings;
 use anyhow::{Context as _, Result};
 use uuid::Uuid;
 
-use language_model::CompletionIntent;
 use collections::HashSet;
 use editor::{Anchor, AnchorRangeExt, MultiBuffer, MultiBufferSnapshot, ToOffset as _, ToPoint};
 use futures::{
@@ -15,6 +14,7 @@ use futures::{
 };
 use gpui::{App, AppContext as _, AsyncApp, Context, Entity, EventEmitter, Subscription, Task};
 use language::{Buffer, IndentKind, LanguageName, Point, TransactionId, line_diff};
+use language_model::CompletionIntent;
 use language_model::{
     LanguageModel, LanguageModelCompletionError, LanguageModelCompletionEvent,
     LanguageModelRegistry, LanguageModelRequest, LanguageModelRequestMessage,

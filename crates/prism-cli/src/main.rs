@@ -1,10 +1,13 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use prism_client::PrismClient;
 use prism_cli::{agent::Agent, config::Config, session::Session};
+use prism_client::PrismClient;
 
 #[derive(Parser)]
-#[command(name = "prism", about = "PrisM Code Agent — Claude Code-style CLI powered by PrisM gateway")]
+#[command(
+    name = "prism",
+    about = "PrisM Code Agent — Claude Code-style CLI powered by PrisM gateway"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -24,7 +27,10 @@ enum Commands {
         cost_cap: Option<f64>,
         #[arg(long, help = "Custom system prompt (overrides default)")]
         system: Option<String>,
-        #[arg(long, help = "Resume a previous session. Omit value for most recent; pass UUID prefix for specific.")]
+        #[arg(
+            long,
+            help = "Resume a previous session. Omit value for most recent; pass UUID prefix for specific."
+        )]
         resume: Option<Option<String>>,
     },
     /// List available models via the PrisM gateway
@@ -83,8 +89,7 @@ async fn run(cli: Cli) -> Result<()> {
             if let Some(s) = system {
                 config.system_prompt = Some(s);
             }
-            let client = PrismClient::new(&config.prism_url)
-                .with_api_key(&config.prism_api_key);
+            let client = PrismClient::new(&config.prism_url).with_api_key(&config.prism_api_key);
 
             if let Some(resume_flag) = resume {
                 // Resume a previous session
@@ -100,22 +105,21 @@ async fn run(cli: Cli) -> Result<()> {
                 agent.resume(task_str).await?;
             } else {
                 // New session
-                let task_str = task.ok_or_else(|| anyhow::anyhow!("task is required for new sessions"))?;
+                let task_str =
+                    task.ok_or_else(|| anyhow::anyhow!("task is required for new sessions"))?;
                 let mut agent = Agent::new(client, config, &task_str);
                 agent.run(&task_str).await?;
             }
         }
         Commands::Models => {
             let config = Config::from_env()?;
-            let client = PrismClient::new(&config.prism_url)
-                .with_api_key(&config.prism_api_key);
+            let client = PrismClient::new(&config.prism_url).with_api_key(&config.prism_api_key);
             let models = client.list_models().await?;
             println!("{}", serde_json::to_string_pretty(&models.data)?);
         }
         Commands::Health => {
             let config = Config::from_env()?;
-            let client = PrismClient::new(&config.prism_url)
-                .with_api_key(&config.prism_api_key);
+            let client = PrismClient::new(&config.prism_url).with_api_key(&config.prism_api_key);
             let ok = client.health_check().await?;
             if ok {
                 println!("gateway healthy");

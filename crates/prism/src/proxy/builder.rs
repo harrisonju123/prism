@@ -10,18 +10,18 @@ use crate::experiment::engine::ExperimentEngine;
 use crate::experiment::feedback::FeedbackEvent;
 use crate::interop::bridge::DiscoveryBridge;
 use crate::interop::metering::MeteringStore;
+use crate::keys::KeyService;
 use crate::keys::budget::BudgetTracker;
 use crate::keys::rate_limit::RateLimiter;
-use crate::keys::KeyService;
 use crate::mcp::types::McpCall;
 use crate::observability::callbacks::CallbackRegistry;
 use crate::observability::metrics::MetricsCollector;
 use crate::prompts::store::PromptStore;
 use crate::providers::ProviderRegistry;
 use crate::proxy::handler::AppState;
+use crate::routing::FitnessCache;
 use crate::routing::session::SessionTracker;
 use crate::routing::types::RoutingPolicy;
-use crate::routing::FitnessCache;
 use crate::types::InferenceEvent;
 
 #[derive(Debug, thiserror::Error)]
@@ -157,10 +157,7 @@ impl AppStateBuilder {
         self
     }
 
-    pub fn with_response_cache_opt(
-        mut self,
-        response_cache: Option<Arc<ResponseCache>>,
-    ) -> Self {
+    pub fn with_response_cache_opt(mut self, response_cache: Option<Arc<ResponseCache>>) -> Self {
         self.response_cache = response_cache;
         self
     }
@@ -202,10 +199,7 @@ impl AppStateBuilder {
         self
     }
 
-    pub fn with_mcp_tx_opt(
-        mut self,
-        mcp_tx: Option<tokio::sync::mpsc::Sender<McpCall>>,
-    ) -> Self {
+    pub fn with_mcp_tx_opt(mut self, mcp_tx: Option<tokio::sync::mpsc::Sender<McpCall>>) -> Self {
         self.mcp_tx = mcp_tx;
         self
     }
@@ -264,10 +258,7 @@ impl AppStateBuilder {
         self
     }
 
-    pub fn with_interop_bridge_opt(
-        mut self,
-        interop_bridge: Option<Arc<DiscoveryBridge>>,
-    ) -> Self {
+    pub fn with_interop_bridge_opt(mut self, interop_bridge: Option<Arc<DiscoveryBridge>>) -> Self {
         self.interop_bridge = interop_bridge;
         self
     }

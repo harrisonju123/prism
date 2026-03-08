@@ -93,7 +93,11 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         }
     } else if current < latest {
         // Versioned but behind — run only new migrations
-        info!(from = current, to = latest, "running incremental migrations");
+        info!(
+            from = current,
+            to = latest,
+            "running incremental migrations"
+        );
         for i in (current as usize)..MIGRATIONS.len() {
             let v = (i + 1) as i64;
             info!(migration = v, "applying migration");

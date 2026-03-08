@@ -202,7 +202,10 @@ impl SqliteStore {
         Ok(row.try_get("cnt")?)
     }
 
-    pub(crate) async fn get_stale_tasks_impl(&self, workspace_id: Uuid) -> Result<Vec<TaskSummary>> {
+    pub(crate) async fn get_stale_tasks_impl(
+        &self,
+        workspace_id: Uuid,
+    ) -> Result<Vec<TaskSummary>> {
         self.scan_task_summaries(
             "SELECT t.id, t.name, t.status, t.priority, t.assignee,
                     ep.name AS epic_name, i.name AS initiative_name, t.domain_tags, t.created_at

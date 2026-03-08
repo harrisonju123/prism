@@ -3,15 +3,13 @@ use edit_prediction::cursor_excerpt;
 use edit_prediction_types::{
     EditPrediction, EditPredictionDelegate, EditPredictionDiscardReason, EditPredictionIconSet,
 };
+use fs::Fs;
 use futures::{AsyncReadExt, FutureExt, StreamExt, future::BoxFuture};
-use gpui::{AnyView, App, AsyncApp, Context, Entity, Global, SharedString, Task, WeakEntity, Window};
+use gpui::{
+    AnyView, App, AsyncApp, Context, Entity, Global, SharedString, Task, WeakEntity, Window,
+};
 use http_client::{AsyncBody, HttpClient, Method, Request as HttpRequest};
-use ui::IconName;
 use language::{Anchor, Buffer, BufferSnapshot, EditPreview, OffsetRangeExt, ToOffset, ToPoint};
-use std::collections::HashMap;
-use std::ops::Range;
-use std::sync::{Arc, LazyLock};
-use std::time::Duration;
 use language_model::{
     ApiKeyState, AuthenticateError, EnvVar, IconOrSvg, LanguageModel, LanguageModelCompletionError,
     LanguageModelCompletionEvent, LanguageModelCostInfo, LanguageModelId, LanguageModelName,
@@ -24,8 +22,12 @@ use open_ai::{
     responses::{Request as ResponseRequest, StreamEvent as ResponsesStreamEvent, stream_response},
     stream_completion,
 };
-use fs::Fs;
 use settings::{Settings, SettingsStore, update_settings_file};
+use std::collections::HashMap;
+use std::ops::Range;
+use std::sync::{Arc, LazyLock};
+use std::time::Duration;
+use ui::IconName;
 use ui::{ElevationIndex, List, ListBulletItem, Tooltip, prelude::*};
 use ui_input::InputField;
 use util::ResultExt;
@@ -117,9 +119,9 @@ impl State {
             return Task::ready(Ok(()));
         }
         let api_url = SharedString::new(self.settings.api_url.clone());
-        let auth_task = self
-            .api_key_state
-            .load_if_needed(api_url, |this| &mut this.api_key_state, cx);
+        let auth_task =
+            self.api_key_state
+                .load_if_needed(api_url, |this| &mut this.api_key_state, cx);
         cx.spawn(async move |this, cx| {
             let result = auth_task.await;
             if result.is_ok() {
@@ -141,18 +143,16 @@ impl State {
             };
 
             match do_fetch_models(&http_client, &api_url, &api_key).await {
-                Ok(result) => {
-                    this.update(cx, |this, cx| {
-                        if this.sidecar_status != SidecarStatus::Embedded {
-                            this.sidecar_status = SidecarStatus::External;
-                        }
-                        this.fetched_models = result.model_ids;
-                        if let Some(cost) = result.session_cost_usd {
-                            this.session_cost_usd = cost;
-                        }
-                        cx.notify();
-                    })
-                }
+                Ok(result) => this.update(cx, |this, cx| {
+                    if this.sidecar_status != SidecarStatus::Embedded {
+                        this.sidecar_status = SidecarStatus::External;
+                    }
+                    this.fetched_models = result.model_ids;
+                    if let Some(cost) = result.session_cost_usd {
+                        this.session_cost_usd = cost;
+                    }
+                    cx.notify();
+                }),
                 Err(err) if is_connection_refused(&err) => {
                     for _ in 0..3 {
                         smol::Timer::after(Duration::from_millis(500)).await;
@@ -191,10 +191,9 @@ impl State {
         let session_cost = Arc::new(std::sync::atomic::AtomicU64::new(0));
         cx.spawn(async move |this, cx| {
             let cost_for_builder = session_cost.clone();
-            match prism::start_embedded_with(
-                providers,
-                move |b| b.with_session_cost_usd(cost_for_builder),
-            )
+            match prism::start_embedded_with(providers, move |b| {
+                b.with_session_cost_usd(cost_for_builder)
+            })
             .await
             {
                 Ok(gateway) => {
@@ -219,7 +218,11 @@ impl State {
 /// These supplement whatever PRISM_* vars the embedded gateway loads from config.
 fn collect_provider_configs() -> Vec<(String, String, String)> {
     const KNOWN: &[(&str, &str, &str)] = &[
-        ("anthropic", "ANTHROPIC_API_KEY", "https://api.anthropic.com/v1"),
+        (
+            "anthropic",
+            "ANTHROPIC_API_KEY",
+            "https://api.anthropic.com/v1",
+        ),
         ("openai", "OPENAI_API_KEY", "https://api.openai.com/v1"),
         (
             "google",
@@ -291,10 +294,7 @@ impl PrismLanguageModelProvider {
 
         cx.set_global(GlobalPrismState(state.downgrade()));
 
-        Self {
-            http_client,
-            state,
-        }
+        Self { http_client, state }
     }
 
     fn create_language_model(&self, model: AvailableModel) -> Arc<dyn LanguageModel> {
@@ -648,22 +648,11 @@ fn validate_prism_key(key: &str) -> Option<SharedString> {
 
 impl ConfigurationView {
     fn new(state: Entity<State>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let api_key_editor = cx.new(|cx| {
-            InputField::new(
-                window,
-                cx,
-                "prism_00000000000000000000000000000000",
-            )
-        });
+        let api_key_editor =
+            cx.new(|cx| InputField::new(window, cx, "prism_00000000000000000000000000000000"));
 
         let current_api_url = state.read(cx).settings.api_url.clone();
-        let api_url_editor = cx.new(|cx| {
-            InputField::new(
-                window,
-                cx,
-                &current_api_url,
-            )
-        });
+        let api_url_editor = cx.new(|cx| InputField::new(window, cx, &current_api_url));
 
         cx.observe(&state, |_, _, cx| {
             cx.notify();
@@ -866,9 +855,7 @@ impl Render for ConfigurationView {
                 let cost = state
                     .embedded_session_cost
                     .as_ref()
-                    .map(|arc| {
-                        arc.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0
-                    })
+                    .map(|arc| arc.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0)
                     .unwrap_or(state.session_cost_usd);
                 let cost_label = if cost > 0.0 {
                     format!("PrisM running (embedded) — session cost: ${cost:.6}")
@@ -889,14 +876,12 @@ impl Render for ConfigurationView {
             SidecarStatus::Unknown => None,
         };
 
-        let api_url_section = div()
-            .pt(DynamicSpacing::Base04.rems(cx))
-            .child(
-                h_flex()
-                    .gap_1()
-                    .child(Label::new("Gateway URL").size(LabelSize::Small))
-                    .child(self.api_url_editor.clone()),
-            );
+        let api_url_section = div().pt(DynamicSpacing::Base04.rems(cx)).child(
+            h_flex()
+                .gap_1()
+                .child(Label::new("Gateway URL").size(LabelSize::Small))
+                .child(self.api_url_editor.clone()),
+        );
 
         if self.load_credentials_task.is_some() {
             div().child(Label::new("Loading credentials…")).into_any()
@@ -995,10 +980,7 @@ struct CurrentPrismCompletion {
 }
 
 impl CurrentPrismCompletion {
-    fn interpolate(
-        &self,
-        new_snapshot: &BufferSnapshot,
-    ) -> Option<Vec<(Range<Anchor>, Arc<str>)>> {
+    fn interpolate(&self, new_snapshot: &BufferSnapshot) -> Option<Vec<(Range<Anchor>, Arc<str>)>> {
         edit_prediction_types::interpolate_edits(&self.snapshot, new_snapshot, &self.edits)
     }
 }
@@ -1078,7 +1060,10 @@ impl PrismEditPredictionDelegate {
         }
 
         let mut response_body = String::new();
-        response.body_mut().read_to_string(&mut response_body).await?;
+        response
+            .body_mut()
+            .read_to_string(&mut response_body)
+            .await?;
 
         let parsed: PrismEditResponse = serde_json::from_str(&response_body)?;
         parsed
@@ -1139,81 +1124,77 @@ impl EditPredictionDelegate for PrismEditPredictionDelegate {
 
         let http_client = self.http_client.clone();
 
-        self.pending_request = Some(cx.spawn(async move |this, cx| {
-            if debounce {
-                cx.background_executor()
-                    .timer(EDIT_PREDICTION_DEBOUNCE)
-                    .await;
-            }
+        self.pending_request =
+            Some(cx.spawn(async move |this, cx| {
+                if debounce {
+                    cx.background_executor()
+                        .timer(EDIT_PREDICTION_DEBOUNCE)
+                        .await;
+                }
 
-            let cursor_offset = cursor_position.to_offset(&snapshot);
-            let cursor_point = cursor_offset.to_point(&snapshot);
+                let cursor_offset = cursor_position.to_offset(&snapshot);
+                let cursor_point = cursor_offset.to_point(&snapshot);
 
-            let (_, context_range) =
-                cursor_excerpt::editable_and_context_ranges_for_cursor_position(
-                    cursor_point,
-                    &snapshot,
-                    MAX_REWRITE_TOKENS,
-                    MAX_CONTEXT_TOKENS,
-                );
+                let (_, context_range) =
+                    cursor_excerpt::editable_and_context_ranges_for_cursor_position(
+                        cursor_point,
+                        &snapshot,
+                        MAX_REWRITE_TOKENS,
+                        MAX_CONTEXT_TOKENS,
+                    );
 
-            let context_range = context_range.to_offset(&snapshot);
-            let excerpt_text = snapshot
-                .text_for_range(context_range.clone())
-                .collect::<String>();
-            let cursor_within_excerpt = cursor_offset
-                .saturating_sub(context_range.start)
-                .min(excerpt_text.len());
-            let prompt = excerpt_text[..cursor_within_excerpt].to_string();
-            let suffix = excerpt_text[cursor_within_excerpt..].to_string();
-            let fim_string = format!("{prompt}<fim_suffix>{suffix}<fim_middle>");
+                let context_range = context_range.to_offset(&snapshot);
+                let excerpt_text = snapshot
+                    .text_for_range(context_range.clone())
+                    .collect::<String>();
+                let cursor_within_excerpt = cursor_offset
+                    .saturating_sub(context_range.start)
+                    .min(excerpt_text.len());
+                let prompt = excerpt_text[..cursor_within_excerpt].to_string();
+                let suffix = excerpt_text[cursor_within_excerpt..].to_string();
+                let fim_string = format!("{prompt}<fim_suffix>{suffix}<fim_middle>");
 
-            let completion_text = match Self::fetch_completion(
-                http_client,
-                api_key,
-                api_url,
-                model,
-                fim_string,
-            )
-            .await
-            {
-                Ok(text) => text,
-                Err(e) => {
-                    log::error!("PrisM edit prediction fetch failed: {}", e);
+                let completion_text =
+                    match Self::fetch_completion(http_client, api_key, api_url, model, fim_string)
+                        .await
+                    {
+                        Ok(text) => text,
+                        Err(e) => {
+                            log::error!("PrisM edit prediction fetch failed: {}", e);
+                            this.update(cx, |this, cx| {
+                                this.pending_request = None;
+                                cx.notify();
+                            })?;
+                            return Err(e);
+                        }
+                    };
+
+                if completion_text.trim().is_empty() {
                     this.update(cx, |this, cx| {
                         this.pending_request = None;
                         cx.notify();
                     })?;
-                    return Err(e);
+                    return Ok(());
                 }
-            };
 
-            if completion_text.trim().is_empty() {
+                let edits: Arc<[(Range<Anchor>, Arc<str>)]> =
+                    vec![(cursor_position..cursor_position, completion_text.into())].into();
+                let edit_preview = buffer
+                    .read_with(cx, |buffer, cx| buffer.preview_edits(edits.clone(), cx))
+                    .await;
+
                 this.update(cx, |this, cx| {
+                    this.current_completion = Some(CurrentPrismCompletion {
+                        snapshot,
+                        edits,
+                        edit_preview,
+                    });
                     this.pending_request = None;
                     cx.notify();
                 })?;
-                return Ok(());
-            }
 
-            let edits: Arc<[(Range<Anchor>, Arc<str>)]> =
-                vec![(cursor_position..cursor_position, completion_text.into())].into();
-            let edit_preview = buffer
-                .read_with(cx, |buffer, cx| buffer.preview_edits(edits.clone(), cx))
-                .await;
-
-            this.update(cx, |this, cx| {
-                this.current_completion = Some(CurrentPrismCompletion {
-                    snapshot,
-                    edits,
-                    edit_preview,
-                });
-                this.pending_request = None;
-                cx.notify();
-            })?;
-
-            Ok(())
-        }));
+                Ok(())
+            }));
     }
 
     fn accept(&mut self, _cx: &mut Context<Self>) {

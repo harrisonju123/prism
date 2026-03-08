@@ -29,7 +29,10 @@ pub async fn list_activity(
     Path(workspace_id): Path<Uuid>,
     Query(q): Query<ActivityQuery>,
 ) -> Result<impl IntoResponse, Error> {
-    let since = q.since.map(|s| crate::api::parse_rfc3339_param(&s)).transpose()?;
+    let since = q
+        .since
+        .map(|s| crate::api::parse_rfc3339_param(&s))
+        .transpose()?;
 
     let filters = ActivityFilters {
         since,

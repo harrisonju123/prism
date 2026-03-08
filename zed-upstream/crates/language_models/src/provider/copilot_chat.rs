@@ -3,7 +3,6 @@ use std::str::FromStr as _;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use language_model::CompletionIntent;
 use collections::HashMap;
 use copilot::{GlobalCopilotAuth, Status};
 use copilot_chat::responses as copilot_responses;
@@ -18,6 +17,7 @@ use futures::{FutureExt, Stream, StreamExt};
 use gpui::{AnyView, App, AsyncApp, Entity, Subscription, Task};
 use http_client::StatusCode;
 use language::language_settings::all_language_settings;
+use language_model::CompletionIntent;
 use language_model::{
     AuthenticateError, IconOrSvg, LanguageModel, LanguageModelCompletionError,
     LanguageModelCompletionEvent, LanguageModelCostInfo, LanguageModelId, LanguageModelName,

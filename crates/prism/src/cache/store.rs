@@ -81,7 +81,7 @@ impl ResponseCache {
             #[cfg(feature = "redis-backend")]
             Self::Redis(_) => {} // Redis handles TTL
             #[cfg(feature = "aws")]
-            Self::S3(_) => {}    // S3 doesn't need pruning
+            Self::S3(_) => {} // S3 doesn't need pruning
         }
     }
 }

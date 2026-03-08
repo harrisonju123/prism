@@ -54,7 +54,9 @@ pub async fn edit_file(path: &str, old_string: &str, new_string: &str) -> String
         return format!("error: old_string not found in {path}");
     }
     if count > 1 {
-        return format!("error: old_string appears {count} times in {path}; provide more context to make it unique");
+        return format!(
+            "error: old_string appears {count} times in {path}; provide more context to make it unique"
+        );
     }
     let new_contents = contents.replacen(old_string, new_string, 1);
     match tokio::fs::write(path, &new_contents).await {

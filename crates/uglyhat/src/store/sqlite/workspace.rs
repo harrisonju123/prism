@@ -226,4 +226,3 @@ fn row_to_workspace(row: &sqlx::sqlite::SqliteRow) -> Result<Workspace> {
         updated_at: parse_time(&updated_str)?,
     })
 }
-

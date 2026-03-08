@@ -8,7 +8,6 @@ pub mod streaming_fuzzy_matcher;
 use crate::{Template, Templates};
 use action_log::ActionLog;
 use anyhow::Result;
-use language_model::CompletionIntent;
 use create_file_parser::{CreateFileParser, CreateFileParserEvent};
 pub use edit_parser::EditFormat;
 use edit_parser::{EditParser, EditParserEvent, EditParserMetrics};
@@ -20,6 +19,7 @@ use futures::{
 };
 use gpui::{AppContext, AsyncApp, Entity, Task};
 use language::{Anchor, Buffer, BufferSnapshot, LineIndent, Point, TextBufferSnapshot};
+use language_model::CompletionIntent;
 use language_model::{
     LanguageModel, LanguageModelCompletionError, LanguageModelRequest, LanguageModelRequestMessage,
     LanguageModelToolChoice, MessageContent, Role,

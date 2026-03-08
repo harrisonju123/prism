@@ -15,14 +15,14 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Result<Self> {
-        let prism_url = std::env::var("PRISM_URL")
-            .unwrap_or_else(|_| "http://localhost:4000".to_string());
+        let prism_url =
+            std::env::var("PRISM_URL").unwrap_or_else(|_| "http://localhost:4000".to_string());
 
-        let prism_api_key = std::env::var("PRISM_API_KEY")
-            .context("PRISM_API_KEY env var is required")?;
+        let prism_api_key =
+            std::env::var("PRISM_API_KEY").context("PRISM_API_KEY env var is required")?;
 
-        let prism_model = std::env::var("PRISM_MODEL")
-            .unwrap_or_else(|_| "claude-sonnet-4-6".to_string());
+        let prism_model =
+            std::env::var("PRISM_MODEL").unwrap_or_else(|_| "claude-sonnet-4-6".to_string());
 
         let max_turns = std::env::var("PRISM_MAX_TURNS")
             .ok()

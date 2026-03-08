@@ -252,8 +252,15 @@ impl RedisRateLimiter {
         // Atomically prune expired entries and fetch all remaining members
         let mut pipe = redis::pipe();
         pipe.atomic()
-            .cmd("ZREMRANGEBYSCORE").arg(key).arg("-inf").arg(cutoff_ms).ignore()
-            .cmd("ZRANGE").arg(key).arg(0isize).arg(-1isize);
+            .cmd("ZREMRANGEBYSCORE")
+            .arg(key)
+            .arg("-inf")
+            .arg(cutoff_ms)
+            .ignore()
+            .cmd("ZRANGE")
+            .arg(key)
+            .arg(0isize)
+            .arg(-1isize);
 
         let (members,): (Vec<String>,) = pipe.query_async(&mut conn).await?;
 
@@ -266,8 +273,12 @@ impl RedisRateLimiter {
 
         if total_tokens >= limit {
             let oldest: Vec<(String, f64)> = redis::cmd("ZRANGE")
-                .arg(key).arg(0isize).arg(0isize).arg("WITHSCORES")
-                .query_async(&mut conn).await?;
+                .arg(key)
+                .arg(0isize)
+                .arg(0isize)
+                .arg("WITHSCORES")
+                .query_async(&mut conn)
+                .await?;
 
             let retry_after = oldest
                 .first()
@@ -277,10 +288,16 @@ impl RedisRateLimiter {
                 })
                 .unwrap_or(1);
 
-            return Ok(RateLimitResult { allowed: false, retry_after_secs: Some(retry_after) });
+            return Ok(RateLimitResult {
+                allowed: false,
+                retry_after_secs: Some(retry_after),
+            });
         }
 
-        Ok(RateLimitResult { allowed: true, retry_after_secs: None })
+        Ok(RateLimitResult {
+            allowed: true,
+            retry_after_secs: None,
+        })
     }
 
     async fn check_sorted_set(

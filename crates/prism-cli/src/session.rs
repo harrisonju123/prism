@@ -98,7 +98,10 @@ impl Session {
         match matches.len() {
             0 => anyhow::bail!("no session matching prefix '{prefix}'"),
             1 => Self::load(&matches[0]),
-            _ => anyhow::bail!("prefix '{prefix}' matches {} sessions; be more specific", matches.len()),
+            _ => anyhow::bail!(
+                "prefix '{prefix}' matches {} sessions; be more specific",
+                matches.len()
+            ),
         }
     }
 

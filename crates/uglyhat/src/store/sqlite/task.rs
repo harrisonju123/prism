@@ -137,13 +137,19 @@ impl SqliteStore {
 
         // Upward propagation: auto-close epic if all tasks are done/cancelled
         if t.status.is_terminal() {
-            self.maybe_close_epic(t.workspace_id, t.epic_id, t.initiative_id).await;
+            self.maybe_close_epic(t.workspace_id, t.epic_id, t.initiative_id)
+                .await;
         }
 
         Ok(t)
     }
 
-    pub(super) async fn maybe_close_epic(&self, workspace_id: Uuid, epic_id: Uuid, initiative_id: Uuid) {
+    pub(super) async fn maybe_close_epic(
+        &self,
+        workspace_id: Uuid,
+        epic_id: Uuid,
+        initiative_id: Uuid,
+    ) {
         let count_result = sqlx::query(
             "SELECT COUNT(*) AS cnt FROM tasks WHERE epic_id = $1 AND status NOT IN ('done', 'cancelled')",
         )
@@ -188,7 +194,8 @@ impl SqliteStore {
             _ => {}
         }
 
-        self.maybe_close_initiative(workspace_id, initiative_id).await;
+        self.maybe_close_initiative(workspace_id, initiative_id)
+            .await;
     }
 
     async fn maybe_close_initiative(&self, workspace_id: Uuid, initiative_id: Uuid) {

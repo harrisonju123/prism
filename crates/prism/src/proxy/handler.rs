@@ -354,7 +354,9 @@ pub async fn chat_completions(
 
     // Inject stream_options to request usage data in the final streaming chunk
     if request.stream && request.stream_options.is_none() {
-        request.stream_options = Some(crate::types::StreamOptions { include_usage: true });
+        request.stream_options = Some(crate::types::StreamOptions {
+            include_usage: true,
+        });
     }
 
     // --- Provider call with retry + failover ---
@@ -788,7 +790,9 @@ pub async fn chat_completions(
                             .filter_map(|block| {
                                 block
                                     .lines()
-                                    .find_map(|line| line.strip_prefix("data: ").map(str::to_string))
+                                    .find_map(|line| {
+                                        line.strip_prefix("data: ").map(str::to_string)
+                                    })
                                     .map(|payload| Ok(Event::default().data(payload)))
                             })
                             .collect()

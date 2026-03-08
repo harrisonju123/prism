@@ -45,12 +45,7 @@ pub fn glob_files(pattern: &str, dir: &str, max_results: usize) -> String {
     serde_json::to_string(&results).unwrap_or_else(|_| "[]".to_string())
 }
 
-pub fn grep_files(
-    pattern: &str,
-    dir: &str,
-    file_glob: Option<&str>,
-    max_results: usize,
-) -> String {
+pub fn grep_files(pattern: &str, dir: &str, file_glob: Option<&str>, max_results: usize) -> String {
     let re = match Regex::new(pattern) {
         Ok(r) => r,
         Err(e) => return format!("error: invalid regex: {e}"),
@@ -167,7 +162,10 @@ mod tests {
         let result = grep_files("pub struct", dir.path().to_str().unwrap(), None, 50);
         let matches: Vec<serde_json::Value> = serde_json::from_str(&result).unwrap();
         assert_eq!(matches.len(), 2);
-        let texts: Vec<&str> = matches.iter().map(|m| m["text"].as_str().unwrap()).collect();
+        let texts: Vec<&str> = matches
+            .iter()
+            .map(|m| m["text"].as_str().unwrap())
+            .collect();
         assert!(texts.iter().all(|t| t.contains("pub struct")));
     }
 

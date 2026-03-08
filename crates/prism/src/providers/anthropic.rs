@@ -148,8 +148,12 @@ struct AnthropicStreamContentBlock {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum AnthropicStreamDelta {
-    TextDelta { text: String },
-    InputJsonDelta { partial_json: String },
+    TextDelta {
+        text: String,
+    },
+    InputJsonDelta {
+        partial_json: String,
+    },
     #[serde(other)]
     Unknown,
 }
@@ -249,11 +253,7 @@ impl AnthropicStreamConverter {
                 self.input_tokens = message.usage.input_tokens;
                 self.cache_read_tokens = message.usage.cache_read_input_tokens;
                 self.cache_creation_tokens = message.usage.cache_creation_input_tokens;
-                Some(self.make_chunk(
-                    serde_json::json!({"role": "assistant"}),
-                    None,
-                    None,
-                ))
+                Some(self.make_chunk(serde_json::json!({"role": "assistant"}), None, None))
             }
             AnthropicStreamEvent::ContentBlockStart {
                 index,
@@ -480,7 +480,10 @@ fn to_anthropic_request(req: &ChatCompletionRequest, model_id: &str) -> Anthropi
             .collect()
     });
 
-    let tool_choice = req.tool_choice.as_ref().map(openai_to_anthropic_tool_choice);
+    let tool_choice = req
+        .tool_choice
+        .as_ref()
+        .map(openai_to_anthropic_tool_choice);
 
     AnthropicRequest {
         model: model_id.to_string(),
@@ -542,7 +545,11 @@ fn from_anthropic_response(resp: AnthropicResponse) -> ChatCompletionResponse {
                 tool_call_id: None,
                 extra: Default::default(),
             },
-            finish_reason: resp.stop_reason.as_deref().map(map_stop_reason).map(str::to_string),
+            finish_reason: resp
+                .stop_reason
+                .as_deref()
+                .map(map_stop_reason)
+                .map(str::to_string),
         }],
         usage: Some(Usage {
             prompt_tokens: resp.usage.input_tokens,
@@ -922,7 +929,10 @@ mod tests {
     #[test]
     fn test_converter_content_block_stop_produces_no_output() {
         let mut c = AnthropicStreamConverter::new();
-        assert!(c.convert(r#"{"type":"content_block_stop","index":0}"#).is_none());
+        assert!(
+            c.convert(r#"{"type":"content_block_stop","index":0}"#)
+                .is_none()
+        );
     }
 
     #[test]

@@ -1857,8 +1857,8 @@ impl InlineAssist {
                                     sender.unbounded_send(Ok(assist_id)).ok();
                                 }
 
-                                if let Some(model) = LanguageModelRegistry::read_global(cx)
-                                    .inline_assistant_model()
+                                if let Some(model) =
+                                    LanguageModelRegistry::read_global(cx).inline_assistant_model()
                                 {
                                     let model_name = model.model.name().to_string();
                                     let provider = model.model.provider_id().to_string();

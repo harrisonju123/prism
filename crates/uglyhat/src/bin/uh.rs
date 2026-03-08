@@ -407,8 +407,7 @@ async fn run(cli: Cli) -> Result<(), String> {
                 .parse()
                 .map_err(|e| format!("invalid workspace_id: {e}"))?;
             if !cfg.base_url.is_empty() {
-                let client =
-                    HttpClient::new(cfg.base_url.clone(), cfg.api_key.clone(), ws_id);
+                let client = HttpClient::new(cfg.base_url.clone(), cfg.api_key.clone(), ws_id);
                 run_command_remote(other, &client).await
             } else {
                 let db_path = resolve_db_path(&cfg, &config_dir);
@@ -759,7 +758,10 @@ async fn run_command_local(cmd: Commands, store: &SqliteStore, ws_id: Uuid) -> R
             print_json(&result);
         }
         Commands::Agents => {
-            let statuses = store.list_agent_statuses(ws_id).await.map_err(|e| e.to_string())?;
+            let statuses = store
+                .list_agent_statuses(ws_id)
+                .await
+                .map_err(|e| e.to_string())?;
             print_json(&statuses);
         }
         Commands::Checkin { name, capabilities } => {
@@ -770,7 +772,11 @@ async fn run_command_local(cmd: Commands, store: &SqliteStore, ws_id: Uuid) -> R
                 .map_err(|e| e.to_string())?;
             print_json(&result);
         }
-        Commands::Checkout { name, summary, complete_tasks } => {
+        Commands::Checkout {
+            name,
+            summary,
+            complete_tasks,
+        } => {
             let result = store
                 .checkout_agent(ws_id, &name, &summary, complete_tasks)
                 .await
@@ -820,7 +826,10 @@ async fn run_command_remote(cmd: Commands, client: &HttpClient) -> Result<(), St
             print_json(&result);
         }
         Commands::Next { limit } => {
-            let result = client.get_next_tasks(limit).await.map_err(|e| e.to_string())?;
+            let result = client
+                .get_next_tasks(limit)
+                .await
+                .map_err(|e| e.to_string())?;
             print_json(&result);
         }
         Commands::Report {
@@ -838,7 +847,10 @@ async fn run_command_remote(cmd: Commands, client: &HttpClient) -> Result<(), St
                 "source": source.unwrap_or_default(),
                 "domain_tags": domain_tags,
             });
-            let result = client.report_issue(&body).await.map_err(|e| e.to_string())?;
+            let result = client
+                .report_issue(&body)
+                .await
+                .map_err(|e| e.to_string())?;
             print_json(&result);
         }
         Commands::Initiative { action } => match action {
@@ -873,7 +885,10 @@ async fn run_command_remote(cmd: Commands, client: &HttpClient) -> Result<(), St
                 let init_id: Uuid = initiative
                     .parse()
                     .map_err(|e| format!("invalid initiative ID: {e}"))?;
-                let result = client.list_epics(init_id).await.map_err(|e| e.to_string())?;
+                let result = client
+                    .list_epics(init_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
                 print_json(&result);
             }
         },
@@ -956,7 +971,10 @@ async fn run_command_remote(cmd: Commands, client: &HttpClient) -> Result<(), St
             }
             TaskAction::Deps { id } => {
                 let task_id: Uuid = id.parse().map_err(|e| format!("invalid task ID: {e}"))?;
-                let result = client.get_task_deps(task_id).await.map_err(|e| e.to_string())?;
+                let result = client
+                    .get_task_deps(task_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
                 print_json(&result);
             }
             TaskAction::Block {
@@ -1020,7 +1038,10 @@ async fn run_command_remote(cmd: Commands, client: &HttpClient) -> Result<(), St
                     "initiative_id": init_id,
                     "epic_id": epic_id,
                 });
-                let result = client.create_decision(&body).await.map_err(|e| e.to_string())?;
+                let result = client
+                    .create_decision(&body)
+                    .await
+                    .map_err(|e| e.to_string())?;
                 print_json(&result);
             }
             DecisionAction::List => {
@@ -1056,15 +1077,25 @@ async fn run_command_remote(cmd: Commands, client: &HttpClient) -> Result<(), St
             print_json(&result);
         }
         Commands::Agents => {
-            let result = client.list_agent_statuses().await.map_err(|e| e.to_string())?;
+            let result = client
+                .list_agent_statuses()
+                .await
+                .map_err(|e| e.to_string())?;
             print_json(&result);
         }
         Commands::Checkin { name, capabilities } => {
             let caps = split_csv(capabilities);
-            let result = client.checkin(&name, caps).await.map_err(|e| e.to_string())?;
+            let result = client
+                .checkin(&name, caps)
+                .await
+                .map_err(|e| e.to_string())?;
             print_json(&result);
         }
-        Commands::Checkout { name, summary, complete_tasks } => {
+        Commands::Checkout {
+            name,
+            summary,
+            complete_tasks,
+        } => {
             let result = client
                 .checkout(&name, &summary, complete_tasks)
                 .await
@@ -1094,7 +1125,10 @@ async fn run_command_remote(cmd: Commands, client: &HttpClient) -> Result<(), St
                 "blockers": split_csv(blockers),
                 "next_steps": split_csv(next_steps),
             });
-            let result = client.create_handoff(&body).await.map_err(|e| e.to_string())?;
+            let result = client
+                .create_handoff(&body)
+                .await
+                .map_err(|e| e.to_string())?;
             print_json(&result);
         }
     }
@@ -1157,11 +1191,12 @@ async fn cmd_remote(remote_cmd: RemoteCommand) -> Result<(), String> {
             let env_url = std::env::var("UGLYHAT_SERVER_URL")
                 .ok()
                 .filter(|s| !s.is_empty());
-            let effective_url = env_url
-                .as_deref()
-                .unwrap_or(&cfg.base_url)
-                .to_string();
-            let mode = if effective_url.is_empty() { "local" } else { "remote" };
+            let effective_url = env_url.as_deref().unwrap_or(&cfg.base_url).to_string();
+            let mode = if effective_url.is_empty() {
+                "local"
+            } else {
+                "remote"
+            };
             let key_prefix = if cfg.api_key.len() >= 8 {
                 format!("{}…", &cfg.api_key[..8])
             } else if cfg.api_key.is_empty() {
@@ -1263,4 +1298,3 @@ fn generate_key() -> String {
     use base64::Engine;
     base64::engine::general_purpose::URL_SAFE.encode(bytes)
 }
-

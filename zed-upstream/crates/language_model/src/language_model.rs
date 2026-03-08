@@ -114,7 +114,6 @@ pub enum LanguageModelCompletionEvent {
     UsageUpdate(TokenUsage),
 }
 
-
 #[derive(Error, Debug)]
 pub enum LanguageModelCompletionError {
     #[error("prompt too large for context window")]

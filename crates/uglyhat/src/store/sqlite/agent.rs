@@ -173,10 +173,7 @@ impl SqliteStore {
                                             "completed",
                                             "task",
                                             task_id,
-                                            &format!(
-                                                "Auto-completed on checkout: {}",
-                                                task.name
-                                            ),
+                                            &format!("Auto-completed on checkout: {}", task.name),
                                             None,
                                         )
                                         .await;
@@ -243,10 +240,16 @@ impl SqliteStore {
         .await?;
 
         let session = row_to_agent_session(&row)?;
-        Ok(CheckoutResponse { session, completed_task })
+        Ok(CheckoutResponse {
+            session,
+            completed_task,
+        })
     }
 
-    pub(crate) async fn list_agent_statuses_impl(&self, workspace_id: Uuid) -> Result<Vec<AgentStatus>> {
+    pub(crate) async fn list_agent_statuses_impl(
+        &self,
+        workspace_id: Uuid,
+    ) -> Result<Vec<AgentStatus>> {
         let rows = sqlx::query(
             "SELECT a.name, a.current_task_id, a.last_checkin,
                     COALESCE(t.name, '') AS current_task_name,
@@ -260,19 +263,25 @@ impl SqliteStore {
         .fetch_all(&self.pool)
         .await?;
 
-        rows.iter().map(|row| {
-            let task_id_str: Option<String> = row.try_get("current_task_id")?;
-            let task_name: String = row.try_get("current_task_name")?;
-            let checkin_str: Option<String> = row.try_get("last_checkin")?;
-            let session_open: bool = row.try_get("session_open")?;
-            Ok(AgentStatus {
-                name: row.try_get("name")?,
-                session_open,
-                current_task_id: task_id_str.as_deref().and_then(|s| s.parse::<Uuid>().ok()),
-                current_task_name: if task_name.is_empty() { None } else { Some(task_name) },
-                last_checkin: parse_opt_time(checkin_str)?,
+        rows.iter()
+            .map(|row| {
+                let task_id_str: Option<String> = row.try_get("current_task_id")?;
+                let task_name: String = row.try_get("current_task_name")?;
+                let checkin_str: Option<String> = row.try_get("last_checkin")?;
+                let session_open: bool = row.try_get("session_open")?;
+                Ok(AgentStatus {
+                    name: row.try_get("name")?,
+                    session_open,
+                    current_task_id: task_id_str.as_deref().and_then(|s| s.parse::<Uuid>().ok()),
+                    current_task_name: if task_name.is_empty() {
+                        None
+                    } else {
+                        Some(task_name)
+                    },
+                    last_checkin: parse_opt_time(checkin_str)?,
+                })
             })
-        }).collect()
+            .collect()
     }
 
     pub(crate) async fn list_agents_impl(&self, workspace_id: Uuid) -> Result<Vec<Agent>> {

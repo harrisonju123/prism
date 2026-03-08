@@ -60,10 +60,13 @@ pub async fn list_models(State(state): State<Arc<AppState>>) -> impl IntoRespons
     let mut response = Json(ModelsResponse {
         object: "list",
         data: models,
-    }).into_response();
+    })
+    .into_response();
 
     if let Ok(val) = HeaderValue::from_str(&format!("{cost_usd:.6}")) {
-        response.headers_mut().insert("x-prism-session-cost-usd", val);
+        response
+            .headers_mut()
+            .insert("x-prism-session-cost-usd", val);
     }
 
     response

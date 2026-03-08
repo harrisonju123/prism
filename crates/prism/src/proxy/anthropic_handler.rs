@@ -215,7 +215,9 @@ pub async fn anthropic_messages(
         let session_id_owned = session_id.clone();
         let session_cost_usd = state.session_cost_usd.clone();
         let request_messages = request.messages.clone();
-        let tool_calls_json_owned = request.tools.as_ref()
+        let tool_calls_json_owned = request
+            .tools
+            .as_ref()
             .and_then(|tools| serde_json::to_string(tools).ok());
 
         tokio::spawn(async move {
@@ -303,7 +305,8 @@ pub async fn anthropic_messages(
 
         // Convert relay (OpenAI SSE) → Anthropic SSE → axum SSE Events
         let msg_id = format!("msg_{}", Uuid::new_v4().simple());
-        let anthropic_stream = openai_sse_to_anthropic_sse(relay_to_stream(relay), msg_id, model_id.clone());
+        let anthropic_stream =
+            openai_sse_to_anthropic_sse(relay_to_stream(relay), msg_id, model_id.clone());
 
         let sse_stream = anthropic_stream.flat_map(|item| {
             let events: Vec<std::result::Result<Event, std::convert::Infallible>> = match item {
@@ -376,7 +379,10 @@ pub async fn anthropic_messages(
     if let Some(ref kh) = key_hash {
         state.budget_tracker.record_spend(kh, cost);
         // Record token usage for TPM rate limiting
-        state.rate_limiter.record_tokens(kh, cost_usage.total_tokens).await;
+        state
+            .rate_limiter
+            .record_tokens(kh, cost_usage.total_tokens)
+            .await;
     }
 
     // Build prompt hash
@@ -406,7 +412,9 @@ pub async fn anthropic_messages(
     };
 
     // Extract tool_calls_json for observability
-    let tool_calls_json = request.tools.as_ref()
+    let tool_calls_json = request
+        .tools
+        .as_ref()
         .and_then(|tools| serde_json::to_string(tools).ok());
 
     // Emit inference event
@@ -500,12 +508,12 @@ fn to_chat_completion_request(
     for msg in &req.messages {
         match &msg.content {
             serde_json::Value::Array(blocks) => {
-                let has_tool_result = blocks.iter().any(|b| {
-                    b.get("type").and_then(|t| t.as_str()) == Some("tool_result")
-                });
-                let has_tool_use = blocks.iter().any(|b| {
-                    b.get("type").and_then(|t| t.as_str()) == Some("tool_use")
-                });
+                let has_tool_result = blocks
+                    .iter()
+                    .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_result"));
+                let has_tool_use = blocks
+                    .iter()
+                    .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"));
 
                 if has_tool_result {
                     // User turn returning tool results — emit one role:"tool" msg per result
@@ -521,9 +529,7 @@ fn to_chat_completion_request(
                                 Some(serde_json::Value::String(s)) => s.clone(),
                                 Some(serde_json::Value::Array(arr)) => arr
                                     .iter()
-                                    .filter_map(|item| {
-                                        item.get("text").and_then(|t| t.as_str())
-                                    })
+                                    .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
                                     .collect::<Vec<_>>()
                                     .join(""),
                                 _ => String::new(),
@@ -541,9 +547,7 @@ fn to_chat_completion_request(
                     // Any text blocks alongside tool results become a separate user message
                     let text_parts: Vec<&str> = blocks
                         .iter()
-                        .filter(|b| {
-                            b.get("type").and_then(|t| t.as_str()) == Some("text")
-                        })
+                        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
                         .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
                         .collect();
                     if !text_parts.is_empty() {
@@ -571,9 +575,7 @@ fn to_chat_completion_request(
 
                     let tool_calls: Vec<serde_json::Value> = blocks
                         .iter()
-                        .filter(|b| {
-                            b.get("type").and_then(|t| t.as_str()) == Some("tool_use")
-                        })
+                        .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("tool_use"))
                         .map(|b| {
                             let args_str = b
                                 .get("input")
@@ -645,7 +647,11 @@ fn to_chat_completion_request(
                 })
             })
             .collect();
-        if converted.is_empty() { None } else { Some(converted) }
+        if converted.is_empty() {
+            None
+        } else {
+            Some(converted)
+        }
     });
 
     // Convert Anthropic tool_choice → OpenAI format
@@ -732,9 +738,7 @@ fn to_anthropic_response(resp: &crate::types::ChatCompletionResponse) -> Anthrop
             input_tokens: usage.map(|u| u.prompt_tokens).unwrap_or(0),
             output_tokens: usage.map(|u| u.completion_tokens).unwrap_or(0),
             cache_read_input_tokens: usage.map(|u| u.cache_read_input_tokens).unwrap_or(0),
-            cache_creation_input_tokens: usage
-                .map(|u| u.cache_creation_input_tokens)
-                .unwrap_or(0),
+            cache_creation_input_tokens: usage.map(|u| u.cache_creation_input_tokens).unwrap_or(0),
         },
     }
 }
@@ -747,7 +751,11 @@ fn to_anthropic_response(resp: &crate::types::ChatCompletionResponse) -> Anthrop
 fn relay_to_stream(
     relay: StreamRelay,
 ) -> std::pin::Pin<
-    Box<dyn futures::Stream<Item = std::result::Result<bytes::Bytes, crate::types::PrismStreamError>> + Send>,
+    Box<
+        dyn futures::Stream<
+                Item = std::result::Result<bytes::Bytes, crate::types::PrismStreamError>,
+            > + Send,
+    >,
 > {
     Box::pin(relay)
 }
@@ -759,15 +767,14 @@ fn format_sse(event_type: &str, data: &serde_json::Value) -> bytes::Bytes {
 
 fn openai_sse_to_anthropic_sse(
     stream: impl futures::Stream<
-            Item = std::result::Result<bytes::Bytes, crate::types::PrismStreamError>,
-        > + Send
-        + 'static,
+        Item = std::result::Result<bytes::Bytes, crate::types::PrismStreamError>,
+    > + Send
+    + 'static,
     message_id: String,
     model: String,
-) -> impl futures::Stream<
-    Item = std::result::Result<bytes::Bytes, crate::types::PrismStreamError>,
-> + Send
-       + 'static {
+) -> impl futures::Stream<Item = std::result::Result<bytes::Bytes, crate::types::PrismStreamError>>
++ Send
++ 'static {
     async_stream::try_stream! {
         let mut pinned = Box::pin(stream);
         let mut buffer = String::new();
@@ -1071,7 +1078,10 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].r#type, "function");
         assert_eq!(tools[0].function.name, "get_weather");
-        assert_eq!(tools[0].function.description.as_deref(), Some("Get weather for a city"));
+        assert_eq!(
+            tools[0].function.description.as_deref(),
+            Some("Get weather for a city")
+        );
         assert!(tools[0].function.parameters.is_some());
     }
 
@@ -1105,8 +1115,14 @@ mod tests {
         assert_eq!(chat_req.messages.len(), 1);
         let msg = &chat_req.messages[0];
         assert_eq!(msg.role, "assistant");
-        assert_eq!(msg.content.as_ref().and_then(|c| c.as_str()), Some("Let me check."));
-        let calls = msg.tool_calls.as_ref().expect("tool_calls should be present");
+        assert_eq!(
+            msg.content.as_ref().and_then(|c| c.as_str()),
+            Some("Let me check.")
+        );
+        let calls = msg
+            .tool_calls
+            .as_ref()
+            .expect("tool_calls should be present");
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0]["id"], "toolu_abc");
         assert_eq!(calls[0]["type"], "function");
@@ -1187,7 +1203,10 @@ mod tests {
         assert_eq!(resp.content[0].block_type, "tool_use");
         assert_eq!(resp.content[0].id.as_deref(), Some("toolu_xyz"));
         assert_eq!(resp.content[0].name.as_deref(), Some("get_weather"));
-        let input = resp.content[0].input.as_ref().expect("input should be present");
+        let input = resp.content[0]
+            .input
+            .as_ref()
+            .expect("input should be present");
         assert_eq!(input["city"], "London");
     }
 

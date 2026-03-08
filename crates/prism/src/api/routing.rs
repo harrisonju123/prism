@@ -95,4 +95,3 @@ pub struct ValidateResponse {
     pub rule_count: usize,
     pub version: u32,
 }
-

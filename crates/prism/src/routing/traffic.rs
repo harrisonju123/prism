@@ -105,13 +105,7 @@ fn parse_traffic_entries(resp: &str) -> Vec<TrafficRow> {
     let mut rows = Vec::new();
     for line in resp.lines() {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line)
-            && let (
-                Some(task_type_str),
-                Some(model),
-                Some(cost),
-                Some(latency),
-                Some(samples),
-            ) = (
+            && let (Some(task_type_str), Some(model), Some(cost), Some(latency), Some(samples)) = (
                 v.get("task_type").and_then(|v| v.as_str()),
                 v.get("model").and_then(|v| v.as_str()),
                 v.get("avg_cost_per_1k").and_then(|v| v.as_f64()),

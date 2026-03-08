@@ -1,12 +1,12 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use futures::StreamExt;
 use prism_client::PrismClient;
 use prism_types::{ChatCompletionRequest, Message};
 use serde_json::json;
 use std::collections::HashMap;
 use std::io::Write as _;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
 
 use crate::config::Config;
@@ -133,7 +133,6 @@ impl Agent {
     }
 
     async fn inner_run(&mut self) -> Result<()> {
-
         // SIGINT handler
         let interrupted = Arc::new(AtomicBool::new(false));
         let flag = interrupted.clone();
@@ -194,7 +193,11 @@ impl Agent {
                 }
 
                 // Accumulate tool_call deltas
-                if let Some(tc_arr) = chunk.tool_calls.as_ref().and_then(|v: &serde_json::Value| v.as_array()) {
+                if let Some(tc_arr) = chunk
+                    .tool_calls
+                    .as_ref()
+                    .and_then(|v: &serde_json::Value| v.as_array())
+                {
                     for tc in tc_arr {
                         let tc: &serde_json::Value = tc;
                         let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
@@ -204,12 +207,14 @@ impl Agent {
                             name: String::new(),
                             arguments_buf: String::new(),
                         });
-                        if let Some(id) = tc.get("id").and_then(|v: &serde_json::Value| v.as_str()) {
+                        if let Some(id) = tc.get("id").and_then(|v: &serde_json::Value| v.as_str())
+                        {
                             if !id.is_empty() {
                                 builder.id = id.to_string();
                             }
                         }
-                        if let Some(t) = tc.get("type").and_then(|v: &serde_json::Value| v.as_str()) {
+                        if let Some(t) = tc.get("type").and_then(|v: &serde_json::Value| v.as_str())
+                        {
                             if !t.is_empty() {
                                 builder.tc_type = t.to_string();
                             }
@@ -244,14 +249,14 @@ impl Agent {
                     model_name = self.config.prism_model.clone();
 
                     let (in_rate, out_rate): (f64, f64) = match model_name.as_str() {
-                        m if m.contains("claude-opus-4")    => (15.0,  75.0),
-                        m if m.contains("claude-sonnet-4")  => (3.0,   15.0),
-                        m if m.contains("claude-haiku-4")   => (0.8,    4.0),
-                        m if m.contains("gpt-4o-mini")      => (0.15,   0.6),
-                        m if m.contains("gpt-4o")           => (2.5,   10.0),
-                        m if m.contains("gemini-1.5-pro")   => (1.25,   5.0),
-                        m if m.contains("gemini-1.5-flash") => (0.075,  0.3),
-                        _                                   => (0.0,    0.0),
+                        m if m.contains("claude-opus-4") => (15.0, 75.0),
+                        m if m.contains("claude-sonnet-4") => (3.0, 15.0),
+                        m if m.contains("claude-haiku-4") => (0.8, 4.0),
+                        m if m.contains("gpt-4o-mini") => (0.15, 0.6),
+                        m if m.contains("gpt-4o") => (2.5, 10.0),
+                        m if m.contains("gemini-1.5-pro") => (1.25, 5.0),
+                        m if m.contains("gemini-1.5-flash") => (0.075, 0.3),
+                        _ => (0.0, 0.0),
                     };
                     let turn_cost = (u.prompt_tokens as f64 * in_rate
                         + u.completion_tokens as f64 * out_rate)
@@ -292,7 +297,11 @@ impl Agent {
             // Push assistant message
             self.messages.push(Message {
                 role: "assistant".into(),
-                content: if content_buf.is_empty() { None } else { Some(json!(content_buf)) },
+                content: if content_buf.is_empty() {
+                    None
+                } else {
+                    Some(json!(content_buf))
+                },
                 name: None,
                 tool_calls: tool_calls_vec.clone(),
                 tool_call_id: None,
@@ -349,7 +358,8 @@ impl Agent {
 
                         let t0 = std::time::Instant::now();
                         let result = tools::dispatch(name, &args).await;
-                        let result = truncate_tool_output(name, &result, self.config.max_tool_output);
+                        let result =
+                            truncate_tool_output(name, &result, self.config.max_tool_output);
                         let elapsed_ms = t0.elapsed().as_millis();
 
                         let result_preview = {
@@ -392,7 +402,10 @@ impl Agent {
             "[session] {}  {} turns  {} in / {} out tokens{}",
             model_name, turns, total_prompt, total_completion, cost_str
         );
-        eprintln!("[session] episode {}", self.session.episode_id.to_string()[..8].to_string());
+        eprintln!(
+            "[session] episode {}",
+            self.session.episode_id.to_string()[..8].to_string()
+        );
 
         // Final session update
         self.session.messages = self.messages.clone();

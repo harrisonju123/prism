@@ -1,5 +1,7 @@
 [build]
 rustflags = ["-C", "symbol-mangling-version=v0", "--cfg", "tokio_unstable"]
+# Shared target dir across all worktrees — prevents N×20 GB duplication
+target-dir = "/Users/harrisonju/.cache/prism-build"
 
 [alias]
 xtask = "run --package xtask --"

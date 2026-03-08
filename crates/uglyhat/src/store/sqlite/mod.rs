@@ -7,14 +7,14 @@ mod dependency;
 mod epic;
 mod handoff;
 mod initiative;
+mod migrate;
 mod note;
 mod task;
-mod migrate;
 mod task_context;
-pub mod types;
-mod workspace;
 #[cfg(test)]
 mod tests;
+pub mod types;
+mod workspace;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -464,8 +464,14 @@ impl Store for SqliteStore {
         self.list_agent_statuses_impl(workspace_id).await
     }
 
-    async fn claim_task(&self, workspace_id: Uuid, task_id: Uuid, agent_name: &str) -> Result<Task> {
-        self.claim_task_impl(workspace_id, task_id, agent_name).await
+    async fn claim_task(
+        &self,
+        workspace_id: Uuid,
+        task_id: Uuid,
+        agent_name: &str,
+    ) -> Result<Task> {
+        self.claim_task_impl(workspace_id, task_id, agent_name)
+            .await
     }
 
     async fn create_handoff(

@@ -751,19 +751,17 @@ impl settings::Settings for AllLanguageSettings {
         let prism_api_url = prism_content.api_url;
         let prism_max_tokens = prism_content.max_output_tokens;
         let prism_prompt_format = prism_content.prompt_format;
-        let prism_settings = prism_model
-            .filter(|model| !model.is_empty())
-            .map(|model| {
-                let api_url = prism_api_url
-                    .filter(|u| !u.is_empty())
-                    .unwrap_or_else(|| "http://localhost:9100/v1/completions".to_string());
-                OpenAiCompatibleEditPredictionSettings {
-                    model,
-                    max_output_tokens: prism_max_tokens.unwrap(),
-                    api_url: api_url.into(),
-                    prompt_format: prism_prompt_format.unwrap(),
-                }
-            });
+        let prism_settings = prism_model.filter(|model| !model.is_empty()).map(|model| {
+            let api_url = prism_api_url
+                .filter(|u| !u.is_empty())
+                .unwrap_or_else(|| "http://localhost:9100/v1/completions".to_string());
+            OpenAiCompatibleEditPredictionSettings {
+                model,
+                max_output_tokens: prism_max_tokens.unwrap(),
+                api_url: api_url.into(),
+                prompt_format: prism_prompt_format.unwrap(),
+            }
+        });
 
         let enabled_in_text_threads = edit_predictions.enabled_in_text_threads.unwrap();
 
