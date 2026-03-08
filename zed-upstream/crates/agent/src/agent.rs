@@ -4,6 +4,7 @@ mod legacy_thread;
 mod native_agent_server;
 pub mod outline;
 mod pattern_extraction;
+pub mod prism_session;
 mod templates;
 #[cfg(test)]
 mod tests;
@@ -17,6 +18,7 @@ pub use db::*;
 use itertools::Itertools;
 pub use native_agent_server::NativeAgentServer;
 pub use pattern_extraction::*;
+pub use prism_session::PrismSessionFile;
 pub use shell_command_parser::extract_commands;
 pub use templates::*;
 pub use thread::*;
@@ -332,10 +334,59 @@ impl NativeAgent {
                 self.project_context.clone(),
                 self.context_server_registry.clone(),
                 self.templates.clone(),
-                default_model,
+                default_model.clone(),
                 cx,
             )
         });
+
+        // Persist .prism-session.json to the first visible worktree root.
+        // This enables uglyhat hooks, other tools, and the title bar to discover
+        // which agent is working in this worktree and which task it has claimed.
+        let session_id = thread.read(cx).id().0.to_string();
+        let model_string = default_model
+            .as_ref()
+            .map(|m| format!("{}/{}", m.provider_id().0, m.id().0));
+        let project_ref = project.read(cx);
+        if let Some(worktree) = project_ref.visible_worktrees(cx).next() {
+            let worktree_root = worktree.read(cx).abs_path().to_path_buf();
+            let branch = project_ref
+                .git_store()
+                .read(cx)
+                .active_repository()
+                .and_then(|repo| repo.read(cx).branch.as_ref().map(|b| b.name().to_string()));
+
+            let agent_name = prism_session::agent_name_from_env();
+            let mut session_file = prism_session::PrismSessionFile::new(
+                session_id,
+                agent_name.clone(),
+                worktree_root.to_string_lossy().to_string(),
+                branch.clone(),
+                model_string,
+            );
+
+            // Auto-claim uglyhat task when the branch matches a known task or a
+            // `.prism-session.json` already has a task_id (resume after crash).
+            let session_file_path = prism_session::session_file_path(&worktree_root);
+            let maybe_task_id: Option<String> = prism_session::PrismSessionFile::try_read_from(
+                &session_file_path,
+            )
+            .and_then(|existing| existing.task_id)
+            .or_else(|| {
+                branch
+                    .as_deref()
+                    .and_then(prism_session::find_task_for_branch)
+                    .map(|(id, _name)| id)
+            });
+
+            if let Some(task_id) = maybe_task_id {
+                if let Some(task_name) = prism_session::auto_claim_task(&task_id, &agent_name) {
+                    session_file.task_id = Some(task_id);
+                    session_file.task_name = Some(task_name);
+                }
+            }
+
+            session_file.write_to(&session_file_path);
+        }
 
         self.register_session(thread, cx)
     }
@@ -1293,7 +1344,19 @@ impl acp_thread::AgentConnection for NativeAgentConnection {
     }
 
     fn close_session(&self, session_id: &acp::SessionId, cx: &mut App) -> Task<Result<()>> {
-        self.0.update(cx, |agent, _cx| {
+        self.0.update(cx, |agent, cx| {
+            // Delete .prism-session.json from the worktree root on clean session end.
+            let worktree_root = agent
+                .project
+                .read(cx)
+                .visible_worktrees(cx)
+                .next()
+                .map(|wt| wt.read(cx).abs_path().to_path_buf());
+            if let Some(root) = worktree_root {
+                prism_session::PrismSessionFile::delete_at(&prism_session::session_file_path(
+                    &root,
+                ));
+            }
             agent.sessions.remove(session_id);
         });
         Task::ready(Ok(()))

@@ -40,6 +40,8 @@ struct Transaction {
     first_edit_at: Instant,
     last_edit_at: Instant,
     suppress_grouping: bool,
+    /// Human-readable label shown in the undo history UI.
+    description: Option<String>,
 }
 
 impl History {
@@ -53,6 +55,7 @@ impl History {
                 first_edit_at: now,
                 last_edit_at: now,
                 suppress_grouping: false,
+                description: None,
             });
             Some(id)
         } else {
@@ -106,6 +109,7 @@ impl History {
             first_edit_at: now,
             last_edit_at: now,
             suppress_grouping: false,
+            description: None,
         };
         if !transaction.buffer_transactions.is_empty() {
             self.undo_stack.push(transaction);
@@ -157,6 +161,12 @@ impl History {
                     .iter_mut()
                     .find(|transaction| transaction.id == transaction_id)
             })
+    }
+
+    fn set_transaction_description(&mut self, transaction_id: TransactionId, description: String) {
+        if let Some(transaction) = self.transaction_mut(transaction_id) {
+            transaction.description = Some(description);
+        }
     }
 
     fn pop_undo(&mut self) -> Option<&mut Transaction> {
@@ -422,6 +432,24 @@ impl MultiBuffer {
                 buffer.finalize_last_transaction();
             });
         }
+    }
+
+    /// Set a human-readable description on a transaction.  When the MultiBuffer
+    /// is a singleton, the description is forwarded to the underlying `Buffer`
+    /// so that the undo history UI can show a meaningful label for agent edits.
+    pub fn set_transaction_description(
+        &mut self,
+        transaction_id: TransactionId,
+        description: String,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(buffer) = self.as_singleton() {
+            buffer.update(cx, |buffer, _| {
+                buffer.set_transaction_description(transaction_id, description.clone());
+            });
+        }
+        self.history
+            .set_transaction_description(transaction_id, description);
     }
 
     pub fn push_transaction<'a, T>(&mut self, buffer_transactions: T, cx: &Context<Self>)

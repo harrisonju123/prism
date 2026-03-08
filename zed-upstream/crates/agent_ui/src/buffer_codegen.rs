@@ -988,8 +988,17 @@ impl CodegenAlternative {
                 });
             } else {
                 self.transformation_transaction_id = Some(transaction);
-                self.buffer
-                    .update(cx, |buffer, cx| buffer.finalize_last_transaction(cx));
+                // Label the undo group so the undo history UI can show a
+                // meaningful name for this set of agent-applied edits.
+                let label = self
+                    .description
+                    .clone()
+                    .map(|desc| format!("Agent edit: {desc}"))
+                    .unwrap_or_else(|| "Agent edit".to_string());
+                self.buffer.update(cx, |buffer, cx| {
+                    buffer.set_transaction_description(transaction, label, cx);
+                    buffer.finalize_last_transaction(cx);
+                });
             }
         }
     }

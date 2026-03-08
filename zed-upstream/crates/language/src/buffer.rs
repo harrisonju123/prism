@@ -2510,6 +2510,16 @@ impl Buffer {
         self.text.merge_transactions(transaction, destination);
     }
 
+    /// Set a human-readable description on a transaction for display in the undo history.
+    pub fn set_transaction_description(
+        &mut self,
+        transaction_id: TransactionId,
+        description: String,
+    ) {
+        self.text
+            .set_transaction_description(transaction_id, description);
+    }
+
     /// Waits for the buffer to receive operations with the given timestamps.
     pub fn wait_for_edits<It: IntoIterator<Item = clock::Lamport>>(
         &mut self,
