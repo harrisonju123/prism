@@ -29,6 +29,9 @@ use crate::mcp::types::McpCall;
 use crate::models;
 use crate::models::alias::{AliasCache, AliasRepository};
 use crate::providers::ProviderRegistry;
+use crate::providers::circuit_breaker::{
+    CircuitBreakerMap, get_or_create as get_or_create_cb, is_provider_5xx,
+};
 use crate::providers::health::ProviderHealthTracker;
 use crate::proxy::cost::compute_cost;
 use crate::proxy::streaming::StreamRelay;
@@ -132,6 +135,27 @@ pub async fn chat_completions(
                 // Continue but log
             }
             BudgetCheckResult::Ok => {}
+        }
+
+        // Session budget hard cap
+        if let Some(session_budget) = ctx.session_budget_usd {
+            let spent = state
+                .session_spend
+                .get(&ctx.key_id)
+                .map(|v| *v)
+                .unwrap_or(0.0);
+            if spent >= session_budget {
+                tracing::warn!(
+                    key_prefix = %ctx.key_prefix,
+                    limit = session_budget,
+                    spent = spent,
+                    "session budget hard cap exceeded"
+                );
+                return Err(PrismError::BudgetExceeded {
+                    limit: session_budget,
+                    spent,
+                });
+            }
         }
 
         // Record RPM request (after checks pass)
@@ -451,84 +475,34 @@ pub async fn chat_completions(
 
     // --- Provider call with retry + failover ---
     let retry_config = &state.config.retry;
+
+    // Circuit breaker check for primary provider
+    let primary_cb = get_or_create_cb(&state.circuit_breakers, &provider_name);
+    if let Err(retry_after_secs) = primary_cb.check().await {
+        tracing::warn!(
+            provider = %provider_name,
+            retry_after_secs,
+            "circuit breaker open, rejecting request"
+        );
+        return Err(PrismError::CircuitOpen {
+            provider: provider_name.clone(),
+            retry_after_secs,
+        });
+    }
+
     let provider_result = if request.stream {
-        // Streaming path: try primary, then fallbacks on error
-        match provider.chat_completion(&request, &model_id).await {
-            Ok(resp) => resp,
-            Err(primary_err) if primary_err.is_retryable() && !fallback_providers.is_empty() => {
-                tracing::warn!(
-                    provider = %provider_name,
-                    error = %primary_err,
-                    "streaming primary provider failed, trying fallbacks"
-                );
-
-                let mut last_err = primary_err;
-                let mut fallback_result = None;
-
-                for (fb_provider_name, fb_model_id) in &fallback_providers {
-                    // Skip degraded providers
-                    if let Some(ref ht) = state.health_tracker {
-                        if !ht.is_available(fb_provider_name) {
-                            tracing::warn!(
-                                fallback_provider = %fb_provider_name,
-                                "streaming fallback provider degraded, skipping"
-                            );
-                            continue;
-                        }
-                    }
-
-                    let fb_provider = match state.providers.get(fb_provider_name) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            tracing::warn!(
-                                fallback_provider = %fb_provider_name,
-                                error = %e,
-                                "streaming fallback provider not available, skipping"
-                            );
-                            continue;
-                        }
-                    };
-
-                    tracing::info!(
-                        fallback_provider = %fb_provider_name,
-                        fallback_model = %fb_model_id,
-                        "attempting streaming fallback provider"
-                    );
-
-                    match fb_provider.chat_completion(&request, fb_model_id).await {
-                        Ok(resp) => {
-                            provider_name = fb_provider_name.clone();
-                            if let Some(ref ht) = state.health_tracker {
-                                ht.record_success(fb_provider_name);
-                            }
-                            tracing::info!(
-                                fallback_provider = %fb_provider_name,
-                                "streaming failover succeeded"
-                            );
-                            fallback_result = Some(resp);
-                            break;
-                        }
-                        Err(e) => {
-                            if let Some(ref ht) = state.health_tracker {
-                                ht.record_failure(fb_provider_name, e.to_string());
-                            }
-                            tracing::warn!(
-                                fallback_provider = %fb_provider_name,
-                                error = %e,
-                                "streaming fallback provider failed"
-                            );
-                            last_err = e;
-                        }
-                    }
-                }
-
-                if let Some(result) = fallback_result {
-                    result
-                } else {
-                    return Err(last_err);
-                }
+        let result = provider.chat_completion(&request, &model_id).await;
+        match result {
+            Ok(resp) => {
+                primary_cb.record_success().await;
+                resp
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                if is_provider_5xx(&e) {
+                    primary_cb.record_failure().await;
+                }
+                return Err(e);
+            }
         }
     } else {
         let primary_result = crate::proxy::retry::with_retry(retry_config, || {
@@ -540,8 +514,14 @@ pub async fn chat_completions(
         .await;
 
         match primary_result {
-            Ok(resp) => resp,
+            Ok(resp) => {
+                primary_cb.record_success().await;
+                resp
+            }
             Err(primary_err) if primary_err.is_retryable() && !fallback_providers.is_empty() => {
+                if is_provider_5xx(&primary_err) {
+                    primary_cb.record_failure().await;
+                }
                 tracing::warn!(
                     provider = %provider_name,
                     error = %primary_err,
@@ -562,6 +542,21 @@ pub async fn chat_completions(
                             );
                             continue;
                         }
+                    }
+
+                    // Circuit breaker check for fallback provider
+                    let fb_cb = get_or_create_cb(&state.circuit_breakers, fb_provider_name);
+                    if let Err(retry_after_secs) = fb_cb.check().await {
+                        tracing::warn!(
+                            fallback_provider = %fb_provider_name,
+                            retry_after_secs,
+                            "fallback circuit breaker open, skipping"
+                        );
+                        last_err = PrismError::CircuitOpen {
+                            provider: fb_provider_name.clone(),
+                            retry_after_secs,
+                        };
+                        continue;
                     }
 
                     let fb_provider = match state.providers.get(fb_provider_name) {
@@ -591,6 +586,7 @@ pub async fn chat_completions(
                     .await
                     {
                         Ok(resp) => {
+                            fb_cb.record_success().await;
                             provider_name = fb_provider_name.clone();
                             if let Some(ref ht) = state.health_tracker {
                                 ht.record_success(fb_provider_name);
@@ -606,6 +602,9 @@ pub async fn chat_completions(
                         Err(e) => {
                             if let Some(ref ht) = state.health_tracker {
                                 ht.record_failure(fb_provider_name, e.to_string());
+                            }
+                            if is_provider_5xx(&e) {
+                                fb_cb.record_failure().await;
                             }
                             tracing::warn!(
                                 fallback_provider = %fb_provider_name,
@@ -623,7 +622,12 @@ pub async fn chat_completions(
                     return Err(last_err);
                 }
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                if is_provider_5xx(&e) {
+                    primary_cb.record_failure().await;
+                }
+                return Err(e);
+            }
         }
     };
 
@@ -684,6 +688,8 @@ pub async fn chat_completions(
                 state
                     .budget_tracker
                     .record_spend(&ctx.key_hash, event.estimated_cost_usd);
+                // Accumulate session spend for per-key hard cap
+                *state.session_spend.entry(ctx.key_id).or_insert(0.0) += event.estimated_cost_usd;
             }
 
             let event_id = event.id;
@@ -780,6 +786,7 @@ pub async fn chat_completions(
             let tool_calls_json_owned = tool_calls_json.clone();
             let session_id_owned = session_id.clone();
             let session_cost_usd = state.session_cost_usd.clone();
+            let session_spend = state.session_spend.clone();
 
             // Spawn a task to capture the final result after stream completes
             tokio::spawn(async move {
@@ -852,6 +859,8 @@ pub async fn chat_completions(
                             .record_tokens(&ctx.key_hash, usage.total_tokens)
                             .await;
                         budget_tracker.record_spend(&ctx.key_hash, event.estimated_cost_usd);
+                        // Accumulate session spend for per-key hard cap
+                        *session_spend.entry(ctx.key_id).or_insert(0.0) += event.estimated_cost_usd;
                     }
 
                     let event_id = event.id;
@@ -1441,6 +1450,10 @@ pub struct AppState {
     pub audit_service: Option<Arc<AuditService>>,
     pub alias_cache: Option<Arc<AliasCache>>,
     pub alias_repo: Option<Arc<AliasRepository>>,
+    /// Per-provider circuit breakers. Keyed by provider name.
+    pub circuit_breakers: CircuitBreakerMap,
+    /// Per-key session spend accumulator (key ID → USD spent this session).
+    pub session_spend: Arc<dashmap::DashMap<Uuid, f64>>,
 }
 
 #[cfg(test)]

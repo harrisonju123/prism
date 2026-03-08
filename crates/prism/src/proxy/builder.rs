@@ -19,7 +19,7 @@ use crate::models::alias::{AliasCache, AliasRepository};
 use crate::observability::callbacks::CallbackRegistry;
 use crate::observability::metrics::MetricsCollector;
 use crate::prompts::store::PromptStore;
-use crate::providers::ProviderRegistry;
+use crate::providers::{CircuitBreakerMap, ProviderRegistry, new_circuit_breaker_map};
 use crate::providers::health::ProviderHealthTracker;
 use crate::proxy::handler::AppState;
 use crate::routing::FitnessCache;
@@ -66,6 +66,8 @@ pub struct AppStateBuilder {
     audit_service: Option<Arc<AuditService>>,
     alias_cache: Option<Arc<AliasCache>>,
     alias_repo: Option<Arc<AliasRepository>>,
+    circuit_breakers: Option<CircuitBreakerMap>,
+    session_spend: Option<Arc<dashmap::DashMap<uuid::Uuid, f64>>>,
 }
 
 impl AppStateBuilder {
@@ -97,6 +99,8 @@ impl AppStateBuilder {
             audit_service: None,
             alias_cache: None,
             alias_repo: None,
+            circuit_breakers: None,
+            session_spend: None,
         }
     }
 
@@ -381,6 +385,12 @@ impl AppStateBuilder {
             audit_service: self.audit_service,
             alias_cache: self.alias_cache,
             alias_repo: self.alias_repo,
+            circuit_breakers: self
+                .circuit_breakers
+                .unwrap_or_else(new_circuit_breaker_map),
+            session_spend: self
+                .session_spend
+                .unwrap_or_else(|| Arc::new(dashmap::DashMap::new())),
         })
     }
 }

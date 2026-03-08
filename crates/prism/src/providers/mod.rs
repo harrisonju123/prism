@@ -2,11 +2,14 @@ pub mod anthropic;
 pub mod azure_openai;
 #[cfg(feature = "aws")]
 pub mod bedrock;
+pub mod circuit_breaker;
 pub mod google;
 pub mod groq;
 pub mod health;
 pub mod mistral;
 pub mod openai;
+
+pub use circuit_breaker::{CircuitBreakerMap, new_circuit_breaker_map};
 
 use async_trait::async_trait;
 use std::collections::HashMap;

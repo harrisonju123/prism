@@ -52,6 +52,11 @@ pub struct VirtualKey {
     /// JSON TEXT array of origin strings (e.g. `["https://app.example.com"]`). Null = allow all.
     #[cfg_attr(feature = "postgres", sqlx(default))]
     pub allowed_origins: Option<String>,
+    /// Optional per-session spend cap in USD. Enforced against the in-memory
+    /// session spend accumulated since the process started or the key was last
+    /// used in a fresh session. `None` means no session cap.
+    #[cfg_attr(feature = "postgres", sqlx(default))]
+    pub session_budget_usd: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -72,6 +77,7 @@ pub struct AuthContext {
     pub allowed_models: Vec<String>,
     /// Parsed allowed origins for per-key CORS (empty = allow all).
     pub allowed_origins: Vec<String>,
+    pub session_budget_usd: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +165,7 @@ impl<S: Send + Sync> FromRequestParts<S> for MaybeAuth {
             budget_action: budget::BudgetAction::from_str_lossy(&vk.budget_action),
             allowed_models: vk.allowed_models,
             allowed_origins,
+            session_budget_usd: vk.session_budget_usd,
         })))
     }
 }
