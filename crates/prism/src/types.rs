@@ -226,6 +226,7 @@ impl TaskType {
         TaskType::Testing,
         TaskType::ToolSelection,
         TaskType::CodeEdit,
+        TaskType::FillInTheMiddle,
     ];
 
     /// Parse a task type from a snake_case string, returning Unknown for unrecognized values.

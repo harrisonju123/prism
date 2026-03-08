@@ -1073,7 +1073,12 @@ fn build_classifier_input(request: &ChatCompletionRequest) -> ClassifierInput {
 
 /// Resolve a user-facing model name to (provider_name, provider_model_id).
 pub(crate) fn resolve_model(config: &Config, model: &str) -> Result<(String, String)> {
-    // Check configured model aliases first
+    // Check config-defined aliases first (e.g. [aliases] "fast" = "claude-haiku-4-5-20251001")
+    if let Some(aliased) = config.aliases.get(model) {
+        return resolve_model(config, aliased);
+    }
+
+    // Check configured model overrides
     if let Some(model_config) = config.models.get(model) {
         return Ok((model_config.provider.clone(), model_config.model.clone()));
     }
@@ -1614,5 +1619,29 @@ mod tests {
         // Model not in config.models, falls through to catalog/inference
         let (_, _, fallbacks) = resolve_model_with_fallbacks(&config, "gpt-4o-mini").unwrap();
         assert!(fallbacks.is_empty());
+    }
+
+    #[test]
+    fn resolve_model_uses_config_alias() {
+        let mut config: Config = figment::Figment::new().extract().unwrap();
+        config
+            .aliases
+            .insert("fast".to_string(), "claude-haiku-3.5".to_string());
+
+        let (provider, model_id) = resolve_model(&config, "fast").unwrap();
+        assert_eq!(provider, "anthropic");
+        assert_eq!(model_id, "claude-3-5-haiku-20241022");
+    }
+
+    #[test]
+    fn resolve_model_alias_chain() {
+        let mut config: Config = figment::Figment::new().extract().unwrap();
+        config
+            .aliases
+            .insert("my-fast".to_string(), "gpt-4o-mini".to_string());
+
+        let (provider, model_id) = resolve_model(&config, "my-fast").unwrap();
+        assert_eq!(provider, "openai");
+        assert_eq!(model_id, "gpt-4o-mini");
     }
 }

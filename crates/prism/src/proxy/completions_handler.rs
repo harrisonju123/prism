@@ -16,6 +16,63 @@ use crate::types::{
     TextCompletionResponse, Usage,
 };
 
+/// Detect whether a completions request is a fill-in-the-middle (FIM) request.
+/// FIM requests either have a `suffix` field or contain FIM special tokens in the prompt.
+fn is_fim_request(request: &TextCompletionRequest) -> bool {
+    if request.suffix.is_some() {
+        return true;
+    }
+    let prompt = &request.prompt;
+    prompt.contains("<fim_prefix>")
+        || prompt.contains("<fim_suffix>")
+        || prompt.contains("<fim_middle>")
+        || prompt.contains("<|fim_prefix|>")
+        || prompt.contains("<|fim_suffix|>")
+        || prompt.contains("<|fim_middle|>")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::TextCompletionRequest;
+
+    fn make_request(prompt: &str, suffix: Option<&str>) -> TextCompletionRequest {
+        TextCompletionRequest {
+            model: "gpt-4o-mini".into(),
+            prompt: prompt.into(),
+            suffix: suffix.map(String::from),
+            max_tokens: None,
+            temperature: None,
+            stop: vec![],
+            extra: Default::default(),
+        }
+    }
+
+    #[test]
+    fn fim_detected_by_suffix_field() {
+        let req = make_request("some code here", Some("// rest of function"));
+        assert!(is_fim_request(&req));
+    }
+
+    #[test]
+    fn fim_detected_by_fim_prefix_token() {
+        let req = make_request("<fim_prefix>def foo():<fim_suffix>    pass<fim_middle>", None);
+        assert!(is_fim_request(&req));
+    }
+
+    #[test]
+    fn fim_detected_by_pipe_fim_tokens() {
+        let req = make_request("<|fim_prefix|>let x = <|fim_suffix|>;<|fim_middle|>", None);
+        assert!(is_fim_request(&req));
+    }
+
+    #[test]
+    fn non_fim_request_not_detected() {
+        let req = make_request("Write a function to sort a list", None);
+        assert!(!is_fim_request(&req));
+    }
+}
+
 /// POST /v1/completions — OpenAI legacy text completions (used for FIM / edit predictions).
 pub async fn text_completions(
     State(state): State<Arc<AppState>>,
@@ -56,8 +113,42 @@ pub async fn text_completions(
         state.rate_limiter.record_request(&ctx.key_hash).await;
     }
 
+    // --- FIM detection and fitness routing ---
+    let fim_detected = is_fim_request(&request);
+    let (resolved_model, routing_decision_str) = if fim_detected && state.config.routing.enabled {
+        let decision = crate::routing::resolve(
+            TaskType::FillInTheMiddle,
+            1.0, // FIM detection is deterministic — maximum confidence
+            &request.model,
+            &state.fitness_cache,
+            &state.routing_policy,
+            state.config.routing.tier1_confidence_threshold,
+        )
+        .await;
+
+        let decision_str = decision
+            .as_ref()
+            .map(|d| serde_json::to_string(d).unwrap_or_else(|_| format!("{:?}", d)));
+
+        let selected = decision
+            .as_ref()
+            .map(|d| d.selected_model.clone())
+            .unwrap_or_else(|| request.model.clone());
+
+        tracing::info!(
+            requested_model = %request.model,
+            selected_model = %selected,
+            routed = decision.is_some(),
+            "FIM request routed via fitness scoring"
+        );
+
+        (selected, decision_str)
+    } else {
+        (request.model.clone(), None)
+    };
+
     // --- Resolve provider ---
-    let (provider_name, model_id) = resolve_model(&state.config, &request.model)?;
+    let (provider_name, model_id) = resolve_model(&state.config, &resolved_model)?;
 
     let provider_cfg = state
         .config
@@ -137,6 +228,12 @@ pub async fn text_completions(
         ..Default::default()
     };
 
+    let task_type = if fim_detected {
+        Some(TaskType::FillInTheMiddle)
+    } else {
+        None
+    };
+
     let event = InferenceEvent {
         id: Uuid::new_v4(),
         timestamp: Utc::now(),
@@ -152,8 +249,8 @@ pub async fn text_completions(
         latency_ms,
         prompt_hash: String::new(),
         completion_hash: String::new(),
-        task_type: Some(TaskType::FillInTheMiddle),
-        routing_decision: None,
+        task_type,
+        routing_decision: routing_decision_str,
         variant_name: None,
         virtual_key_hash: auth_ctx.as_ref().map(|c| c.key_hash.clone()),
         team_id: auth_ctx.as_ref().and_then(|c| c.team_id.clone()),
