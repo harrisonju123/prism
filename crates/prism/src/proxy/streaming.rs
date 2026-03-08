@@ -65,7 +65,27 @@ impl StreamRelay {
                                         result.model = chunk.model.clone();
                                     }
                                     if let Some(usage) = chunk.usage {
-                                        result.usage = Some(usage);
+                                        // Regular tokens use last-write-wins (OpenAI sends
+                                        // absolute values in the final chunk).  Cache tokens
+                                        // are accumulated across chunks because Anthropic may
+                                        // report them incrementally.
+                                        let prev_cache_read = result
+                                            .usage
+                                            .as_ref()
+                                            .map(|u| u.cache_read_input_tokens)
+                                            .unwrap_or(0);
+                                        let prev_cache_creation = result
+                                            .usage
+                                            .as_ref()
+                                            .map(|u| u.cache_creation_input_tokens)
+                                            .unwrap_or(0);
+                                        result.usage = Some(crate::types::Usage {
+                                            cache_read_input_tokens: prev_cache_read
+                                                + usage.cache_read_input_tokens,
+                                            cache_creation_input_tokens: prev_cache_creation
+                                                + usage.cache_creation_input_tokens,
+                                            ..usage
+                                        });
                                     }
                                     // Accumulate completion text for hashing
                                     for choice in &chunk.choices {
