@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use uglyhat::client::HttpClient;
+use uglyhat::github::GithubSync;
 use uglyhat::middleware::auth::hash_key;
 use uglyhat::model::*;
 use uglyhat::store::sqlite::SqliteStore;
@@ -29,6 +30,12 @@ struct Config {
     mode: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     db_path: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    github_pat: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    github_repo: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    webhook_url: String,
 }
 
 fn find_config() -> Result<PathBuf, String> {
@@ -198,7 +205,11 @@ enum Commands {
         complete_tasks: bool,
     },
     /// List agents and their current tasks
-    Agents,
+    Agents {
+        /// Show performance metrics aggregated from activity log
+        #[arg(long)]
+        metrics: bool,
+    },
     /// Show stale tasks (in_progress with no active agent session)
     Stale,
     /// Create a structured handoff
@@ -218,9 +229,24 @@ enum Commands {
         #[arg(long)]
         next_steps: Option<String>,
     },
+    /// Sprint planning and tracking
+    Sprint {
+        #[command(subcommand)]
+        cmd: SprintCmd,
+    },
+    /// GitHub Issues sync
+    Github {
+        #[command(subcommand)]
+        cmd: GithubCmd,
+    },
     /// Manage connection to a remote uglyhat server.
     #[command(subcommand)]
     Remote(RemoteCommand),
+    /// Manage webhook notifications
+    Webhook {
+        #[command(subcommand)]
+        cmd: WebhookCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -236,6 +262,12 @@ enum RemoteCommand {
     Unset,
     /// Show current connection mode and settings.
     Status,
+}
+
+#[derive(Subcommand)]
+enum WebhookCmd {
+    /// Send a test webhook to the configured URL
+    Test,
 }
 
 #[derive(Subcommand)]
@@ -370,6 +402,52 @@ enum DecisionAction {
     List,
 }
 
+#[derive(Subcommand)]
+enum SprintCmd {
+    /// Create a new sprint
+    Create {
+        name: String,
+        #[arg(long)]
+        goal: Option<String>,
+        #[arg(long, help = "Start date (YYYY-MM-DD)")]
+        start: Option<String>,
+        #[arg(long, help = "End date (YYYY-MM-DD)")]
+        end: Option<String>,
+    },
+    /// List sprints in the workspace
+    List,
+    /// Close a sprint
+    Close {
+        /// Sprint ID
+        id: String,
+    },
+    /// Show sprint burndown/velocity
+    Burndown {
+        /// Sprint ID
+        id: String,
+    },
+    /// Assign a task to a sprint
+    Assign {
+        /// Task ID
+        task_id: String,
+        /// Sprint ID
+        sprint_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum GithubCmd {
+    /// Sync open GitHub issues as tasks
+    Sync {
+        #[arg(long, help = "GitHub repo (owner/repo)")]
+        repo: Option<String>,
+        #[arg(long, help = "Only sync issues updated since date (YYYY-MM-DD or RFC3339)")]
+        since: Option<String>,
+        #[arg(long, help = "Epic ID to create tasks under")]
+        epic: Option<String>,
+    },
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -414,13 +492,13 @@ async fn run(cli: Cli) -> Result<(), String> {
                 let store = SqliteStore::open(db_path.to_str().unwrap())
                     .await
                     .map_err(|e| format!("opening database: {e}"))?;
-                run_command_local(other, &store, ws_id).await
+                run_command_local(other, &store, ws_id, &cfg).await
             }
         }
     }
 }
 
-async fn run_command_local(cmd: Commands, store: &SqliteStore, ws_id: Uuid) -> Result<(), String> {
+async fn run_command_local(cmd: Commands, store: &SqliteStore, ws_id: Uuid, cfg: &Config) -> Result<(), String> {
     match cmd {
         Commands::Init { .. } | Commands::Remote(_) => unreachable!(),
         Commands::Context => {
@@ -757,12 +835,20 @@ async fn run_command_local(cmd: Commands, store: &SqliteStore, ws_id: Uuid) -> R
                 .map_err(|e| e.to_string())?;
             print_json(&result);
         }
-        Commands::Agents => {
-            let statuses = store
-                .list_agent_statuses(ws_id)
-                .await
-                .map_err(|e| e.to_string())?;
-            print_json(&statuses);
+        Commands::Agents { metrics } => {
+            if metrics {
+                let m = store
+                    .agent_metrics(ws_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&m);
+            } else {
+                let statuses = store
+                    .list_agent_statuses(ws_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&statuses);
+            }
         }
         Commands::Checkin { name, capabilities } => {
             let caps = split_csv(capabilities);
@@ -810,6 +896,134 @@ async fn run_command_local(cmd: Commands, store: &SqliteStore, ws_id: Uuid) -> R
                 .map_err(|e| e.to_string())?;
             print_json(&result);
         }
+        Commands::Sprint { cmd } => match cmd {
+            SprintCmd::Create {
+                name,
+                goal,
+                start,
+                end,
+            } => {
+                let start_date = start
+                    .as_deref()
+                    .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
+                let end_date = end
+                    .as_deref()
+                    .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
+                let sprint = store
+                    .create_sprint(ws_id, &name, goal.as_deref().unwrap_or(""), start_date, end_date)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&sprint);
+            }
+            SprintCmd::List => {
+                let sprints = store
+                    .list_sprints(ws_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&sprints);
+            }
+            SprintCmd::Close { id } => {
+                let sprint_id: Uuid = id.parse().map_err(|e| format!("invalid sprint ID: {e}"))?;
+                let sprint = store
+                    .close_sprint(sprint_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&sprint);
+            }
+            SprintCmd::Burndown { id } => {
+                let sprint_id: Uuid = id.parse().map_err(|e| format!("invalid sprint ID: {e}"))?;
+                let velocity = store
+                    .sprint_velocity(sprint_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&velocity);
+            }
+            SprintCmd::Assign {
+                task_id,
+                sprint_id,
+            } => {
+                let tid: Uuid = task_id.parse().map_err(|e| format!("invalid task ID: {e}"))?;
+                let sid: Uuid = sprint_id.parse().map_err(|e| format!("invalid sprint ID: {e}"))?;
+                store
+                    .assign_task_to_sprint(tid, sid)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&serde_json::json!({"ok": true, "task_id": tid, "sprint_id": sid}));
+            }
+        },
+        Commands::Github { cmd } => match cmd {
+            GithubCmd::Sync { repo, since, epic } => {
+                let pat = cfg.github_pat.clone();
+                if pat.is_empty() {
+                    eprintln!("error: github_pat not set in .uglyhat.json");
+                    process::exit(1);
+                }
+                let repo_name = repo
+                    .as_deref()
+                    .or_else(|| {
+                        if cfg.github_repo.is_empty() {
+                            None
+                        } else {
+                            Some(cfg.github_repo.as_str())
+                        }
+                    })
+                    .ok_or_else(|| "repo required (--repo or github_repo in config)".to_string())?
+                    .to_string();
+
+                let epic_id = if let Some(e) = epic {
+                    e.parse::<Uuid>()
+                        .map_err(|e| format!("invalid epic ID: {e}"))?
+                } else {
+                    store
+                        .get_system_epic_id(ws_id)
+                        .await
+                        .map_err(|e| e.to_string())?
+                };
+
+                let syncer = GithubSync::new(&pat, &repo_name);
+                let issues = syncer
+                    .pull_issues(since.as_deref())
+                    .await
+                    .map_err(|e| e.to_string())?;
+
+                let mut synced = 0usize;
+                for issue in &issues {
+                    let body = issue.body.as_deref().unwrap_or("");
+                    store
+                        .upsert_task_by_github_id(ws_id, epic_id, issue.number, &issue.title, body)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    synced += 1;
+                }
+
+                print_json(&serde_json::json!({"synced": synced, "repo": repo_name}));
+            }
+        },
+        Commands::Webhook { cmd } => match cmd {
+            WebhookCmd::Test => {
+                if cfg.webhook_url.is_empty() {
+                    eprintln!("error: webhook_url not set in .uglyhat.json");
+                    process::exit(1);
+                }
+                let body = serde_json::json!({
+                    "event": "test",
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                });
+                let resp = reqwest::Client::new()
+                    .post(&cfg.webhook_url)
+                    .json(&body)
+                    .timeout(std::time::Duration::from_secs(10))
+                    .send()
+                    .await
+                    .map_err(|e| format!("webhook failed: {e}"))?;
+                if resp.status().is_success() {
+                    print_json(&serde_json::json!({"status": "ok", "code": resp.status().as_u16()}));
+                } else {
+                    let code = resp.status().as_u16();
+                    return Err(format!("webhook returned status {code}"));
+                }
+            }
+        },
     }
     Ok(())
 }
@@ -1076,7 +1290,7 @@ async fn run_command_remote(cmd: Commands, client: &HttpClient) -> Result<(), St
                 .map_err(|e| e.to_string())?;
             print_json(&result);
         }
-        Commands::Agents => {
+        Commands::Agents { .. } => {
             let result = client
                 .list_agent_statuses()
                 .await
@@ -1131,6 +1345,15 @@ async fn run_command_remote(cmd: Commands, client: &HttpClient) -> Result<(), St
                 .map_err(|e| e.to_string())?;
             print_json(&result);
         }
+        Commands::Sprint { .. } => {
+            return Err("sprint commands require local mode (no base_url)".to_string());
+        }
+        Commands::Github { .. } => {
+            return Err("github commands require local mode (no base_url)".to_string());
+        }
+        Commands::Webhook { .. } => {
+            return Err("webhook commands require local mode (no base_url)".to_string());
+        }
     }
     Ok(())
 }
@@ -1183,6 +1406,9 @@ async fn cmd_remote(remote_cmd: RemoteCommand) -> Result<(), String> {
                 base_url: String::new(),
                 mode: String::new(),
                 db_path: String::new(),
+                github_pat: String::new(),
+                github_repo: String::new(),
+                webhook_url: String::new(),
             });
             let config_file = dir_opt
                 .map(|d| d.join(CONFIG_FILE).display().to_string())
@@ -1244,6 +1470,9 @@ async fn cmd_init(name: &str) -> Result<(), String> {
         base_url: String::new(),
         mode: "local".to_string(),
         db_path: DB_FILE.to_string(),
+        github_pat: String::new(),
+        github_repo: String::new(),
+        webhook_url: String::new(),
     };
     save_config(&dir, &cfg)?;
 

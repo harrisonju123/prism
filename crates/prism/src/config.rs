@@ -62,6 +62,10 @@ pub struct Config {
     pub dashboard: DashboardConfig,
     #[serde(default)]
     pub cors: CorsConfig,
+    #[serde(default)]
+    pub context_management: ContextManagementConfig,
+    #[serde(default)]
+    pub logging: LoggingConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -90,6 +94,14 @@ pub struct ProviderConfig {
     pub region: Option<String>,
     #[serde(default)]
     pub extra: HashMap<String, String>,
+    /// Enable Anthropic prompt caching for long system prompts (≥1024 chars).
+    /// Only applies to Anthropic providers. Default: true.
+    #[serde(default = "default_true")]
+    pub prompt_caching: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -248,6 +260,8 @@ pub struct KeysConfig {
     pub cache_capacity: usize,
     #[serde(default = "default_budget_reconcile_interval_secs")]
     pub budget_reconcile_interval_secs: u64,
+    #[serde(default)]
+    pub budget_alerts: BudgetAlertsConfig,
 }
 
 impl Default for KeysConfig {
@@ -257,9 +271,56 @@ impl Default for KeysConfig {
             master_key: None,
             cache_capacity: default_cache_capacity(),
             budget_reconcile_interval_secs: default_budget_reconcile_interval_secs(),
+            budget_alerts: BudgetAlertsConfig::default(),
         }
     }
 }
+
+/// Config for per-key budget breach alerting.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BudgetAlertsConfig {
+    /// Enable budget breach alerting (requires keys.enabled + postgres).
+    #[serde(default)]
+    pub enabled: bool,
+    /// How often to scan for budget breaches (seconds). Default: 300.
+    #[serde(default = "default_budget_alert_interval_secs")]
+    pub check_interval_secs: u64,
+    /// Minimum seconds between alerts for the same key+period. Default: 3600.
+    #[serde(default = "default_budget_alert_cooldown_secs")]
+    pub cooldown_secs: u64,
+    /// Fire a warning alert when spend reaches this fraction of the limit. Default: 0.8.
+    #[serde(default = "default_budget_warn_threshold_pct")]
+    pub warn_threshold_pct: f64,
+    /// Notification channel: "log", "webhook", "slack", "email". Default: "log".
+    #[serde(default = "default_budget_alert_channel")]
+    pub channel: String,
+    #[serde(default)]
+    pub webhook_url: Option<String>,
+    #[serde(default)]
+    pub slack_webhook_url: Option<String>,
+    #[serde(default)]
+    pub email_to: Option<String>,
+}
+
+impl Default for BudgetAlertsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            check_interval_secs: default_budget_alert_interval_secs(),
+            cooldown_secs: default_budget_alert_cooldown_secs(),
+            warn_threshold_pct: default_budget_warn_threshold_pct(),
+            channel: default_budget_alert_channel(),
+            webhook_url: None,
+            slack_webhook_url: None,
+            email_to: None,
+        }
+    }
+}
+
+fn default_budget_alert_interval_secs() -> u64 { 300 }
+fn default_budget_alert_cooldown_secs() -> u64 { 3600 }
+fn default_budget_warn_threshold_pct() -> f64 { 0.8 }
+fn default_budget_alert_channel() -> String { "log".into() }
 
 fn default_cache_capacity() -> usize {
     10_000
@@ -1029,6 +1090,62 @@ fn default_cors_methods() -> Vec<String> {
 
 fn default_cors_max_age_secs() -> u64 {
     3600
+}
+
+// --- Context Management ---
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ContextManagementConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_context_strategy")]
+    pub strategy: String, // "drop-oldest" | "error"
+    #[serde(default = "default_response_reserve")]
+    pub response_reserve_tokens: u32,
+}
+
+impl Default for ContextManagementConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            strategy: default_context_strategy(),
+            response_reserve_tokens: default_response_reserve(),
+        }
+    }
+}
+
+fn default_context_strategy() -> String {
+    "drop-oldest".into()
+}
+
+fn default_response_reserve() -> u32 {
+    1000
+}
+
+// --- Logging ---
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LoggingConfig {
+    #[serde(default = "default_log_format")]
+    pub format: String, // "text" | "json"
+    #[serde(default)]
+    pub loki_url: Option<String>,
+    #[serde(default)]
+    pub loki_labels: HashMap<String, String>,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            format: default_log_format(),
+            loki_url: None,
+            loki_labels: HashMap::new(),
+        }
+    }
+}
+
+fn default_log_format() -> String {
+    "text".into()
 }
 
 #[cfg(test)]

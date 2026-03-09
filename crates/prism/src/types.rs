@@ -252,6 +252,8 @@ pub struct TextCompletionRequest {
     pub model: String,
     pub prompt: String,
     #[serde(default)]
+    pub suffix: Option<String>,
+    #[serde(default)]
     pub max_tokens: Option<u32>,
     #[serde(default)]
     pub temperature: Option<f32>,

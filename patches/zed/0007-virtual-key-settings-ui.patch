@@ -1,0 +1,36 @@
+diff --git a/zed-upstream/assets/settings/default.json b/zed-upstream/assets/settings/default.json
+index 00c65a8..e142507 100644
+--- a/zed-upstream/assets/settings/default.json
++++ b/zed-upstream/assets/settings/default.json
+@@ -2216,6 +2216,7 @@
+     "openai_compatible": {},
+     "prism": {
+       "api_url": "http://localhost:9100/v1",
++      "api_key": null,
+     },
+     "open_router": {
+       "api_url": "https://openrouter.ai/api/v1",
+diff --git a/zed-upstream/crates/language_models/src/settings.rs b/zed-upstream/crates/language_models/src/settings.rs
+index 81bb724..4c0ff1c 100644
+--- a/zed-upstream/crates/language_models/src/settings.rs
++++ b/zed-upstream/crates/language_models/src/settings.rs
+@@ -107,6 +107,7 @@ impl settings::Settings for AllLanguageModelSettings {
+                 .collect(),
+             prism: PrismSettings {
+                 api_url: prism.api_url.unwrap(),
++                api_key: prism.api_key,
+                 available_models: prism.available_models.unwrap_or_default(),
+             },
+             vercel: VercelSettings {
+diff --git a/zed-upstream/crates/settings_content/src/language_model.rs b/zed-upstream/crates/settings_content/src/language_model.rs
+index ef2d49e..6074c73 100644
+--- a/zed-upstream/crates/settings_content/src/language_model.rs
++++ b/zed-upstream/crates/settings_content/src/language_model.rs
+@@ -451,6 +451,7 @@ pub enum DataCollection {
+ #[derive(Default, Clone, Debug, Serialize, Deserialize, PartialEq, JsonSchema, MergeFrom)]
+ pub struct PrismSettingsContent {
+     pub api_url: Option<String>,
++    pub api_key: Option<String>,
+     pub available_models: Option<Vec<PrismAvailableModel>>,
+ }
+ 

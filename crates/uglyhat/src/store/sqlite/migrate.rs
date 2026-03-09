@@ -10,6 +10,16 @@ const BASELINE_SCHEMA: &str = include_str!("schema.sql");
 const MIGRATIONS: &[&str] = &[
     // Migration 1: add current_task_id to agents (pre-versioning DBs may not have it)
     "ALTER TABLE agents ADD COLUMN current_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL",
+    // Migration 2: create sprints table
+    "CREATE TABLE IF NOT EXISTS sprints (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE, name TEXT NOT NULL, goal TEXT NOT NULL DEFAULT '', start_date TEXT, end_date TEXT, status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','closed')), created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+    // Migration 3: index on sprints.workspace_id
+    "CREATE INDEX IF NOT EXISTS idx_sprints_workspace ON sprints(workspace_id)",
+    // Migration 4: add sprint_id column to tasks
+    "ALTER TABLE tasks ADD COLUMN sprint_id TEXT REFERENCES sprints(id) ON DELETE SET NULL",
+    // Migration 5: add github_issue_id column to tasks
+    "ALTER TABLE tasks ADD COLUMN github_issue_id TEXT",
+    // Migration 6: index on tasks.sprint_id
+    "CREATE INDEX IF NOT EXISTS idx_tasks_sprint ON tasks(sprint_id)",
 ];
 
 pub fn latest_version() -> i64 {

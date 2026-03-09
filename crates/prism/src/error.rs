@@ -28,6 +28,9 @@ pub enum PrismError {
     #[error("authentication required")]
     Unauthorized,
 
+    #[error("forbidden")]
+    Forbidden,
+
     #[error("schema validation failed: {0}")]
     SchemaValidationFailed(String),
 
@@ -92,6 +95,11 @@ impl IntoResponse for PrismError {
                 StatusCode::UNAUTHORIZED,
                 "unauthorized",
                 "authentication required".into(),
+            ),
+            PrismError::Forbidden => (
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "access denied".into(),
             ),
             PrismError::SchemaValidationFailed(msg) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -170,6 +178,7 @@ impl PrismError {
             | PrismError::RateLimited { .. }
             | PrismError::BudgetExceeded
             | PrismError::Unauthorized
+            | PrismError::Forbidden
             | PrismError::SchemaValidationFailed(_)
             | PrismError::ContentFiltered(_)
             | PrismError::SerdeJson(_) => false,

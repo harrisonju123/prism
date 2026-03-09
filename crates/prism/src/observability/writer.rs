@@ -39,12 +39,50 @@ impl InferenceWriter {
         }
     }
 
-    /// Apply ClickHouse schema on startup.
+    /// Apply ClickHouse schema on startup — versioned, skips already-applied migrations.
     pub async fn migrate(&self) -> anyhow::Result<()> {
-        for schema in super::schema::ALL_SCHEMAS {
-            self.client.query(schema).execute().await?;
+        use super::schema::{MIGRATIONS, MIGRATIONS_TABLE_DDL};
+
+        // 1. Ensure the tracking table exists
+        self.client.query(MIGRATIONS_TABLE_DDL).execute().await?;
+
+        // 2. Fetch already-applied versions
+        #[derive(clickhouse::Row, serde::Deserialize)]
+        struct VersionRow {
+            version: String,
         }
-        tracing::info!("clickhouse schema applied");
+        let applied: Vec<String> = self
+            .client
+            .query("SELECT version FROM schema_migrations")
+            .fetch_all::<VersionRow>()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| r.version)
+            .collect();
+
+        // 3. Apply only new migrations
+        for (version, ddl) in MIGRATIONS {
+            if applied.contains(&version.to_string()) {
+                continue;
+            }
+            self.client.query(ddl).execute().await?;
+
+            #[derive(clickhouse::Row, serde::Serialize)]
+            struct MigrationRow {
+                version: String,
+            }
+            let mut insert = self.client.insert("schema_migrations")?;
+            insert
+                .write(&MigrationRow {
+                    version: version.to_string(),
+                })
+                .await?;
+            insert.end().await?;
+
+            tracing::info!(%version, "applied clickhouse migration");
+        }
+
         Ok(())
     }
 

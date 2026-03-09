@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 
@@ -68,6 +68,22 @@ impl RateLimiter {
             Self::InMemory(inner) => inner.prune_expired(),
             #[cfg(feature = "redis-backend")]
             Self::Redis(_) => {} // Redis handles TTL automatically
+        }
+    }
+
+    pub fn current_rpm(&self, key_hash: &str) -> usize {
+        match self {
+            Self::InMemory(inner) => inner.current_rpm(key_hash),
+            #[cfg(feature = "redis-backend")]
+            Self::Redis(inner) => inner.fallback.current_rpm(key_hash),
+        }
+    }
+
+    pub fn current_tpm(&self, key_hash: &str) -> u32 {
+        match self {
+            Self::InMemory(inner) => inner.current_tpm(key_hash),
+            #[cfg(feature = "redis-backend")]
+            Self::Redis(inner) => inner.fallback.current_tpm(key_hash),
         }
     }
 }
@@ -152,6 +168,22 @@ impl InMemoryRateLimiter {
                 .or_default()
                 .push_back((Instant::now(), count));
         }
+    }
+
+    pub fn current_rpm(&self, key_hash: &str) -> usize {
+        let cutoff = Instant::now() - Duration::from_secs(WINDOW_SECS);
+        self.rpm
+            .get(key_hash)
+            .map(|e| e.iter().filter(|&&t| t >= cutoff).count())
+            .unwrap_or(0)
+    }
+
+    pub fn current_tpm(&self, key_hash: &str) -> u32 {
+        let cutoff = Instant::now() - Duration::from_secs(WINDOW_SECS);
+        self.tpm
+            .get(key_hash)
+            .map(|e| e.iter().filter(|(t, _)| *t >= cutoff).map(|(_, c)| *c).sum())
+            .unwrap_or(0)
     }
 
     pub fn prune_expired(&self) {

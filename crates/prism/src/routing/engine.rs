@@ -95,6 +95,7 @@ pub async fn resolve(
             policy_rule_id: Some(rule_idx),
             task_type,
             confidence,
+            fallback_chain: rule.fallback_chain.clone(),
         })
     } else {
         // Step 6: fallback
@@ -105,6 +106,7 @@ pub async fn resolve(
             policy_rule_id: Some(rule_idx),
             task_type,
             confidence,
+            fallback_chain: rule.fallback_chain.clone(),
         })
     }
 }
@@ -167,6 +169,7 @@ mod tests {
                     max_cost_per_1k: None,
                     max_latency_ms: None,
                     fallback: Some("claude-sonnet-4".into()),
+                    fallback_chain: vec![],
                 },
                 RoutingRule {
                     task_type: "*".into(),
@@ -175,6 +178,7 @@ mod tests {
                     max_cost_per_1k: None,
                     max_latency_ms: None,
                     fallback: Some("claude-sonnet-4".into()),
+                    fallback_chain: vec![],
                 },
             ],
             version: 1,
@@ -307,6 +311,7 @@ mod tests {
                 max_cost_per_1k: None,
                 max_latency_ms: None,
                 fallback: Some("claude-sonnet-4".into()),
+                fallback_chain: vec![],
             }],
             version: 1,
         };

@@ -84,6 +84,24 @@ pub fn tool_definitions() -> Vec<Tool> {
                 "url": { "type": "string", "description": "fully qualified URL to fetch" }
             }, "required": ["url"] }),
         ),
+        make_tool(
+            "save_memory",
+            "Save a fact to persistent memory. The memory persists across sessions and is injected into your system prompt.",
+            json!({ "type": "object", "properties": {
+                "key":   { "type": "string", "description": "Short label for this memory (e.g. 'project_structure', 'user_preference')" },
+                "value": { "type": "string", "description": "The content to remember" }
+            }, "required": ["key", "value"] }),
+        ),
+        make_tool(
+            "spawn_agent",
+            "Spawn a sub-agent to execute a task. The sub-agent runs independently and returns a JSON result with status, summary, and cost.",
+            json!({ "type": "object", "properties": {
+                "task":         { "type": "string", "description": "Natural language task for the sub-agent" },
+                "model":        { "type": "string", "description": "Model to use (optional, defaults to parent model)" },
+                "cost_cap":     { "type": "number", "description": "Max cost in USD (optional)" },
+                "timeout_secs": { "type": "integer", "description": "Timeout in seconds (default 300)" }
+            }, "required": ["task"] }),
+        ),
     ]
 }
 
@@ -144,6 +162,11 @@ pub async fn dispatch(name: &str, args: &serde_json::Value) -> String {
         "web_fetch" => {
             let url = args["url"].as_str().unwrap_or("");
             web::web_fetch(url).await
+        }
+        "save_memory" | "spawn_agent" => {
+            // Intercepted before dispatch() in the agent loop; reaching here means
+            // the caller invoked dispatch() directly without agent context.
+            format!("{{\"error\": \"tool '{name}' requires agent loop context\"}}")
         }
         other => format!("unknown tool: {other}"),
     }

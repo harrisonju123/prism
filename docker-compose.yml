@@ -32,6 +32,59 @@ services:
       timeout: 3s
       retries: 5
 
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+
+  loki:
+    image: grafana/loki:2.9.0
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - loki_data:/loki
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    ports:
+      - "3000:3000"
+    environment:
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+      - loki
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "14250:14250"   # gRPC collector
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.98.0
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    volumes:
+      - ./config/otel-collector.yml:/etc/otel-collector.yml:ro
+    command: ["--config=/etc/otel-collector.yml"]
+    depends_on:
+      - jaeger
+
   prism:
     build:
       context: .
@@ -48,6 +101,8 @@ services:
       PRISM_CLICKHOUSE_URL: http://clickhouse:8123
       PRISM_CLICKHOUSE_DATABASE: prism
       PRISM_POSTGRES_URL: postgres://prism:prism@postgres:5432/prism
+      PRISM_OTEL_ENABLED: "true"
+      PRISM_OTEL_ENDPOINT: http://otel-collector:4317
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
@@ -75,3 +130,6 @@ volumes:
   clickhouse_data:
   postgres_data:
   uglyhat_data:
+  prometheus_data:
+  grafana_data:
+  loki_data:

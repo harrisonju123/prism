@@ -74,13 +74,16 @@ pub async fn text_completions(
     // --- Forward request to provider's /completions endpoint ---
     let url = format!("{}/completions", api_base.trim_end_matches('/'));
 
-    let backend_body = serde_json::json!({
+    let mut backend_body = serde_json::json!({
         "model": model_id,
         "prompt": request.prompt,
         "max_tokens": request.max_tokens,
         "temperature": request.temperature,
         "stop": request.stop,
     });
+    if let Some(suffix) = &request.suffix {
+        backend_body["suffix"] = serde_json::Value::String(suffix.clone());
+    }
 
     let http_resp = state
         .http_client

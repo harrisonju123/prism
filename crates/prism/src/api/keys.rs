@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::{PrismError, Result};
+use crate::keys::audit::AuditEventType;
 use crate::keys::virtual_key::{CreateKeyParams, UpdateKeyParams};
 use crate::keys::{self, MasterAuth, VirtualKey};
 use crate::proxy::handler::AppState;
@@ -36,6 +37,12 @@ pub struct CreateKeyRequest {
     pub metadata: serde_json::Value,
     #[serde(default)]
     pub expires_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub rotation_interval_days: Option<i32>,
+    #[serde(default)]
+    pub allowed_ips: Option<Vec<String>>,
+    #[serde(default)]
+    pub allowed_origins: Option<Vec<String>>,
 }
 
 fn default_budget_action() -> String {
@@ -44,6 +51,10 @@ fn default_budget_action() -> String {
 
 fn default_metadata() -> serde_json::Value {
     serde_json::json!({})
+}
+
+fn serialize_list(v: Vec<String>) -> String {
+    serde_json::to_string(&v).unwrap_or_else(|_| "[]".into())
 }
 
 #[derive(Debug, Serialize)]
@@ -70,10 +81,22 @@ pub struct KeyDetails {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
+    pub rotation_interval_days: Option<i32>,
+    pub last_rotated_at: Option<DateTime<Utc>>,
+    pub allowed_ips: Option<Vec<String>>,
+    pub allowed_origins: Option<Vec<String>>,
 }
 
 impl From<VirtualKey> for KeyDetails {
     fn from(vk: VirtualKey) -> Self {
+        let allowed_ips: Option<Vec<String>> = vk
+            .allowed_ips
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok());
+        let allowed_origins: Option<Vec<String>> = vk
+            .allowed_origins
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok());
         Self {
             id: vk.id,
             name: vk.name,
@@ -89,6 +112,10 @@ impl From<VirtualKey> for KeyDetails {
             created_at: vk.created_at,
             updated_at: vk.updated_at,
             expires_at: vk.expires_at,
+            rotation_interval_days: vk.rotation_interval_days,
+            last_rotated_at: vk.last_rotated_at,
+            allowed_ips,
+            allowed_origins,
         }
     }
 }
@@ -127,6 +154,10 @@ pub struct UpdateKeyRequest {
     pub metadata: Option<serde_json::Value>,
     #[serde(default)]
     pub expires_at: Option<Option<DateTime<Utc>>>,
+    #[serde(default)]
+    pub allowed_ips: Option<Option<Vec<String>>>,
+    #[serde(default)]
+    pub allowed_origins: Option<Option<Vec<String>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -157,6 +188,9 @@ pub async fn create_key(
     let key_hash = keys::hash_key(&plaintext);
     let key_prefix = plaintext[..10].to_string(); // "prism_xxxx"
 
+    let allowed_ips = body.allowed_ips.map(serialize_list);
+    let allowed_origins = body.allowed_origins.map(serialize_list);
+
     let params = CreateKeyParams {
         name: body.name,
         key_hash,
@@ -170,6 +204,9 @@ pub async fn create_key(
         allowed_models: body.allowed_models,
         metadata: body.metadata,
         expires_at: body.expires_at,
+        rotation_interval_days: body.rotation_interval_days,
+        allowed_ips,
+        allowed_origins,
     };
 
     let vk = key_service
@@ -177,6 +214,17 @@ pub async fn create_key(
         .create(params)
         .await
         .map_err(|e| PrismError::Internal(format!("failed to create key: {e}")))?;
+
+    if let Some(ref audit) = state.audit_service {
+        audit.log(
+            AuditEventType::KeyCreated,
+            Some(vk.id),
+            Some(vk.key_prefix.clone()),
+            None,
+            serde_json::json!({ "name": vk.name }),
+            None,
+        );
+    }
 
     Ok(Json(CreateKeyResponse {
         key: plaintext,
@@ -234,8 +282,23 @@ pub async fn revoke_key(
     }
 
     // Invalidate cache
-    if let Some(vk) = vk {
+    if let Some(ref vk) = vk {
         key_service.invalidate_cache(&vk.key_hash).await;
+    }
+
+    if let Some(ref audit) = state.audit_service {
+        let (key_prefix, key_id) = vk
+            .as_ref()
+            .map(|vk| (Some(vk.key_prefix.clone()), Some(vk.id)))
+            .unwrap_or((None, None));
+        audit.log(
+            AuditEventType::KeyRevoked,
+            key_id,
+            key_prefix,
+            None,
+            serde_json::json!({ "id": id }),
+            None,
+        );
     }
 
     Ok(Json(serde_json::json!({ "revoked": true, "id": id })))
@@ -253,6 +316,9 @@ pub async fn update_key(
         .as_ref()
         .ok_or_else(|| PrismError::Internal("keys not enabled".into()))?;
 
+    let allowed_ips = body.allowed_ips.map(|opt| opt.map(serialize_list));
+    let allowed_origins = body.allowed_origins.map(|opt| opt.map(serialize_list));
+
     let params = UpdateKeyParams {
         name: body.name,
         team_id: body.team_id,
@@ -264,6 +330,8 @@ pub async fn update_key(
         allowed_models: body.allowed_models,
         metadata: body.metadata,
         expires_at: body.expires_at,
+        allowed_ips,
+        allowed_origins,
     };
 
     let vk = key_service
@@ -275,6 +343,17 @@ pub async fn update_key(
 
     // Invalidate cache so new limits take effect
     key_service.invalidate_cache(&vk.key_hash).await;
+
+    if let Some(ref audit) = state.audit_service {
+        audit.log(
+            AuditEventType::KeyUpdated,
+            Some(vk.id),
+            Some(vk.key_prefix.clone()),
+            None,
+            serde_json::json!({ "id": id }),
+            None,
+        );
+    }
 
     Ok(Json(vk.into()))
 }
@@ -308,6 +387,17 @@ pub async fn rotate_key(
 
     tracing::info!(key_id = %id, new_key_id = %new_key.id, "key rotated");
 
+    if let Some(ref audit) = state.audit_service {
+        audit.log(
+            AuditEventType::KeyRotated,
+            Some(id),
+            None,
+            None,
+            serde_json::json!({ "old_key_id": id, "new_key_id": new_key.id, "new_key_prefix": new_key_prefix }),
+            None,
+        );
+    }
+
     Ok(Json(serde_json::json!({
         "new_key": plaintext,
         "new_key_prefix": new_key_prefix,
@@ -336,11 +426,13 @@ pub async fn key_usage(
         .ok_or_else(|| PrismError::ModelNotFound(format!("key {id} not found")))?;
 
     let (daily_spend, monthly_spend) = state.budget_tracker.get_spend(&vk.key_hash);
+    let rpm_current = state.rate_limiter.current_rpm(&vk.key_hash);
+    let tpm_current = state.rate_limiter.current_tpm(&vk.key_hash);
 
     Ok(Json(UsageResponse {
         key_id: id,
-        rpm_current: 0, // RPM is a sliding window, hard to get exact count without exposing internals
-        tpm_current: 0,
+        rpm_current,
+        tpm_current,
         daily_spend_usd: daily_spend,
         monthly_spend_usd: monthly_spend,
     }))

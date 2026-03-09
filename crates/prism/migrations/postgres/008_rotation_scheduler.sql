@@ -1,0 +1,1 @@
+ALTER TABLE virtual_keys ADD COLUMN IF NOT EXISTS last_rotated_at TIMESTAMPTZ;

@@ -25,6 +25,7 @@ otel              = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentele
 smtp              = ["dep:lettre"]
 postgres          = ["dep:sqlx"]
 jwt               = ["dep:jsonwebtoken", "dep:hmac"]
+tracing-loki      = ["dep:tracing-loki"]
 
 [dependencies]
 prism-types = { workspace = true }
@@ -67,6 +68,7 @@ rand = "0.9"
 # Tracing / Logging
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tracing-loki = { version = "0.2", optional = true }
 
 # Utilities
 uuid = { workspace = true }
@@ -100,6 +102,11 @@ opentelemetry = { version = "0.27", optional = true }
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"], optional = true }
 opentelemetry-otlp = { version = "0.27", features = ["tonic"], optional = true }
 lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"], optional = true }
+ipnetwork = "0.20"
+
+# OpenAPI spec generation
+utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -11,13 +11,16 @@ use crate::experiment::feedback::FeedbackEvent;
 use crate::interop::bridge::DiscoveryBridge;
 use crate::interop::metering::MeteringStore;
 use crate::keys::KeyService;
+use crate::keys::audit::AuditService;
 use crate::keys::budget::BudgetTracker;
 use crate::keys::rate_limit::RateLimiter;
 use crate::mcp::types::McpCall;
+use crate::models::alias::{AliasCache, AliasRepository};
 use crate::observability::callbacks::CallbackRegistry;
 use crate::observability::metrics::MetricsCollector;
 use crate::prompts::store::PromptStore;
 use crate::providers::ProviderRegistry;
+use crate::providers::health::ProviderHealthTracker;
 use crate::proxy::handler::AppState;
 use crate::routing::FitnessCache;
 use crate::routing::session::SessionTracker;
@@ -58,6 +61,11 @@ pub struct AppStateBuilder {
     interop_metering: Option<Arc<MeteringStore>>,
     metrics: Option<Arc<MetricsCollector>>,
     session_cost_usd: Option<Arc<std::sync::atomic::AtomicU64>>,
+    // Phase 4
+    health_tracker: Option<Arc<ProviderHealthTracker>>,
+    audit_service: Option<Arc<AuditService>>,
+    alias_cache: Option<Arc<AliasCache>>,
+    alias_repo: Option<Arc<AliasRepository>>,
 }
 
 impl AppStateBuilder {
@@ -85,6 +93,10 @@ impl AppStateBuilder {
             interop_metering: None,
             metrics: None,
             session_cost_usd: None,
+            health_tracker: None,
+            audit_service: None,
+            alias_cache: None,
+            alias_repo: None,
         }
     }
 
@@ -291,6 +303,26 @@ impl AppStateBuilder {
         self
     }
 
+    pub fn with_health_tracker_opt(mut self, health_tracker: Option<Arc<ProviderHealthTracker>>) -> Self {
+        self.health_tracker = health_tracker;
+        self
+    }
+
+    pub fn with_audit_service_opt(mut self, audit_service: Option<Arc<AuditService>>) -> Self {
+        self.audit_service = audit_service;
+        self
+    }
+
+    pub fn with_alias_cache_opt(mut self, alias_cache: Option<Arc<AliasCache>>) -> Self {
+        self.alias_cache = alias_cache;
+        self
+    }
+
+    pub fn with_alias_repo_opt(mut self, alias_repo: Option<Arc<AliasRepository>>) -> Self {
+        self.alias_repo = alias_repo;
+        self
+    }
+
     // --- build() ---
 
     pub fn build(self) -> Result<AppState, AppStateBuildError> {
@@ -342,6 +374,10 @@ impl AppStateBuilder {
             session_cost_usd: self
                 .session_cost_usd
                 .unwrap_or_else(|| Arc::new(std::sync::atomic::AtomicU64::new(0))),
+            health_tracker: self.health_tracker,
+            audit_service: self.audit_service,
+            alias_cache: self.alias_cache,
+            alias_repo: self.alias_repo,
         })
     }
 }
@@ -405,6 +441,10 @@ mod tests {
         assert!(state.interop_bridge.is_none());
         assert!(state.interop_metering.is_none());
         assert!(state.metrics.is_none());
+        assert!(state.health_tracker.is_none());
+        assert!(state.audit_service.is_none());
+        assert!(state.alias_cache.is_none());
+        assert!(state.alias_repo.is_none());
     }
 
     #[test]

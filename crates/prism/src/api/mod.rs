@@ -1,9 +1,14 @@
 pub mod health;
 pub mod metrics;
 pub mod models;
+pub mod openapi;
 
 #[cfg(feature = "full")]
+pub mod aliases;
+#[cfg(feature = "full")]
 pub mod alerts;
+#[cfg(feature = "full")]
+pub mod audit;
 #[cfg(feature = "full")]
 pub mod billing;
 #[cfg(feature = "full")]

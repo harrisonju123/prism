@@ -1,3 +1,5 @@
+pub mod spawn;
+
 use anyhow::{Result, anyhow};
 use futures::StreamExt;
 use prism_client::PrismClient;
@@ -8,8 +10,10 @@ use std::io::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use uuid::Uuid;
+use dirs;
 
 use crate::config::Config;
+use crate::memory::MemoryManager;
 use crate::session::Session;
 use crate::tools;
 
@@ -56,42 +60,60 @@ pub struct Agent {
     config: Config,
     session: Session,
     messages: Vec<Message>,
+    memory: MemoryManager,
 }
 
 impl Agent {
     pub fn new(client: PrismClient, config: Config, task: &str) -> Self {
         let episode_id = Uuid::new_v4();
         let session = Session::new(episode_id, task, &config.prism_model);
+        let memory_dir = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".prism/memory");
+        let memory = MemoryManager::new(&memory_dir, config.memory_window_size);
         Self {
             client,
             config,
             session,
             messages: Vec::new(),
+            memory,
         }
     }
 
     pub fn from_session(client: PrismClient, config: Config, session: Session) -> Self {
         let messages = session.messages.clone();
+        let memory_dir = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".prism/memory");
+        let memory = MemoryManager::new(&memory_dir, config.memory_window_size);
         Self {
             client,
             config,
             session,
             messages,
+            memory,
         }
     }
 
     pub async fn run(&mut self, task: &str) -> Result<()> {
         tracing::info!(episode_id = %self.session.episode_id, model = %self.config.prism_model, "starting agent session");
 
-        let system_prompt = self
+        let base_system_prompt = self
             .config
             .system_prompt
             .as_deref()
             .unwrap_or(SYSTEM_PROMPT);
 
+        let memory_content = self.memory.load();
+        let full_system = if memory_content.is_empty() {
+            base_system_prompt.to_string()
+        } else {
+            format!("## Persistent Memory\n{memory_content}\n\n---\n\n{base_system_prompt}")
+        };
+
         self.messages.push(Message {
             role: "system".into(),
-            content: Some(json!(system_prompt)),
+            content: Some(json!(full_system)),
             name: None,
             tool_calls: None,
             tool_call_id: None,
@@ -357,7 +379,37 @@ impl Agent {
                         eprintln!("[tool] {name}  args={args_preview}");
 
                         let t0 = std::time::Instant::now();
-                        let result = tools::dispatch(name, &args).await;
+                        let result = if name == "save_memory" {
+                            let key = args["key"].as_str().unwrap_or("note").to_string();
+                            let value = args["value"].as_str().unwrap_or("").to_string();
+                            self.memory.append(key.clone(), value);
+                            serde_json::json!({"saved": true, "key": key}).to_string()
+                        } else if name == "spawn_agent" {
+                            let task = args["task"].as_str().unwrap_or("").to_string();
+                            let model = args["model"].as_str().map(str::to_string);
+                            let cost_cap = args["cost_cap"].as_f64();
+                            let timeout_secs = args["timeout_secs"].as_u64();
+                            let spawn_config = spawn::SpawnConfig {
+                                task,
+                                model,
+                                cost_cap,
+                                tools: None,
+                                timeout_secs,
+                            };
+                            match spawn::spawn_agent(
+                                spawn_config,
+                                &self.config.prism_url,
+                                &self.config.prism_api_key,
+                            )
+                            .await
+                            {
+                                Ok(r) => serde_json::to_string(&r)
+                                    .unwrap_or_else(|_| r.summary.clone()),
+                                Err(e) => format!("{{\"status\":\"error\",\"summary\":\"{e}\"}}"),
+                            }
+                        } else {
+                            tools::dispatch(name, &args).await
+                        };
                         let result =
                             truncate_tool_output(name, &result, self.config.max_tool_output);
                         let elapsed_ms = t0.elapsed().as_millis();
@@ -391,6 +443,11 @@ impl Agent {
                 }
                 Some(other) => anyhow::bail!("unexpected finish_reason: {other}"),
             }
+        }
+
+        // Flush any pending memory entries to disk
+        if let Err(e) = self.memory.flush() {
+            tracing::warn!("memory flush failed: {e}");
         }
 
         let cost_str = if total_cost_usd > 0.0 {

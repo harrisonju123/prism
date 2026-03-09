@@ -4,6 +4,7 @@ pub mod azure_openai;
 pub mod bedrock;
 pub mod google;
 pub mod groq;
+pub mod health;
 pub mod mistral;
 pub mod openai;
 
@@ -86,11 +87,14 @@ impl ProviderRegistry {
                             .api_base
                             .as_deref()
                             .unwrap_or("https://api.anthropic.com");
-                        Some(Arc::new(anthropic::AnthropicProvider::new(
-                            key,
-                            base.to_string(),
-                            http_client.clone(),
-                        )))
+                        Some(Arc::new(
+                            anthropic::AnthropicProvider::new(
+                                key,
+                                base.to_string(),
+                                http_client.clone(),
+                            )
+                            .with_prompt_caching(config.prompt_caching),
+                        ))
                     }
                     "google" => {
                         let key = resolve_env_var(config.api_key.as_deref().unwrap_or(""));
@@ -258,6 +262,7 @@ mod tests {
             provider_type: provider_type.map(|s| s.to_string()),
             region: None,
             extra: HashMap::new(),
+            prompt_caching: true,
         }
     }
 
@@ -372,6 +377,7 @@ mod tests {
             provider_type: None,
             region: None,
             extra,
+            prompt_caching: true,
         }
     }
 
@@ -406,6 +412,7 @@ mod tests {
             provider_type: None,
             region: None,
             extra,
+            prompt_caching: true,
         };
         let mut configs = HashMap::new();
         configs.insert("azure".to_string(), config);
@@ -423,6 +430,7 @@ mod tests {
             provider_type: None,
             region: None,
             extra,
+            prompt_caching: true,
         };
         let mut configs = HashMap::new();
         configs.insert("azure".to_string(), config);

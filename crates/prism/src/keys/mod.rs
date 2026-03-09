@@ -1,9 +1,11 @@
+pub mod audit;
 pub mod budget;
 #[cfg(feature = "jwt")]
 pub mod jwt;
 pub mod rate_limit;
 pub mod virtual_key;
 
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use axum::extract::FromRequestParts;
@@ -42,6 +44,14 @@ pub struct VirtualKey {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
+    pub rotation_interval_days: Option<i32>,
+    pub last_rotated_at: Option<DateTime<Utc>>,
+    /// JSON TEXT array of CIDR strings (e.g. `["10.0.0.0/8"]`). Null = allow all.
+    #[cfg_attr(feature = "postgres", sqlx(default))]
+    pub allowed_ips: Option<String>,
+    /// JSON TEXT array of origin strings (e.g. `["https://app.example.com"]`). Null = allow all.
+    #[cfg_attr(feature = "postgres", sqlx(default))]
+    pub allowed_origins: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -60,6 +70,8 @@ pub struct AuthContext {
     pub monthly_budget_usd: Option<f64>,
     pub budget_action: budget::BudgetAction,
     pub allowed_models: Vec<String>,
+    /// Parsed allowed origins for per-key CORS (empty = allow all).
+    pub allowed_origins: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -117,6 +129,24 @@ impl<S: Send + Sync> FromRequestParts<S> for MaybeAuth {
             return Err(PrismError::Unauthorized);
         }
 
+        // Enforce IP allowlist
+        if let Some(ref allowed_ips_json) = vk.allowed_ips {
+            if let Ok(cidrs) = serde_json::from_str::<Vec<String>>(allowed_ips_json) {
+                if !cidrs.is_empty() {
+                    let client_ip = extract_client_ip(parts);
+                    if !ip_is_allowed(client_ip.as_deref(), &cidrs) {
+                        return Err(PrismError::Forbidden);
+                    }
+                }
+            }
+        }
+
+        let allowed_origins: Vec<String> = vk
+            .allowed_origins
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default();
+
         Ok(MaybeAuth(Some(AuthContext {
             key_id: vk.id,
             key_hash: vk.key_hash,
@@ -128,6 +158,7 @@ impl<S: Send + Sync> FromRequestParts<S> for MaybeAuth {
             monthly_budget_usd: vk.monthly_budget_usd,
             budget_action: budget::BudgetAction::from_str_lossy(&vk.budget_action),
             allowed_models: vk.allowed_models,
+            allowed_origins,
         })))
     }
 }
@@ -251,6 +282,43 @@ pub fn hash_key(plaintext: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(plaintext.as_bytes());
     hex::encode(hasher.finalize())
+}
+
+/// Extract the client IP address from request headers (X-Forwarded-For → X-Real-IP → None).
+pub fn extract_client_ip(parts: &Parts) -> Option<String> {
+    // X-Forwarded-For: client, proxy1, proxy2 — take first hop
+    if let Some(xff) = parts.headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+        if let Some(first) = xff.split(',').next() {
+            return Some(first.trim().to_string());
+        }
+    }
+    // X-Real-IP
+    if let Some(xri) = parts.headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+        return Some(xri.trim().to_string());
+    }
+    None
+}
+
+/// Check whether `client_ip` matches at least one CIDR in `cidrs`.
+/// Returns `false` if `client_ip` is `None` (IP extraction failed) — fails closed when allowlist is set.
+/// Returns `false` if the IP does not match any CIDR in the list.
+pub fn ip_is_allowed(client_ip: Option<&str>, cidrs: &[String]) -> bool {
+    let ip_str = match client_ip {
+        Some(ip) => ip,
+        None => return false, // IP extraction failed — deny if allowlist is set
+    };
+    let addr: IpAddr = match ip_str.parse() {
+        Ok(a) => a,
+        Err(_) => return false,
+    };
+    for cidr in cidrs {
+        if let Ok(network) = cidr.parse::<ipnetwork::IpNetwork>() {
+            if network.contains(addr) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Check if a key has the expected format: `prism_` followed by exactly 32 hex chars.

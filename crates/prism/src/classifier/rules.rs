@@ -37,6 +37,15 @@ impl RulesClassifier {
         let mut scores: HashMap<TaskType, f64> = HashMap::new();
         let mut signals: Vec<String> = Vec::new();
 
+        // Signal: fim_suffix_present — structural property, checked first
+        if input.has_fim {
+            return ClassificationResult {
+                task_type: TaskType::FillInTheMiddle,
+                confidence: 1.0,
+                signals: vec!["fim_suffix_present".into()],
+            };
+        }
+
         // Signal: tool_array_present
         if input.has_tools {
             *scores.entry(TaskType::ToolSelection).or_default() += 0.15;
@@ -199,6 +208,7 @@ mod tests {
             output_format_hint: None,
             last_user_message: msg.into(),
             system_prompt_text: None,
+            has_fim: false,
         }
     }
 
@@ -269,5 +279,24 @@ mod tests {
             "got {:?}",
             result.task_type
         );
+    }
+
+    #[test]
+    fn classify_fim_structural_signal() {
+        let mut input = input_with_user_message("def add(a, b):");
+        input.has_fim = true;
+        let result = RulesClassifier::classify(&input);
+        assert_eq!(result.task_type, TaskType::FillInTheMiddle);
+        assert_eq!(result.confidence, 1.0);
+        assert!(result.signals.contains(&"fim_suffix_present".to_string()));
+    }
+
+    #[test]
+    fn classify_fim_wins_over_other_signals() {
+        let mut input = input_with_user_message("write a function to sort a list");
+        input.has_fim = true;
+        input.has_code_fence_in_system = true;
+        let result = RulesClassifier::classify(&input);
+        assert_eq!(result.task_type, TaskType::FillInTheMiddle);
     }
 }

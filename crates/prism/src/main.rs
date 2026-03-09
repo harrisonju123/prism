@@ -40,9 +40,11 @@ use crate::config::Config;
 use crate::experiment::engine::ExperimentEngine;
 use crate::experiment::feedback::FeedbackEvent;
 use crate::keys::KeyService;
+use crate::keys::audit::AuditService;
 use crate::keys::budget::BudgetTracker;
 use crate::keys::rate_limit::RateLimiter;
 use crate::keys::virtual_key::KeyRepository;
+use crate::models::alias::{AliasCache, AliasRepository};
 use crate::mcp::types::McpCall;
 use crate::mcp::writer::McpWriter;
 use crate::observability::writer::{BenchmarkWriter, FeedbackWriter, InferenceWriter};
@@ -51,19 +53,61 @@ use crate::types::InferenceEvent;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "prism=info,tower_http=info".into()),
-        )
-        .init();
+    // Load config first so logging can be configured from it
+    let config = Config::load(None).map_err(|e| anyhow::anyhow!("config error: {e}"))?;
+
+    // Initialize tracing — JSON, Loki, or plain text based on config
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "prism=info,tower_http=info".into());
+
+    #[cfg(feature = "tracing-loki")]
+    {
+        if let Some(ref loki_url) = config.logging.loki_url {
+            let mut builder = tracing_loki::builder().label("service", "prism")?;
+            for (k, v) in &config.logging.loki_labels {
+                builder = builder.extra_field(k, v)?;
+            }
+            let (loki_layer, loki_task) = builder.build_url(loki_url.parse()?)?;
+            tokio::spawn(loki_task);
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(tracing_subscriber::fmt::layer().json())
+                .with(loki_layer)
+                .init();
+        } else if config.logging.format == "json" {
+            tracing_subscriber::fmt()
+                .json()
+                .with_env_filter(env_filter)
+                .init();
+        } else {
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .init();
+        }
+    }
+
+    #[cfg(not(feature = "tracing-loki"))]
+    if config.logging.format == "json" {
+        tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(env_filter)
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(env_filter)
+            .init();
+    }
 
     // Initialize start time for health endpoint
     crate::api::health::init_start_time();
 
-    // Load config
-    let config = Config::load(None).map_err(|e| anyhow::anyhow!("config error: {e}"))?;
+    // Initialize OpenTelemetry tracer (if enabled)
+    #[cfg(feature = "otel")]
+    if config.otel.enabled {
+        if let Err(e) = observability::otel::init_tracer(&config.otel) {
+            tracing::warn!(error = %e, "OTEL tracer init failed — continuing without traces");
+        }
+    }
     tracing::info!(
         address = %config.gateway.address,
         providers = ?config.providers.keys().collect::<Vec<_>>(),
@@ -160,6 +204,22 @@ async fn main() -> anyhow::Result<()> {
         let tenant_users_sql = include_str!("../migrations/postgres/005_tenant_users.sql");
         if let Err(e) = sqlx::raw_sql(tenant_users_sql).execute(pool).await {
             tracing::warn!(error = %e, "005_tenant_users migration failed (may already exist)");
+        }
+        let aliases_sql = include_str!("../migrations/postgres/006_model_aliases.sql");
+        if let Err(e) = sqlx::raw_sql(aliases_sql).execute(pool).await {
+            tracing::warn!(error = %e, "006_model_aliases migration failed (may already exist)");
+        }
+        let audit_sql = include_str!("../migrations/postgres/007_audit_events.sql");
+        if let Err(e) = sqlx::raw_sql(audit_sql).execute(pool).await {
+            tracing::warn!(error = %e, "007_audit_events migration failed (may already exist)");
+        }
+        let rotation_sched_sql = include_str!("../migrations/postgres/008_rotation_scheduler.sql");
+        if let Err(e) = sqlx::raw_sql(rotation_sched_sql).execute(pool).await {
+            tracing::warn!(error = %e, "008_rotation_scheduler migration failed (may already exist)");
+        }
+        let ip_cors_sql = include_str!("../migrations/postgres/009_key_ip_cors.sql");
+        if let Err(e) = sqlx::raw_sql(ip_cors_sql).execute(pool).await {
+            tracing::warn!(error = %e, "009_key_ip_cors migration failed (may already exist)");
         }
         tracing::info!("additional postgres migrations applied");
     }
@@ -515,6 +575,27 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // --- Budget Watcher ---
+    #[cfg(feature = "postgres")]
+    if config.keys.budget_alerts.enabled {
+        let budget_repo = key_service.as_deref().map(|ks| ks.repo().clone());
+        if let Some(repo) = budget_repo {
+            tracing::info!(
+                warn_pct = config.keys.budget_alerts.warn_threshold_pct,
+                interval_secs = config.keys.budget_alerts.check_interval_secs,
+                "budget alerting enabled"
+            );
+            let watcher = crate::alerts::budget_watcher::BudgetWatcher::new(
+                config.keys.budget_alerts.clone(),
+                budget_tracker.clone(),
+                repo,
+                config.smtp.clone(),
+            );
+            let cancel = cancel.clone();
+            tokio::spawn(watcher.run(cancel));
+        }
+    }
+
     // --- Session Tracker ---
     let session_tracker = Arc::new(tokio::sync::Mutex::new(
         crate::routing::session::SessionTracker::new(),
@@ -594,6 +675,76 @@ async fn main() -> anyhow::Result<()> {
     let metrics_collector = Arc::new(crate::observability::metrics::MetricsCollector::new());
     tracing::info!("prometheus metrics enabled at /metrics");
 
+    // --- Phase 4: AuditService, AliasRepository/Cache, ProviderHealthTracker ---
+    #[cfg(feature = "postgres")]
+    let (audit_service, alias_repo, alias_cache) = if let Some(ref ks) = key_service {
+        let pool = ks.repo().pool().clone();
+
+        let audit_svc = Arc::new(AuditService::new(pool.clone()));
+        let alias_repository = Arc::new(AliasRepository::new(pool.clone()));
+        let alias_cache_instance = AliasCache::new();
+
+        // Pre-load all DB aliases into cache
+        match alias_repository.load_all_pairs().await {
+            Ok(pairs) => {
+                alias_cache_instance.load_all(pairs).await;
+                tracing::info!("model alias cache loaded");
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load model aliases into cache");
+            }
+        }
+
+        (Some(audit_svc), Some(alias_repository), Some(alias_cache_instance))
+    } else {
+        (None, None, None)
+    };
+
+    #[cfg(not(feature = "postgres"))]
+    let (audit_service, alias_repo, alias_cache): (
+        Option<Arc<AuditService>>,
+        Option<Arc<AliasRepository>>,
+        Option<Arc<AliasCache>>,
+    ) = (None, None, None);
+
+    // Provider health tracker
+    let health_tracker = Arc::new(crate::providers::health::ProviderHealthTracker::new(3));
+    {
+        let tracker = health_tracker.clone();
+        let reg = registry.clone();
+        let hc = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap_or_default();
+        let cancel = cancel.clone();
+        tokio::spawn(crate::providers::health::spawn_health_checker(
+            tracker, reg, hc, 30, cancel,
+        ));
+    }
+
+    // Rotation scheduler — runs every hour, rotates due keys, logs audit events
+    // Clone what we need before key_service is moved into AppState.
+    #[cfg(feature = "postgres")]
+    {
+        let rotation_repo: Option<KeyRepository> = key_service
+            .as_deref()
+            .map(|ks| ks.repo().clone());
+        let rotation_audit = audit_service.clone();
+        if let (Some(repo), Some(audit)) = (rotation_repo, rotation_audit) {
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = tokio::time::sleep(Duration::from_secs(3600)) => {
+                            rotate_due_keys(&repo, &audit).await;
+                        }
+                        _ = cancel.cancelled() => break,
+                    }
+                }
+            });
+        }
+    }
+
     // Build app state
     let state = Arc::new(
         crate::proxy::AppStateBuilder::new(config.clone())
@@ -619,6 +770,10 @@ async fn main() -> anyhow::Result<()> {
             .with_interop_bridge_opt(interop_bridge)
             .with_interop_metering_opt(interop_metering)
             .with_metrics(metrics_collector)
+            .with_health_tracker_opt(Some(health_tracker))
+            .with_audit_service_opt(audit_service)
+            .with_alias_cache_opt(alias_cache)
+            .with_alias_repo_opt(alias_repo)
             .build()
             .expect("AppState construction is infallible after main.rs init"),
     );
@@ -652,6 +807,10 @@ async fn main() -> anyhow::Result<()> {
             tracing::warn!("writers did not shut down in time");
         }
     }
+
+    // Shutdown OpenTelemetry tracer provider
+    #[cfg(feature = "otel")]
+    observability::otel::shutdown();
 
     tracing::info!("prism stopped");
     Ok(())
@@ -727,6 +886,55 @@ async fn reconcile_budgets(
     tracing::debug!(keys = daily_map.len(), "budget reconciliation complete");
 
     Ok(())
+}
+
+/// Rotate all virtual keys whose rotation interval has elapsed.
+#[cfg(feature = "postgres")]
+async fn rotate_due_keys(repo: &KeyRepository, audit: &AuditService) {
+    match repo.find_keys_due_for_rotation().await {
+        Ok(due_keys) => {
+            for vk in due_keys {
+                let key_id = vk.id;
+                let new_plaintext = crate::keys::generate_key();
+                let new_hash = crate::keys::hash_key(&new_plaintext);
+                let new_prefix = new_plaintext[..10].to_string();
+                match repo.rotate_key(key_id, &new_hash, &new_prefix, 24).await {
+                    Ok(Some(new_key)) => {
+                        tracing::info!(
+                            key_id = %key_id,
+                            new_key_id = %new_key.id,
+                            "rotation scheduler: rotated key"
+                        );
+                        audit.log(
+                            crate::keys::audit::AuditEventType::KeyRotated,
+                            Some(key_id),
+                            None,
+                            Some("rotation_scheduler".to_string()),
+                            serde_json::json!({
+                                "old_key_id": key_id,
+                                "new_key_id": new_key.id,
+                                "new_key_prefix": new_prefix,
+                            }),
+                            None,
+                        );
+                    }
+                    Ok(None) => {
+                        tracing::warn!(key_id = %key_id, "rotation scheduler: key not found");
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            key_id = %key_id,
+                            error = %e,
+                            "rotation scheduler: rotate_key failed"
+                        );
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "rotation scheduler: find_keys_due_for_rotation failed");
+        }
+    }
 }
 
 async fn shutdown_signal(cancel: CancellationToken) {

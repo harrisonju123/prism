@@ -103,6 +103,7 @@ pub async fn start_embedded_with(
                 provider_type: None,
                 region: None,
                 extra: HashMap::new(),
+                prompt_caching: true,
             },
         );
     }

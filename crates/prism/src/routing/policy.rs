@@ -86,6 +86,7 @@ fn build_default_policy() -> RoutingPolicy {
         "architecture",
         "debugging",
         "refactoring",
+        "fill_in_the_middle",
     ];
 
     let mut rules = Vec::new();
@@ -99,6 +100,7 @@ fn build_default_policy() -> RoutingPolicy {
             max_cost_per_1k: None,
             max_latency_ms: None,
             fallback: None,
+            fallback_chain: vec![],
         });
     }
 
@@ -110,6 +112,7 @@ fn build_default_policy() -> RoutingPolicy {
         max_cost_per_1k: None,
         max_latency_ms: None,
         fallback: None,
+        fallback_chain: vec![],
     });
 
     RoutingPolicy { rules, version: 0 }
@@ -159,6 +162,7 @@ rules:
                 max_cost_per_1k: None,
                 max_latency_ms: None,
                 fallback: None,
+                fallback_chain: vec![],
             }],
             version: 0,
         };
@@ -177,6 +181,7 @@ rules:
                     max_cost_per_1k: None,
                     max_latency_ms: None,
                     fallback: None,
+                    fallback_chain: vec![],
                 },
                 RoutingRule {
                     task_type: "code_generation".into(),
@@ -185,6 +190,7 @@ rules:
                     max_cost_per_1k: None,
                     max_latency_ms: None,
                     fallback: None,
+                    fallback_chain: vec![],
                 },
             ],
             version: 0,
@@ -204,6 +210,7 @@ rules:
                     max_cost_per_1k: Some(0.05),
                     max_latency_ms: Some(5000),
                     fallback: Some("gpt-4o".into()),
+                    fallback_chain: vec![],
                 },
                 RoutingRule {
                     task_type: "*".into(),
@@ -212,6 +219,7 @@ rules:
                     max_cost_per_1k: None,
                     max_latency_ms: None,
                     fallback: None,
+                    fallback_chain: vec![],
                 },
             ],
             version: 1,

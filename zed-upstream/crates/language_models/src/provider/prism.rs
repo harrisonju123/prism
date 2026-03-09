@@ -49,6 +49,7 @@ const DEFAULT_API_URL: &str = "http://localhost:9100/v1";
 #[derive(Default, Clone, Debug, PartialEq)]
 pub struct PrismSettings {
     pub api_url: String,
+    pub api_key: Option<String>,
     pub available_models: Vec<AvailableModel>,
 }
 
@@ -98,13 +99,16 @@ impl State {
     /// since the embedded gateway has no virtual key service and accepts any Bearer token.
     fn effective_api_key(&self) -> Option<Arc<str>> {
         let url = &self.settings.api_url;
-        self.api_key_state.key(url).or_else(|| {
-            if self.sidecar_status == SidecarStatus::Embedded {
-                Some(Arc::from("embedded"))
-            } else {
-                None
-            }
-        })
+        self.api_key_state
+            .key(url)
+            .or_else(|| self.settings.api_key.as_deref().map(Arc::from))
+            .or_else(|| {
+                if self.sidecar_status == SidecarStatus::Embedded {
+                    Some(Arc::from("embedded"))
+                } else {
+                    None
+                }
+            })
     }
 
     fn set_api_key(&mut self, api_key: Option<String>, cx: &mut Context<Self>) -> Task<Result<()>> {
@@ -1005,38 +1009,39 @@ impl PrismEditPredictionDelegate {
         api_key: Arc<str>,
         api_url: String,
         model: String,
-        fim_string: String,
+        prompt: String,
+        suffix: String,
     ) -> Result<String> {
         #[derive(serde::Serialize)]
-        struct PrismEditRequest {
+        struct CompletionsRequest {
             model: String,
             prompt: String,
+            suffix: String,
             max_tokens: u32,
             #[serde(skip_serializing_if = "Vec::is_empty")]
             stop: Vec<String>,
+            stream: bool,
         }
 
         #[derive(serde::Deserialize)]
-        struct PrismEditResponse {
-            choices: Vec<PrismEditChoice>,
+        struct CompletionsResponse {
+            choices: Vec<CompletionsChoice>,
         }
 
         #[derive(serde::Deserialize)]
-        struct PrismEditChoice {
+        struct CompletionsChoice {
             text: String,
         }
 
-        let endpoint = format!("{}/edit_predictions", api_url.trim_end_matches('/'));
+        let endpoint = format!("{}/completions", api_url.trim_end_matches('/'));
 
-        let body = serde_json::to_string(&PrismEditRequest {
+        let body = serde_json::to_string(&CompletionsRequest {
             model,
-            prompt: fim_string,
+            prompt,
+            suffix,
             max_tokens: 350,
-            stop: vec![
-                "<fim_prefix>".to_string(),
-                "<fim_suffix>".to_string(),
-                "<fim_middle>".to_string(),
-            ],
+            stop: vec![],
+            stream: false,
         })?;
 
         let request = HttpRequest::builder()
@@ -1065,13 +1070,13 @@ impl PrismEditPredictionDelegate {
             .read_to_string(&mut response_body)
             .await?;
 
-        let parsed: PrismEditResponse = serde_json::from_str(&response_body)?;
+        let parsed: CompletionsResponse = serde_json::from_str(&response_body)?;
         parsed
             .choices
             .into_iter()
             .next()
             .map(|c| c.text)
-            .ok_or_else(|| anyhow::anyhow!("PrisM edit prediction returned no choices"))
+            .ok_or_else(|| anyhow::anyhow!("PrisM completions returned no choices"))
     }
 }
 
@@ -1152,11 +1157,12 @@ impl EditPredictionDelegate for PrismEditPredictionDelegate {
                     .min(excerpt_text.len());
                 let prompt = excerpt_text[..cursor_within_excerpt].to_string();
                 let suffix = excerpt_text[cursor_within_excerpt..].to_string();
-                let fim_string = format!("{prompt}<fim_suffix>{suffix}<fim_middle>");
 
                 let completion_text =
-                    match Self::fetch_completion(http_client, api_key, api_url, model, fim_string)
-                        .await
+                    match Self::fetch_completion(
+                        http_client, api_key, api_url, model, prompt, suffix,
+                    )
+                    .await
                     {
                         Ok(text) => text,
                         Err(e) => {

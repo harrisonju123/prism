@@ -284,4 +284,32 @@ pub trait Store: Send + Sync {
     async fn get_workspace_context(&self, workspace_id: Uuid) -> Result<WorkspaceContext>;
     async fn get_next_tasks(&self, workspace_id: Uuid, limit: i64) -> Result<Vec<TaskSummary>>;
     async fn get_stale_tasks(&self, workspace_id: Uuid) -> Result<Vec<TaskSummary>>;
+
+    // --- Sprint ---
+    async fn create_sprint(
+        &self,
+        workspace_id: Uuid,
+        name: &str,
+        goal: &str,
+        start_date: Option<chrono::NaiveDate>,
+        end_date: Option<chrono::NaiveDate>,
+    ) -> Result<Sprint>;
+    async fn list_sprints(&self, workspace_id: Uuid) -> Result<Vec<Sprint>>;
+    async fn get_sprint(&self, id: Uuid) -> Result<Sprint>;
+    async fn close_sprint(&self, id: Uuid) -> Result<Sprint>;
+    async fn assign_task_to_sprint(&self, task_id: Uuid, sprint_id: Uuid) -> Result<()>;
+    async fn sprint_velocity(&self, sprint_id: Uuid) -> Result<SprintVelocity>;
+
+    // --- GitHub Sync ---
+    async fn upsert_task_by_github_id(
+        &self,
+        workspace_id: Uuid,
+        epic_id: Uuid,
+        github_issue_id: i64,
+        name: &str,
+        description: &str,
+    ) -> Result<Task>;
+
+    // --- Agent Metrics ---
+    async fn agent_metrics(&self, workspace_id: Uuid) -> Result<Vec<AgentMetrics>>;
 }

@@ -103,6 +103,7 @@ impl KeyCache {
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "postgres")]
+#[derive(Clone)]
 pub struct KeyRepository {
     pool: PgPool,
 }
@@ -123,6 +124,9 @@ pub struct CreateKeyParams {
     pub allowed_models: Vec<String>,
     pub metadata: serde_json::Value,
     pub expires_at: Option<DateTime<Utc>>,
+    pub rotation_interval_days: Option<i32>,
+    pub allowed_ips: Option<String>,
+    pub allowed_origins: Option<String>,
 }
 
 /// Parameters for updating an existing virtual key.
@@ -139,6 +143,8 @@ pub struct UpdateKeyParams {
     pub allowed_models: Option<Vec<String>>,
     pub metadata: Option<serde_json::Value>,
     pub expires_at: Option<Option<DateTime<Utc>>>,
+    pub allowed_ips: Option<Option<String>>,
+    pub allowed_origins: Option<Option<String>>,
 }
 
 #[cfg(feature = "postgres")]
@@ -155,7 +161,8 @@ impl KeyRepository {
         sqlx::query_as::<_, VirtualKey>(
             r#"SELECT id, name, key_hash, key_prefix, team_id, is_active,
                       rpm_limit, tpm_limit, daily_budget_usd, monthly_budget_usd,
-                      budget_action, allowed_models, metadata, created_at, updated_at, expires_at
+                      budget_action, allowed_models, metadata, created_at, updated_at, expires_at,
+                      rotation_interval_days, last_rotated_at, allowed_ips, allowed_origins
                FROM virtual_keys
                WHERE key_hash = $1 AND is_active = TRUE"#,
         )
@@ -168,11 +175,13 @@ impl KeyRepository {
         sqlx::query_as::<_, VirtualKey>(
             r#"INSERT INTO virtual_keys (name, key_hash, key_prefix, team_id, rpm_limit, tpm_limit,
                                          daily_budget_usd, monthly_budget_usd, budget_action,
-                                         allowed_models, metadata, expires_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                                         allowed_models, metadata, expires_at, rotation_interval_days,
+                                         allowed_ips, allowed_origins)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                RETURNING id, name, key_hash, key_prefix, team_id, is_active,
                          rpm_limit, tpm_limit, daily_budget_usd, monthly_budget_usd,
-                         budget_action, allowed_models, metadata, created_at, updated_at, expires_at"#,
+                         budget_action, allowed_models, metadata, created_at, updated_at, expires_at,
+                         rotation_interval_days, last_rotated_at, allowed_ips, allowed_origins"#,
         )
         .bind(&params.name)
         .bind(&params.key_hash)
@@ -186,6 +195,9 @@ impl KeyRepository {
         .bind(&params.allowed_models)
         .bind(&params.metadata)
         .bind(params.expires_at)
+        .bind(params.rotation_interval_days)
+        .bind(&params.allowed_ips)
+        .bind(&params.allowed_origins)
         .fetch_one(&self.pool)
         .await
     }
@@ -194,7 +206,8 @@ impl KeyRepository {
         sqlx::query_as::<_, VirtualKey>(
             r#"SELECT id, name, key_hash, key_prefix, team_id, is_active,
                       rpm_limit, tpm_limit, daily_budget_usd, monthly_budget_usd,
-                      budget_action, allowed_models, metadata, created_at, updated_at, expires_at
+                      budget_action, allowed_models, metadata, created_at, updated_at, expires_at,
+                      rotation_interval_days, last_rotated_at, allowed_ips, allowed_origins
                FROM virtual_keys
                ORDER BY created_at DESC
                LIMIT $1 OFFSET $2"#,
@@ -234,11 +247,14 @@ impl KeyRepository {
                 allowed_models = COALESCE($14, allowed_models),
                 metadata = COALESCE($15, metadata),
                 expires_at = CASE WHEN $16::boolean THEN $17 ELSE expires_at END,
+                allowed_ips = CASE WHEN $18::boolean THEN $19 ELSE allowed_ips END,
+                allowed_origins = CASE WHEN $20::boolean THEN $21 ELSE allowed_origins END,
                 updated_at = NOW()
                WHERE id = $1
                RETURNING id, name, key_hash, key_prefix, team_id, is_active,
                          rpm_limit, tpm_limit, daily_budget_usd, monthly_budget_usd,
-                         budget_action, allowed_models, metadata, created_at, updated_at, expires_at"#,
+                         budget_action, allowed_models, metadata, created_at, updated_at, expires_at,
+                         rotation_interval_days, last_rotated_at, allowed_ips, allowed_origins"#,
         )
         .bind(id)
         .bind(params.name)
@@ -257,6 +273,10 @@ impl KeyRepository {
         .bind(params.metadata)
         .bind(params.expires_at.is_some())
         .bind(params.expires_at.flatten())
+        .bind(params.allowed_ips.is_some())
+        .bind(params.allowed_ips.flatten())
+        .bind(params.allowed_origins.is_some())
+        .bind(params.allowed_origins.flatten())
         .fetch_optional(&self.pool)
         .await?;
         Ok(row)
@@ -288,11 +308,13 @@ impl KeyRepository {
         let new_key = sqlx::query_as::<_, VirtualKey>(
             r#"INSERT INTO virtual_keys (name, key_hash, key_prefix, team_id, rpm_limit, tpm_limit,
                                          daily_budget_usd, monthly_budget_usd, budget_action,
-                                         allowed_models, metadata, rotation_interval_days, rotated_from, grace_period_hours)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                                         allowed_models, metadata, rotation_interval_days, rotated_from, grace_period_hours,
+                                         allowed_ips, allowed_origins)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
                RETURNING id, name, key_hash, key_prefix, team_id, is_active,
                          rpm_limit, tpm_limit, daily_budget_usd, monthly_budget_usd,
-                         budget_action, allowed_models, metadata, created_at, updated_at, expires_at"#,
+                         budget_action, allowed_models, metadata, created_at, updated_at, expires_at,
+                         rotation_interval_days, last_rotated_at, allowed_ips, allowed_origins"#,
         )
         .bind(&old_key.name)
         .bind(new_key_hash)
@@ -305,10 +327,20 @@ impl KeyRepository {
         .bind(&old_key.budget_action)
         .bind(&old_key.allowed_models)
         .bind(&old_key.metadata)
-        .bind::<Option<i32>>(None) // rotation_interval_days from old key (not in select)
+        .bind(old_key.rotation_interval_days)
         .bind(id) // rotated_from
         .bind(grace_period_hours as i32)
+        .bind(&old_key.allowed_ips)
+        .bind(&old_key.allowed_origins)
         .fetch_one(&self.pool)
+        .await?;
+
+        // Stamp last_rotated_at on the OLD key record
+        sqlx::query(
+            "UPDATE virtual_keys SET last_rotated_at = NOW(), updated_at = NOW() WHERE id = $1",
+        )
+        .bind(id)
+        .execute(&self.pool)
         .await?;
 
         Ok(Some(new_key))
@@ -319,12 +351,47 @@ impl KeyRepository {
         sqlx::query_as::<_, VirtualKey>(
             r#"SELECT id, name, key_hash, key_prefix, team_id, is_active,
                       rpm_limit, tpm_limit, daily_budget_usd, monthly_budget_usd,
-                      budget_action, allowed_models, metadata, created_at, updated_at, expires_at
+                      budget_action, allowed_models, metadata, created_at, updated_at, expires_at,
+                      rotation_interval_days, last_rotated_at, allowed_ips, allowed_origins
                FROM virtual_keys
                WHERE id = $1"#,
         )
         .bind(id)
         .fetch_optional(&self.pool)
+        .await
+    }
+
+    /// Find active keys that have at least one budget limit configured.
+    pub async fn find_keys_with_budgets(&self) -> sqlx::Result<Vec<VirtualKey>> {
+        sqlx::query_as::<_, VirtualKey>(
+            r#"SELECT id, name, key_hash, key_prefix, team_id, is_active,
+                      rpm_limit, tpm_limit, daily_budget_usd, monthly_budget_usd,
+                      budget_action, allowed_models, metadata, created_at, updated_at, expires_at,
+                      rotation_interval_days, last_rotated_at, allowed_ips, allowed_origins
+               FROM virtual_keys
+               WHERE is_active = TRUE
+                 AND (daily_budget_usd IS NOT NULL OR monthly_budget_usd IS NOT NULL)"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// Find keys that are due for rotation.
+    pub async fn find_keys_due_for_rotation(&self) -> sqlx::Result<Vec<VirtualKey>> {
+        sqlx::query_as::<_, VirtualKey>(
+            r#"SELECT id, name, key_hash, key_prefix, team_id, is_active,
+                      rpm_limit, tpm_limit, daily_budget_usd, monthly_budget_usd,
+                      budget_action, allowed_models, metadata, created_at, updated_at, expires_at,
+                      rotation_interval_days, last_rotated_at, allowed_ips, allowed_origins
+               FROM virtual_keys
+               WHERE is_active = TRUE
+                 AND rotation_interval_days IS NOT NULL
+                 AND (
+                   last_rotated_at IS NULL
+                   OR last_rotated_at + (rotation_interval_days || ' days')::interval < NOW()
+                 )"#,
+        )
+        .fetch_all(&self.pool)
         .await
     }
 }
@@ -353,6 +420,10 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             expires_at: None,
+            rotation_interval_days: None,
+            last_rotated_at: None,
+            allowed_ips: None,
+            allowed_origins: None,
         };
         cache.insert("hash1".into(), key.clone()).await;
         let got = cache.get("hash1").await;
@@ -386,6 +457,10 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             expires_at: None,
+            rotation_interval_days: None,
+            last_rotated_at: None,
+            allowed_ips: None,
+            allowed_origins: None,
         };
         cache.insert("hash1".into(), key).await;
         cache.invalidate("hash1").await;
@@ -413,6 +488,10 @@ mod tests {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 expires_at: None,
+                rotation_interval_days: None,
+                last_rotated_at: None,
+                allowed_ips: None,
+                allowed_origins: None,
             };
             cache.insert(format!("hash{i}"), key).await;
         }
@@ -442,6 +521,10 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             expires_at: None,
+            rotation_interval_days: None,
+            last_rotated_at: None,
+            allowed_ips: None,
+            allowed_origins: None,
         };
         cache.insert("hash1".into(), key).await;
         // With 0s TTL, the entry should be expired immediately

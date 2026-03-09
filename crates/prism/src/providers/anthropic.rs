@@ -19,6 +19,7 @@ pub struct AnthropicProvider {
     api_key: String,
     api_base: String,
     client: Client,
+    prompt_caching: bool,
 }
 
 impl AnthropicProvider {
@@ -27,7 +28,13 @@ impl AnthropicProvider {
             api_key,
             api_base,
             client,
+            prompt_caching: true,
         }
+    }
+
+    pub fn with_prompt_caching(mut self, enabled: bool) -> Self {
+        self.prompt_caching = enabled;
+        self
     }
 }
 
@@ -400,21 +407,29 @@ fn openai_to_anthropic_tool_choice(tc: &serde_json::Value) -> serde_json::Value 
     }
 }
 
-fn to_anthropic_request(req: &ChatCompletionRequest, model_id: &str) -> AnthropicRequest {
+fn to_anthropic_request(
+    req: &ChatCompletionRequest,
+    model_id: &str,
+    prompt_caching: bool,
+) -> AnthropicRequest {
     let mut system = None;
     let mut messages = Vec::new();
 
     for msg in &req.messages {
         if msg.role == "system" {
             // Anthropic uses a top-level system field.
-            // Format as content block array with cache_control for prompt caching.
+            // Inject cache_control for long system prompts when prompt caching is enabled.
             if let Some(content) = &msg.content {
                 let text = content_to_string(content);
-                system = Some(serde_json::json!([{
-                    "type": "text",
-                    "text": text,
-                    "cache_control": {"type": "ephemeral"}
-                }]));
+                system = if prompt_caching && text.len() >= 1024 {
+                    Some(serde_json::json!([{
+                        "type": "text",
+                        "text": text,
+                        "cache_control": {"type": "ephemeral"}
+                    }]))
+                } else {
+                    Some(serde_json::Value::String(text))
+                };
             }
         } else if msg.role == "tool" {
             // OpenAI tool result → Anthropic tool_result block in a user turn
@@ -590,7 +605,7 @@ impl Provider for AnthropicProvider {
         model_id: &str,
     ) -> Result<ProviderResponse> {
         let url = format!("{}/v1/messages", self.api_base);
-        let body = to_anthropic_request(request, model_id);
+        let body = to_anthropic_request(request, model_id, self.prompt_caching);
 
         let resp = self
             .client
@@ -692,7 +707,7 @@ mod tests {
             ..Default::default()
         };
 
-        let anthropic_req = to_anthropic_request(&req, "claude-3-opus-20240229");
+        let anthropic_req = to_anthropic_request(&req, "claude-3-opus-20240229", true);
         assert_eq!(anthropic_req.system, Some("You are helpful.".into()));
         assert_eq!(anthropic_req.messages.len(), 1);
         assert_eq!(anthropic_req.messages[0].role, "user");
@@ -723,7 +738,7 @@ mod tests {
             ..Default::default()
         };
 
-        let anthropic_req = to_anthropic_request(&req, "claude-3");
+        let anthropic_req = to_anthropic_request(&req, "claude-3", true);
         assert_eq!(anthropic_req.messages.len(), 2);
         assert_eq!(anthropic_req.messages[0].role, "user");
         assert_eq!(anthropic_req.messages[1].role, "assistant");
@@ -753,7 +768,7 @@ mod tests {
             ..Default::default()
         };
 
-        let anthropic_req = to_anthropic_request(&req, "claude-3");
+        let anthropic_req = to_anthropic_request(&req, "claude-3", true);
         let tools = anthropic_req.tools.unwrap();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["name"], "get_weather");
@@ -819,7 +834,7 @@ mod tests {
             messages: vec![],
             ..Default::default()
         };
-        let anthropic_req = to_anthropic_request(&req, "claude-3");
+        let anthropic_req = to_anthropic_request(&req, "claude-3", true);
         assert_eq!(anthropic_req.max_tokens, 4096);
     }
 
@@ -1002,7 +1017,7 @@ mod tests {
             ..Default::default()
         };
 
-        let anthropic_req = to_anthropic_request(&req, "claude-3");
+        let anthropic_req = to_anthropic_request(&req, "claude-3", true);
         // First message: assistant with tool_use block
         // Second message: user with tool_result block
         assert_eq!(anthropic_req.messages.len(), 2);
@@ -1033,7 +1048,7 @@ mod tests {
             ..Default::default()
         };
 
-        let anthropic_req = to_anthropic_request(&req, "claude-3");
+        let anthropic_req = to_anthropic_request(&req, "claude-3", true);
         assert_eq!(anthropic_req.messages.len(), 1);
         assert_eq!(anthropic_req.messages[0].role, "assistant");
         let blocks = anthropic_req.messages[0]

@@ -1,3 +1,12 @@
+/// Migration tracking table — created first on every startup.
+pub const MIGRATIONS_TABLE_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version String,
+    applied_at DateTime DEFAULT now()
+) ENGINE = ReplacingMergeTree()
+ORDER BY version
+"#;
+
 /// ClickHouse schema for PrisM. Applied on startup.
 pub const INFERENCE_EVENTS_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS inference_events (
@@ -203,16 +212,16 @@ FROM inference_events
 GROUP BY hour, model
 "#;
 
-/// All schemas to apply in order.
-pub const ALL_SCHEMAS: &[&str] = &[
-    INFERENCE_EVENTS_SCHEMA,
-    INFERENCE_EVENTS_MIGRATION_V2,
-    HOURLY_MODEL_STATS_SCHEMA,
-    DAILY_SUMMARY_SCHEMA,
-    FEEDBACK_EVENTS_SCHEMA,
-    BENCHMARK_EVENTS_SCHEMA,
-    MCP_CALLS_SCHEMA,
-    HOURLY_TASK_STATS_SCHEMA,
-    DAILY_SPEND_BY_KEY_SCHEMA,
-    HOURLY_ERROR_RATE_SCHEMA,
+/// Versioned migrations: (version_name, ddl). Applied in order, skipping already-applied ones.
+pub const MIGRATIONS: &[(&str, &str)] = &[
+    ("001_inference_events", INFERENCE_EVENTS_SCHEMA),
+    ("002_inference_events_v2", INFERENCE_EVENTS_MIGRATION_V2),
+    ("003_hourly_model_stats", HOURLY_MODEL_STATS_SCHEMA),
+    ("004_daily_summary", DAILY_SUMMARY_SCHEMA),
+    ("005_feedback_events", FEEDBACK_EVENTS_SCHEMA),
+    ("006_benchmark_events", BENCHMARK_EVENTS_SCHEMA),
+    ("007_mcp_calls", MCP_CALLS_SCHEMA),
+    ("008_hourly_task_stats", HOURLY_TASK_STATS_SCHEMA),
+    ("009_daily_spend_by_key", DAILY_SPEND_BY_KEY_SCHEMA),
+    ("010_hourly_error_rate", HOURLY_ERROR_RATE_SCHEMA),
 ];

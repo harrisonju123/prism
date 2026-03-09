@@ -107,6 +107,7 @@ impl settings::Settings for AllLanguageModelSettings {
                 .collect(),
             prism: PrismSettings {
                 api_url: prism.api_url.unwrap(),
+                api_key: prism.api_key,
                 available_models: prism.available_models.unwrap_or_default(),
             },
             vercel: VercelSettings {

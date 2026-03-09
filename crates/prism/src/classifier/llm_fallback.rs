@@ -235,6 +235,7 @@ mod tests {
             output_format_hint: None,
             last_user_message: long_msg,
             system_prompt_text: None,
+            has_fim: false,
         };
         let prompt = build_prompt(&input);
         // "User message:\n" = 15 chars + 500 chars = 515 chars
@@ -258,6 +259,7 @@ mod tests {
             output_format_hint: None,
             last_user_message: String::new(),
             system_prompt_text: None,
+            has_fim: false,
         };
         let prompt = build_prompt(&input);
         assert_eq!(prompt, "No user message available.");

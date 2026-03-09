@@ -2,6 +2,7 @@ pub mod anthropic_handler;
 pub mod batch;
 pub mod builder;
 pub mod completions_handler;
+pub mod context_window;
 pub mod cost;
 pub mod handler;
 pub mod predict_edits;

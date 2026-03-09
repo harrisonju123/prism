@@ -42,6 +42,17 @@ enum Commands {
         #[command(subcommand)]
         cmd: SessionsCmd,
     },
+    /// Spawn a sub-agent to execute a task and wait for result
+    Spawn {
+        /// Task description for the sub-agent
+        task: String,
+        #[arg(long, help = "Model to use")]
+        model: Option<String>,
+        #[arg(long, help = "Cost cap in USD")]
+        cost_cap: Option<f64>,
+        #[arg(long, help = "Timeout in seconds (default 300)")]
+        timeout: Option<u64>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -127,6 +138,28 @@ async fn run(cli: Cli) -> Result<()> {
                 println!("gateway unhealthy");
                 std::process::exit(1);
             }
+        }
+        Commands::Spawn {
+            task,
+            model,
+            cost_cap,
+            timeout,
+        } => {
+            let config = Config::from_env()?;
+            let spawn_config = prism_cli::agent::spawn::SpawnConfig {
+                task,
+                model,
+                cost_cap,
+                tools: None,
+                timeout_secs: timeout,
+            };
+            let result = prism_cli::agent::spawn::spawn_agent(
+                spawn_config,
+                &config.prism_url,
+                &config.prism_api_key,
+            )
+            .await?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Commands::Sessions { cmd } => {
             // For sessions subcommand, use sessions_dir from env or default; don't require API key

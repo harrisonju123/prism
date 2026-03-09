@@ -220,6 +220,7 @@ impl TaskType {
         TaskType::Documentation,
         TaskType::Testing,
         TaskType::ToolSelection,
+        TaskType::FillInTheMiddle,
     ];
 
     pub fn from_str_loose(s: &str) -> Self {
@@ -327,6 +328,15 @@ impl Default for SelectionCriteria {
     }
 }
 
+/// A single entry in a provider fallback chain.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FallbackEntry {
+    pub model: String,
+    /// Provider to use; inferred from model name if None.
+    #[serde(default)]
+    pub provider: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutingRule {
     pub task_type: String,
@@ -337,6 +347,9 @@ pub struct RoutingRule {
     pub max_cost_per_1k: Option<f64>,
     pub max_latency_ms: Option<u32>,
     pub fallback: Option<String>,
+    /// Ordered fallback chain used by the proxy when the primary fails.
+    #[serde(default)]
+    pub fallback_chain: Vec<FallbackEntry>,
 }
 
 fn default_min_quality() -> f64 {

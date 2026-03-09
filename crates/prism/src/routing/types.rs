@@ -2,7 +2,7 @@ use crate::types::TaskType;
 use serde::Serialize;
 
 // Re-export shared types from prism-types
-pub use prism_types::{RoutingRule, SelectionCriteria};
+pub use prism_types::{FallbackEntry, RoutingRule, SelectionCriteria};
 
 /// A set of routing rules.
 #[derive(Debug, Clone, Default, Serialize, serde::Deserialize)]
@@ -21,6 +21,9 @@ pub struct RoutingDecision {
     pub policy_rule_id: Option<usize>,
     pub task_type: TaskType,
     pub confidence: f64,
+    /// Fallback chain from the matched routing rule.
+    #[serde(default)]
+    pub fallback_chain: Vec<FallbackEntry>,
 }
 
 /// Fitness data for a model on a specific task type.
@@ -45,4 +48,5 @@ pub const HARD_TASKS: &[TaskType] = &[
     TaskType::Architecture,
     TaskType::Debugging,
     TaskType::Refactoring,
+    TaskType::FillInTheMiddle,
 ];

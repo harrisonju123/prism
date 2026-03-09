@@ -19,6 +19,8 @@ pub struct ClassifierInput {
     pub output_format_hint: Option<OutputFormatHint>,
     pub last_user_message: String,
     pub system_prompt_text: Option<String>,
+    /// True when the request carries a FIM `suffix` field (structural FIM signal).
+    pub has_fim: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

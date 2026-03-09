@@ -1,6 +1,12 @@
 mod enums;
 pub use enums::*;
 
+mod metrics;
+pub use metrics::AgentMetrics;
+
+mod sprint;
+pub use sprint::{Sprint, SprintVelocity};
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

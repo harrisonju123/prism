@@ -20,13 +20,16 @@ use crate::config::Config;
 use crate::error::{PrismError, Result};
 use crate::experiment::engine::ExperimentEngine;
 use crate::experiment::feedback::FeedbackEvent;
+use crate::keys::audit::AuditService;
 use crate::keys::budget::{BudgetCheckResult, BudgetTracker};
 use crate::keys::rate_limit::RateLimiter;
 use crate::keys::{AuthContext, KeyService, MaybeAuth};
 use crate::mcp::extractor::extract_mcp_calls;
 use crate::mcp::types::McpCall;
 use crate::models;
+use crate::models::alias::{AliasCache, AliasRepository};
 use crate::providers::ProviderRegistry;
+use crate::providers::health::ProviderHealthTracker;
 use crate::proxy::cost::compute_cost;
 use crate::proxy::streaming::StreamRelay;
 use crate::routing::FitnessCache;
@@ -268,6 +271,17 @@ pub async fn chat_completions(
         None
     };
 
+    // Resolve aliases (DB cache first, then static) before routing
+    if let Some(resolved) = models::resolve_alias_cached(
+        &request.model,
+        state.alias_cache.as_deref(),
+    )
+    .await
+    {
+        tracing::debug!(alias = %request.model, resolved = %resolved, "model alias resolved");
+        request.model = resolved;
+    }
+
     // Resolve which provider and model_id to use (with fallbacks)
     let (primary_provider_name, primary_model_id, fallback_providers) =
         resolve_model_with_fallbacks(&state.config, &request.model)?;
@@ -283,6 +297,66 @@ pub async fn chat_completions(
         task_type = ?task_type,
         "proxying chat completion"
     );
+
+    // --- Context window management ---
+    if state.config.context_management.enabled {
+        let ctx_window = models::lookup_model(&request.model)
+            .map(|m| m.context_window)
+            .or_else(|| {
+                state
+                    .config
+                    .models
+                    .get(&request.model)
+                    .and_then(|mc| mc.context_window)
+            });
+        if let Some(window) = ctx_window {
+            let reserve = state.config.context_management.response_reserve_tokens;
+            let budget = window.saturating_sub(reserve);
+            let current =
+                crate::proxy::context_window::estimate_messages_tokens(&request.messages);
+            if current > budget {
+                match state.config.context_management.strategy.as_str() {
+                    "error" => {
+                        return Err(PrismError::BadRequest(format!(
+                            "estimated prompt tokens ({current}) exceeds context window budget ({budget})"
+                        )));
+                    }
+                    _ => {
+                        let dropped = crate::proxy::context_window::truncate_to_fit(
+                            &mut request.messages,
+                            budget,
+                        );
+                        tracing::warn!(
+                            dropped,
+                            model = %request.model,
+                            "truncated messages to fit context window"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Dry-run: return routing metadata without calling provider ---
+    if headers
+        .get("x-prism-dry-run")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
+    {
+        let fallback_chain: Vec<serde_json::Value> = fallback_providers
+            .iter()
+            .map(|(p, m)| serde_json::json!({"provider": p, "model": m}))
+            .collect();
+        return Ok(Json(serde_json::json!({
+            "dry_run": true,
+            "routed_model": request.model,
+            "routed_provider": provider_name,
+            "task_type": task_type.map(|t| t.to_string()),
+            "fallback_chain": fallback_chain,
+            "routing_decision": routing_decision_str,
+        }))
+        .into_response());
+    }
 
     // Hash the prompt for observability (never store raw content)
     let prompt_hash = hash_messages(&request.messages);
@@ -376,6 +450,17 @@ pub async fn chat_completions(
                 let mut fallback_result = None;
 
                 for (fb_provider_name, fb_model_id) in &fallback_providers {
+                    // Skip degraded providers
+                    if let Some(ref ht) = state.health_tracker {
+                        if !ht.is_available(fb_provider_name) {
+                            tracing::warn!(
+                                fallback_provider = %fb_provider_name,
+                                "streaming fallback provider degraded, skipping"
+                            );
+                            continue;
+                        }
+                    }
+
                     let fb_provider = match state.providers.get(fb_provider_name) {
                         Ok(p) => p,
                         Err(e) => {
@@ -397,6 +482,9 @@ pub async fn chat_completions(
                     match fb_provider.chat_completion(&request, fb_model_id).await {
                         Ok(resp) => {
                             provider_name = fb_provider_name.clone();
+                            if let Some(ref ht) = state.health_tracker {
+                                ht.record_success(fb_provider_name);
+                            }
                             tracing::info!(
                                 fallback_provider = %fb_provider_name,
                                 "streaming failover succeeded"
@@ -405,6 +493,9 @@ pub async fn chat_completions(
                             break;
                         }
                         Err(e) => {
+                            if let Some(ref ht) = state.health_tracker {
+                                ht.record_failure(fb_provider_name, e.to_string());
+                            }
                             tracing::warn!(
                                 fallback_provider = %fb_provider_name,
                                 error = %e,
@@ -446,6 +537,17 @@ pub async fn chat_completions(
                 let mut fallback_result = None;
 
                 for (fb_provider_name, fb_model_id) in &fallback_providers {
+                    // Skip degraded providers
+                    if let Some(ref ht) = state.health_tracker {
+                        if !ht.is_available(fb_provider_name) {
+                            tracing::warn!(
+                                fallback_provider = %fb_provider_name,
+                                "fallback provider degraded, skipping"
+                            );
+                            continue;
+                        }
+                    }
+
                     let fb_provider = match state.providers.get(fb_provider_name) {
                         Ok(p) => p,
                         Err(e) => {
@@ -474,6 +576,9 @@ pub async fn chat_completions(
                     {
                         Ok(resp) => {
                             provider_name = fb_provider_name.clone();
+                            if let Some(ref ht) = state.health_tracker {
+                                ht.record_success(fb_provider_name);
+                            }
                             tracing::info!(
                                 fallback_provider = %fb_provider_name,
                                 "failover succeeded"
@@ -483,6 +588,9 @@ pub async fn chat_completions(
                             break;
                         }
                         Err(e) => {
+                            if let Some(ref ht) = state.health_tracker {
+                                ht.record_failure(fb_provider_name, e.to_string());
+                            }
                             tracing::warn!(
                                 fallback_provider = %fb_provider_name,
                                 error = %e,
@@ -567,6 +675,8 @@ pub async fn chat_completions(
             let event_cost = event.estimated_cost_usd;
             let event_latency = latency_ms;
             let event_tokens = usage.total_tokens;
+            #[cfg(feature = "otel")]
+            crate::observability::otel::record_inference_span(&event);
             let _ = state.event_tx.send(event).await;
 
             // Record metrics
@@ -628,6 +738,10 @@ pub async fn chat_completions(
             let mut resp = Json(response).into_response();
             resp.headers_mut()
                 .insert("x-cache", "MISS".parse().unwrap());
+            if let Some(ref ctx) = auth_ctx {
+                let rl_headers = build_rate_limit_headers(ctx, &state);
+                resp.headers_mut().extend(rl_headers);
+            }
             Ok(resp)
         }
         ProviderResponse::Stream(stream) => {
@@ -727,6 +841,8 @@ pub async fn chat_completions(
                     let event_id = event.id;
                     let event_model_str = event.model.clone();
                     let event_cost = event.estimated_cost_usd;
+                    #[cfg(feature = "otel")]
+                    crate::observability::otel::record_inference_span(&event);
                     let _ = event_tx.send(event).await;
 
                     // Increment session cost (stored as micro-dollars for lock-free atomic operations)
@@ -802,9 +918,14 @@ pub async fn chat_completions(
                 futures::stream::iter(events)
             });
 
-            Ok(Sse::new(sse_stream)
+            let mut sse_resp = Sse::new(sse_stream)
                 .keep_alive(KeepAlive::default())
-                .into_response())
+                .into_response();
+            if let Some(ref ctx) = auth_ctx {
+                let rl_headers = build_rate_limit_headers(ctx, &state);
+                sse_resp.headers_mut().extend(rl_headers);
+            }
+            Ok(sse_resp)
         }
     }
 }
@@ -890,6 +1011,9 @@ fn build_classifier_input(request: &ChatCompletionRequest) -> ClassifierInput {
 
     let system_prompt_hash = system_prompt_text.as_ref().map(|s| hash_string(s));
 
+    // Detect FIM: presence of a `suffix` key in the extra pass-through fields.
+    let has_fim = request.extra.contains_key("suffix");
+
     ClassifierInput {
         system_prompt_hash,
         has_tools,
@@ -904,6 +1028,7 @@ fn build_classifier_input(request: &ChatCompletionRequest) -> ClassifierInput {
         output_format_hint,
         last_user_message,
         system_prompt_text,
+        has_fim,
     }
 }
 
@@ -1201,6 +1326,36 @@ fn validate_response_schema(
     }
 }
 
+/// Build `X-RateLimit-*` headers from the auth context and current rate limiter state.
+fn build_rate_limit_headers(ctx: &AuthContext, state: &Arc<AppState>) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    if let Some(rpm_limit) = ctx.rpm_limit {
+        let current = state.rate_limiter.current_rpm(&ctx.key_hash);
+        let remaining = (rpm_limit as usize).saturating_sub(current);
+        if let (Ok(limit_val), Ok(rem_val)) = (
+            rpm_limit.to_string().parse(),
+            remaining.to_string().parse(),
+        ) {
+            headers.insert("x-ratelimit-limit-requests", limit_val);
+            headers.insert("x-ratelimit-remaining-requests", rem_val);
+            headers.insert("x-ratelimit-reset-requests", "60".parse().unwrap());
+        }
+    }
+    if let Some(tpm_limit) = ctx.tpm_limit {
+        let current = state.rate_limiter.current_tpm(&ctx.key_hash);
+        let remaining = (tpm_limit as u32).saturating_sub(current);
+        if let (Ok(limit_val), Ok(rem_val)) = (
+            tpm_limit.to_string().parse(),
+            remaining.to_string().parse(),
+        ) {
+            headers.insert("x-ratelimit-limit-tokens", limit_val);
+            headers.insert("x-ratelimit-remaining-tokens", rem_val);
+            headers.insert("x-ratelimit-reset-tokens", "60".parse().unwrap());
+        }
+    }
+    headers
+}
+
 /// Emit MCP tool call events extracted from tool_calls_json.
 async fn emit_mcp_calls(
     mcp_tx: &tokio::sync::mpsc::Sender<McpCall>,
@@ -1267,6 +1422,11 @@ pub struct AppState {
     pub interop_metering: Option<Arc<crate::interop::metering::MeteringStore>>,
     pub metrics: Option<Arc<crate::observability::metrics::MetricsCollector>>,
     pub session_cost_usd: Arc<std::sync::atomic::AtomicU64>,
+    // Phase 4 additions
+    pub health_tracker: Option<Arc<ProviderHealthTracker>>,
+    pub audit_service: Option<Arc<AuditService>>,
+    pub alias_cache: Option<Arc<AliasCache>>,
+    pub alias_repo: Option<Arc<AliasRepository>>,
 }
 
 #[cfg(test)]

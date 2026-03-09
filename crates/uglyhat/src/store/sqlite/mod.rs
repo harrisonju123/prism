@@ -7,8 +7,10 @@ mod dependency;
 mod epic;
 mod handoff;
 mod initiative;
+mod metrics;
 mod migrate;
 mod note;
+mod sprint;
 mod task;
 mod task_context;
 #[cfg(test)]
@@ -540,5 +542,53 @@ impl Store for SqliteStore {
 
     async fn get_stale_tasks(&self, workspace_id: Uuid) -> Result<Vec<TaskSummary>> {
         self.get_stale_tasks_impl(workspace_id).await
+    }
+
+    async fn create_sprint(
+        &self,
+        workspace_id: Uuid,
+        name: &str,
+        goal: &str,
+        start_date: Option<chrono::NaiveDate>,
+        end_date: Option<chrono::NaiveDate>,
+    ) -> Result<Sprint> {
+        self.create_sprint_impl(workspace_id, name, goal, start_date, end_date)
+            .await
+    }
+
+    async fn list_sprints(&self, workspace_id: Uuid) -> Result<Vec<Sprint>> {
+        self.list_sprints_impl(workspace_id).await
+    }
+
+    async fn get_sprint(&self, id: Uuid) -> Result<Sprint> {
+        self.get_sprint_impl(id).await
+    }
+
+    async fn close_sprint(&self, id: Uuid) -> Result<Sprint> {
+        self.close_sprint_impl(id).await
+    }
+
+    async fn assign_task_to_sprint(&self, task_id: Uuid, sprint_id: Uuid) -> Result<()> {
+        self.assign_task_to_sprint_impl(task_id, sprint_id).await
+    }
+
+    async fn sprint_velocity(&self, sprint_id: Uuid) -> Result<SprintVelocity> {
+        self.sprint_velocity_impl(sprint_id).await
+    }
+
+    async fn upsert_task_by_github_id(
+        &self,
+        workspace_id: Uuid,
+        epic_id: Uuid,
+        github_issue_id: i64,
+        name: &str,
+        description: &str,
+    ) -> Result<Task> {
+        self.upsert_task_by_github_id_impl(workspace_id, epic_id, github_issue_id, name, description)
+            .await
+    }
+
+    async fn agent_metrics(&self, workspace_id: Uuid) -> Result<Vec<AgentMetrics>> {
+        self.agent_metrics_impl(workspace_id).await
     }
 }

@@ -22,6 +22,14 @@ pub struct HealthResponse {
     uptime_secs: u64,
 }
 
+#[utoipa::path(
+    get,
+    path = "/health",
+    responses(
+        (status = 200, description = "Gateway is healthy"),
+    ),
+    tag = "health"
+)]
 pub async fn health() -> Json<HealthResponse> {
     let uptime = START_TIME.get().map(|t| t.elapsed().as_secs()).unwrap_or(0);
     Json(HealthResponse {
@@ -31,6 +39,14 @@ pub async fn health() -> Json<HealthResponse> {
     })
 }
 
+#[utoipa::path(
+    get,
+    path = "/health/live",
+    responses(
+        (status = 200, description = "Service is alive"),
+    ),
+    tag = "health"
+)]
 pub async fn liveness() -> &'static str {
     "ok"
 }
@@ -78,6 +94,15 @@ impl CheckResult {
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/health/ready",
+    responses(
+        (status = 200, description = "Service is ready"),
+        (status = 503, description = "Service is unavailable"),
+    ),
+    tag = "health"
+)]
 pub async fn readiness(State(state): State<Arc<AppState>>) -> Response {
     let timeout = Duration::from_secs(2);
 
@@ -154,6 +179,18 @@ pub async fn readiness(State(state): State<Arc<AppState>>) -> Response {
     };
 
     (http_status, Json(body)).into_response()
+}
+
+/// GET /health/providers — public, no auth required.
+pub async fn provider_health(
+    State(state): State<Arc<AppState>>,
+) -> Json<Vec<crate::providers::health::ProviderHealth>> {
+    let snapshot = state
+        .health_tracker
+        .as_ref()
+        .map(|ht| ht.snapshot())
+        .unwrap_or_default();
+    Json(snapshot)
 }
 
 #[cfg(feature = "redis-backend")]

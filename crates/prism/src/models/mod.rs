@@ -1,3 +1,5 @@
+pub mod alias;
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -904,6 +906,19 @@ pub fn estimate_cost(model: &str, input_tokens: u32, output_tokens: u32) -> f64 
     lookup_model(model)
         .map(|m| m.estimate_cost(input_tokens, output_tokens))
         .unwrap_or(0.0)
+}
+
+/// Resolve alias checking DB cache first, then static SEMANTIC_ALIASES.
+pub async fn resolve_alias_cached(
+    name: &str,
+    cache: Option<&alias::AliasCache>,
+) -> Option<String> {
+    if let Some(cache) = cache {
+        if let Some(target) = cache.get(name).await {
+            return Some(target);
+        }
+    }
+    resolve_alias(name).map(|s| s.to_string())
 }
 
 /// Get the downgrade chain for a model (for budget-triggered fallbacks).

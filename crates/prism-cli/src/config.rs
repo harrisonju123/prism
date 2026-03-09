@@ -11,6 +11,7 @@ pub struct Config {
     pub max_tool_output: usize,
     pub system_prompt: Option<String>,
     pub sessions_dir: PathBuf,
+    pub memory_window_size: usize,
 }
 
 impl Config {
@@ -48,6 +49,11 @@ impl Config {
                     .join(".prism/sessions")
             });
 
+        let memory_window_size = std::env::var("PRISM_MEMORY_WINDOW_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(4096);
+
         Ok(Self {
             prism_url,
             prism_api_key,
@@ -57,6 +63,7 @@ impl Config {
             max_tool_output,
             system_prompt,
             sessions_dir,
+            memory_window_size,
         })
     }
 }

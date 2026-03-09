@@ -7,8 +7,11 @@ use axum::middleware::from_fn;
 use axum::routing::{delete, patch, put};
 use axum::routing::{get, post};
 use tower_http::trace::TraceLayer;
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 use crate::api;
+use crate::api::openapi::ApiDoc;
 use crate::experiment::feedback;
 #[cfg(feature = "full")]
 use crate::keys::MasterKey;
@@ -66,13 +69,19 @@ pub fn build(state: Arc<AppState>) -> Router {
         .route("/health", get(api::health::health))
         .route("/health/live", get(api::health::liveness))
         .route("/health/ready", get(api::health::readiness))
+        .route("/health/providers", get(api::health::provider_health))
         .route("/metrics", get(api::metrics::metrics));
+
+    // --- OpenAPI docs (stateless, merged before state is applied) ---
+    let swagger_routes: Router<Arc<AppState>> =
+        Router::new().merge(SwaggerUi::new("/docs").url("/openapi.json", ApiDoc::openapi()));
 
     // --- Dashboard static files ---
     let mut app = Router::new()
         .merge(proxy_routes)
         .merge(management_routes)
-        .merge(health_routes);
+        .merge(health_routes)
+        .merge(swagger_routes);
 
     if state.config.dashboard.enabled {
         let dist_path = &state.config.dashboard.dist_path;
@@ -149,6 +158,13 @@ fn build_management_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
         )
         // Key rotation
         .route("/api/v1/keys/{id}/rotate", post(api::keys::rotate_key))
+        // Audit log
+        .route("/api/v1/audit", get(api::audit::list_audit_events))
+        // Model aliases
+        .route("/api/v1/aliases", get(api::aliases::list_aliases))
+        .route("/api/v1/aliases", post(api::aliases::create_alias))
+        .route("/api/v1/aliases/{name}", put(api::aliases::update_alias))
+        .route("/api/v1/aliases/{name}", delete(api::aliases::delete_alias))
         // Prompt version history & rollback
         .route(
             "/api/v1/prompts/{name}/versions",
