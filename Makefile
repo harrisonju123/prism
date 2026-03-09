@@ -1,7 +1,8 @@
 .PHONY: build run check test lint dev fmt ci clean \
-        run-prism run-uh install-uh \
-        docker-up docker-down docker-build docker-logs \
+        run-prism run-uh install-uh install-prism-cli \
+        docker-up docker-down docker-build docker-logs docker-deps \
         health models uh-health \
+        dev-setup dev dev-min \
         dashboard-install dashboard-build dashboard-dev \
         sync-zed sync-zed-dry check-prism check-zed check-all reconcile-cargo verify-patches regenerate-patches check-upstream-drift \
         disk-usage clean-worktree-targets prune-worktrees
@@ -40,9 +41,17 @@ run-uh:
 install-uh:
 	cargo install --path crates/uglyhat --bin uh
 
+# Install prism-cli to ~/.cargo/bin
+install-prism-cli:
+	cargo install --path crates/prism-cli
+
 # Docker
 docker-up:
 	docker compose up -d
+
+# Start only postgres + clickhouse (deps for local dev)
+docker-deps:
+	docker compose up -d postgres clickhouse
 
 docker-down:
 	docker compose down
@@ -52,6 +61,24 @@ docker-build:
 
 docker-logs:
 	docker compose logs -f prism
+
+# One-time setup: create config/prism.toml, start deps, create virtual key
+dev-setup:
+	@bash scripts/dev-setup.sh
+
+# Daily driver: start deps then run prism locally
+dev: docker-deps
+	cargo run -p prism
+
+# Minimal local dev: no Docker, no virtual keys — routes to a LiteLLM proxy.
+# Requires:
+#   export LITELLM_BASE_URL=https://your-litellm.internal/v1
+#   export LITELLM_API_KEY=sk-...
+dev-min:
+	@[ -n "$$LITELLM_BASE_URL" ] || (echo "Error: LITELLM_BASE_URL is not set"; exit 1)
+	@[ -n "$$LITELLM_API_KEY" ] || (echo "Error: LITELLM_API_KEY is not set"; exit 1)
+	@[ -f config/prism.toml ] || cp config/prism.min.toml config/prism.toml
+	cargo run -p prism
 
 # Quick health check against running server
 health:

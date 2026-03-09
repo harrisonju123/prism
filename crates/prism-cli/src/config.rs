@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -17,10 +17,10 @@ pub struct Config {
 impl Config {
     pub fn from_env() -> Result<Self> {
         let prism_url =
-            std::env::var("PRISM_URL").unwrap_or_else(|_| "http://localhost:4000".to_string());
+            std::env::var("PRISM_URL").unwrap_or_else(|_| "http://localhost:9100".to_string());
 
         let prism_api_key =
-            std::env::var("PRISM_API_KEY").context("PRISM_API_KEY env var is required")?;
+            std::env::var("PRISM_API_KEY").unwrap_or_default();
 
         let prism_model =
             std::env::var("PRISM_MODEL").unwrap_or_else(|_| "claude-sonnet-4-6".to_string());

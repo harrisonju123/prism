@@ -1,0 +1,27 @@
+# PrisM dev config template — DO NOT commit config/prism.toml (it has your master key)
+# Run scripts/dev-setup.sh to create config/prism.toml from this file.
+
+[gateway]
+address = "0.0.0.0:9100"
+
+[postgres]
+url = "postgres://prism:prism@localhost:5432/prism"
+
+[clickhouse]
+url = "http://localhost:8123"
+database = "prism"
+
+[keys]
+enabled = true
+master_key = "__MASTER_KEY__"
+
+[providers.anthropic]
+api_key = "${ANTHROPIC_API_KEY}"
+
+[context_management]
+enabled = true
+strategy = "drop-oldest"
+response_reserve_tokens = 1000
+
+[logging]
+format = "text"

@@ -1,0 +1,38 @@
+# PrisM minimal config — no Docker required.
+# Routes to a LiteLLM proxy using LITELLM_API_KEY + LITELLM_BASE_URL.
+# No virtual keys / no budget tracking.
+# Copy to config/prism.toml or run: make dev-min
+
+[gateway]
+address = "0.0.0.0:9100"
+
+[keys]
+enabled = false
+
+# LiteLLM exposes an OpenAI-compatible API.
+# Set LITELLM_BASE_URL to your company's LiteLLM endpoint (e.g. https://litellm.internal/v1)
+# Set LITELLM_API_KEY to your team's key.
+[providers.litellm]
+api_key = "${LITELLM_API_KEY}"
+api_base = "${LITELLM_BASE_URL}"
+
+# Map friendly names to whatever models your LiteLLM has configured.
+# Use the exact model names your LiteLLM instance accepts.
+
+[models.cheap]
+provider = "litellm"
+model = "gpt-4o-mini"
+tier = 3
+
+[models.smart]
+provider = "litellm"
+model = "gpt-4o"
+tier = 2
+
+[context_management]
+enabled = true
+strategy = "drop-oldest"
+response_reserve_tokens = 1000
+
+[logging]
+format = "text"

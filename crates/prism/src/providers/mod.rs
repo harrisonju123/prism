@@ -194,7 +194,8 @@ impl ProviderRegistry {
                     _ => {
                         if config.api_base.is_some() {
                             let key = resolve_env_var(config.api_key.as_deref().unwrap_or(""));
-                            let base = config.api_base.as_deref().unwrap();
+                            let base = resolve_env_var(config.api_base.as_deref().unwrap());
+                            let base = base.as_str();
                             tracing::info!(
                                 provider = name,
                                 api_base = base,

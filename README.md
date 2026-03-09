@@ -4,47 +4,73 @@ A production-grade LLM gateway with integrated task management, built with Rust 
 
 ## Quick Start
 
-### Prerequisites
-- Rust 1.70+ (via `rustup`)
-- Docker + Docker Compose (for Postgres, ClickHouse)
-- SQLite 3.35+ (bundled with uglyhat)
+### Option A — Minimal (no Docker, no infra)
 
-### Setup
+Route directly to an existing LiteLLM proxy or Groq — useful for dogfooding at work or getting
+started in under 5 minutes.
 
 ```bash
-# Clone and enter the repo
-git clone <repo-url>
-cd PrisM
 export PATH="$HOME/.cargo/bin:$PATH"
 
-# Start databases
-make docker-up
+# LiteLLM (recommended if your company uses it)
+export LITELLM_BASE_URL=https://your-litellm.internal/v1
+export LITELLM_API_KEY=sk-...
+make dev-min
+# → copies config/prism.min.toml → config/prism.toml on first run
+# → PrisM at http://localhost:9100, no virtual keys, no Postgres
 
-# Run tests to verify setup
-make ci
+# Groq (free tier, no card required — console.groq.com)
+export GROQ_API_KEY=gsk_...
+# edit config/prism.min.toml to use [providers.groq] instead, then:
+make dev-min
 ```
+
+**Test it:**
+```bash
+make health   # → {"status":"ok"}
+
+curl http://localhost:9100/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"cheap","messages":[{"role":"user","content":"hello"}]}'
+```
+
+**Zed → Language Models → OpenAI Compatible:**
+- API URL: `http://localhost:9100/v1`
+- API key: (anything, or blank)
+- Model: `cheap` or `smart` (defined in `config/prism.toml`)
+
+**Edit `config/prism.toml`** to add/rename models matching whatever your LiteLLM has configured.
+
+---
+
+### Option B — Full (Docker + virtual keys + observability)
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+
+# One-time setup: creates config/prism.toml, starts Postgres+ClickHouse, creates master key
+make dev-setup
+
+# Daily: start deps then run prism
+make dev
+```
+
+### Prerequisites (Option B only)
+- Docker + Docker Compose
+
+### Prerequisites (both)
+- Rust 1.70+ (via `rustup`)
 
 ### Basic Commands
 
 ```bash
-# Check compilation
-make check
-
-# Run full quality gate (fmt + lint + test)
-make ci
-
-# Start PrisM gateway
-make run-prism
-
-# Start uglyhat server
-make run-uh
-
-# Install uh CLI
-make install-uh
-
-# View health/models endpoints
-make health
-make models
+make check          # cargo check
+make ci             # fmt + lint + test (full quality gate)
+make run-prism      # cargo run -p prism
+make run-uh         # cargo run -p uglyhat
+make install-uh     # install uh CLI to ~/.cargo/bin
+make health         # curl health endpoint
+make models         # curl models endpoint
 ```
 
 ## Architecture
@@ -57,10 +83,16 @@ PrisM/
 │   ├── prism/              # LLM gateway (main service)
 │   ├── prism-types/        # Shared OpenAI-compatible types
 │   ├── prism-client/       # HTTP client for IDE integration
-│   └── uglyhat/            # Agent PM (HTTP API + CLI)
+│   ├── prism-cli/          # CLI agent powered by PrisM
+│   ├── prism-dashboard/    # Dashboard backend
+│   ├── uglyhat/            # Agent PM (HTTP API + CLI)
+│   └── uglyhat-panel/      # uglyhat web UI
+├── config/
+│   ├── prism.min.toml      # Minimal dogfood config (no Docker)
+│   └── prism.dev.toml      # Full dev config template
 ├── zed-upstream/           # Zed editor fork (shallow clone)
 ├── Cargo.toml              # Workspace root
-├── docker-compose.yml      # Postgres, ClickHouse
+├── docker-compose.yml      # Postgres, ClickHouse, Grafana, Loki, Jaeger
 └── CLAUDE.md               # Development guide
 ```
 
@@ -90,18 +122,23 @@ PrisM/
 - `observability/` — ClickHouse event writer
 - `classifier/` — rules-based task classification
 
-**Configuration:**
-```bash
-# Via environment variables
-export PRISM_LOG_LEVEL=info
-export PRISM_POSTGRES_URL="postgresql://..."
-export PRISM_CLICKHOUSE_URL="http://localhost:8123"
-export PRISM_OPENAI_API_KEY="sk-..."
+**Configuration** (Figment — TOML file + `PRISM_` env var overrides):
+```toml
+# config/prism.toml
+[gateway]
+address = "0.0.0.0:9100"
 
-# Or via config.toml (TOML + env var interpolation)
-[prism]
-log_level = "info"
-postgres_url = "${PRISM_POSTGRES_URL}"
+[keys]
+enabled = true   # false = no auth, no Postgres needed
+
+[providers.litellm]
+api_key = "${LITELLM_API_KEY}"
+api_base = "${LITELLM_BASE_URL}"   # any OpenAI-compatible endpoint
+
+[models.cheap]
+provider = "litellm"
+model = "gpt-4o-mini"
+tier = 3
 ```
 
 ### uglyhat — Agent PM
@@ -223,12 +260,15 @@ uh checkout --name claude --summary "what was accomplished"
 
 ### Environment Variables
 
-**PrisM:**
-- `PRISM_LOG_LEVEL` — debug, info, warn, error
-- `PRISM_POSTGRES_URL` — Postgres connection string
-- `PRISM_CLICKHOUSE_URL` — ClickHouse HTTP endpoint
-- `PRISM_OPENAI_API_KEY` — OpenAI provider key
-- `PRISM_ANTHROPIC_API_KEY` — Anthropic provider key
+**Provider keys** (referenced in `config/prism.toml` via `${VAR}` interpolation):
+- `LITELLM_API_KEY` + `LITELLM_BASE_URL` — any OpenAI-compatible proxy (e.g. your company's LiteLLM)
+- `GROQ_API_KEY` — Groq (free tier at console.groq.com)
+- `ANTHROPIC_API_KEY` — Anthropic direct
+- `OPENAI_API_KEY` — OpenAI direct
+
+**Infrastructure** (Option B / full setup only):
+- `PRISM_POSTGRES__URL` — Postgres connection string (overrides config)
+- `PRISM_CLICKHOUSE__URL` — ClickHouse HTTP endpoint (overrides config)
 
 **uglyhat:**
 - `UGLYHAT_ADDR` — listen address (default 0.0.0.0:3001)

@@ -85,7 +85,12 @@ make ci             # fmt + lint + test (full quality gate)
 make run-prism      # cargo run -p prism
 make run-uh         # cargo run -p uglyhat --bin uglyhat
 make install-uh     # install uh CLI to ~/.cargo/bin
+make install-prism-cli  # install prism CLI to ~/.cargo/bin
 make docker-up      # docker compose up -d
+make docker-deps    # start only postgres + clickhouse
+make dev-setup      # one-time: create config, start deps, create virtual key
+make dev            # daily: start deps + run prism locally
+make dev-min        # minimal: no Docker, no virtual keys, just cargo run -p prism
 make docker-down    # docker compose down
 make health         # curl health endpoint
 make models         # curl models endpoint
