@@ -116,6 +116,8 @@ pub struct ModelConfig {
     pub context_window: Option<u32>,
     #[serde(default)]
     pub fallback_providers: Vec<FallbackProvider>,
+    #[serde(default = "default_true")]
+    pub supports_tools: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -895,6 +897,7 @@ impl Config {
             // Try default locations
             figment = figment.merge(Toml::file("prism.toml"));
             figment = figment.merge(Toml::file("config/prism.toml"));
+            figment = figment.merge(Toml::file("config/prism.min.toml"));
         }
 
         // Layer 2: Environment variables with PRISM_ prefix

@@ -193,19 +193,27 @@ impl State {
         }
         let providers = collect_provider_configs();
         let session_cost = Arc::new(std::sync::atomic::AtomicU64::new(0));
-        cx.spawn(async move |this, cx| {
-            let cost_for_builder = session_cost.clone();
-            match prism::start_embedded_with(providers, move |b| {
+        let cost_for_builder = session_cost.clone();
+        // start_embedded_with uses Tokio APIs (TcpListener, tokio::spawn),
+        // so it must run on the Tokio runtime, not the GPUI foreground executor.
+        let gateway_task = gpui_tokio::Tokio::spawn_result(cx, async move {
+            prism::start_embedded_with(providers, move |b| {
                 b.with_session_cost_usd(cost_for_builder)
             })
             .await
-            {
+            .map_err(|e| anyhow::anyhow!(e))
+        });
+        cx.spawn(async move |this, cx| {
+            match gateway_task.await {
                 Ok(gateway) => {
                     this.update(cx, |state, cx| {
                         state.settings.api_url = gateway.api_url();
                         // Export gateway URL so child processes (prism-cli) can find it
-                        std::env::set_var("PRISM_URL", gateway.api_url());
-                        std::env::set_var("PRISM_API_KEY", "embedded");
+                        // SAFETY: called on the single foreground thread during initialization
+                        unsafe {
+                            std::env::set_var("PRISM_URL", gateway.api_url());
+                            std::env::set_var("PRISM_API_KEY", "embedded");
+                        }
                         state.embedded_session_cost = Some(session_cost);
                         state.embedded = Some(Arc::new(gateway));
                         state.sidecar_status = SidecarStatus::Embedded;
@@ -302,10 +310,6 @@ impl PrismLanguageModelProvider {
         cx.set_global(GlobalPrismState(state.downgrade()));
 
         Self { http_client, state }
-    }
-
-    fn create_language_model(&self, model: AvailableModel) -> Arc<dyn LanguageModel> {
-        self.create_language_model_with_pricing(model, None, None)
     }
 
     fn create_language_model_with_pricing(

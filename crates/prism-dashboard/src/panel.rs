@@ -805,6 +805,6 @@ impl Panel for PrismDashboardPanel {
     }
 
     fn activation_priority(&self) -> u32 {
-        8
+        11
     }
 }

@@ -76,7 +76,8 @@ impl fmt::Display for PaymentRequiredError {
     }
 }
 
-pub fn init(_user_store: Entity<UserStore>, _client: Arc<Client>, cx: &mut App) {
+pub fn init(user_store: Entity<UserStore>, client: Arc<Client>, cx: &mut App) {
+    RefreshLlmTokenListener::register(client, user_store, cx);
     init_settings(cx);
 }
 
@@ -944,6 +945,12 @@ impl LanguageModelProviderId {
 impl LanguageModelProviderName {
     pub const fn new(id: &'static str) -> Self {
         Self(SharedString::new_static(id))
+    }
+}
+
+impl fmt::Display for LanguageModelName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }
 

@@ -16,17 +16,192 @@ enabled = false
 api_key = "${LITELLM_API_KEY}"
 api_base = "${LITELLM_BASE_URL}"
 
-# Map friendly names to whatever models your LiteLLM has configured.
-# Use the exact model names your LiteLLM instance accepts.
+# ============================================================================
+# Model Aliases — mapped to LiteLLM model IDs
+# Organized by tier: 1=premium, 2=standard, 3=economy
+# Prices shown as (input/output per 1M tokens)
+# ============================================================================
 
-[models.cheap]
+# --- Tier 1: Premium ($5+/1M output) ---
+
+[models.claude-opus-4-6]
 provider = "litellm"
-model = "gpt-4o-mini"
+model = "claude-opus-4-6"
+tier = 1
+fallback = "claude-opus-4-5"
+
+[models.claude-opus-4-5]
+provider = "litellm"
+model = "claude-opus-4-5-20251101"
+tier = 1
+fallback = "claude-sonnet-4-6"
+
+[models.gpt-5-2]
+provider = "litellm"
+model = "gpt-5.2-chat-latest"
+tier = 2
+fallback = "claude-sonnet-4-6"
+
+[models.gpt-5-2-codex]
+provider = "litellm"
+model = "gpt-5.2-codex"
+tier = 2
+fallback = "gpt-5-2"
+
+# --- Tier 2: Standard ($1–5/1M output) ---
+
+[models.claude-sonnet-4-6]
+provider = "litellm"
+model = "claude-sonnet-4-6"
+tier = 2
+fallback = "claude-sonnet-4-5"
+
+[models.claude-sonnet-4-5]
+provider = "litellm"
+model = "claude-sonnet-4-5-20250929"
+tier = 2
+fallback = "claude-haiku-4-5"
+
+[models.claude-haiku-4-5]
+provider = "litellm"
+model = "claude-haiku-4-5-20251001"
+tier = 2
+fallback = "kimi-k2-5"
+
+[models.kimi-k2-5]
+provider = "litellm"
+model = "moonshotai.kimi-k2.5"
+tier = 2
+supports_tools = false
+
+[models.qwen3-vl-235b]
+provider = "litellm"
+model = "qwen.qwen3-vl-235b-a22b"
+tier = 2
+supports_tools = false
+
+[models.kimi-k2-thinking]
+provider = "litellm"
+model = "moonshot.kimi-k2-thinking"
+tier = 2
+supports_tools = false
+
+[models.nova-2-lite]
+provider = "litellm"
+model = "us.amazon.nova-2-lite-v1:0"
+tier = 2
+supports_tools = false
+
+# --- Tier 3: Economy (<$1.5/1M output) ---
+
+[models.qwen3-next-80b]
+provider = "litellm"
+model = "qwen.qwen3-next-80b-a3b"
 tier = 3
+supports_tools = false
+
+[models.minimax-m2-1]
+provider = "litellm"
+model = "minimax.minimax-m2.1"
+tier = 3
+supports_tools = false
+
+[models.qwen3-coder-30b]
+provider = "litellm"
+model = "qwen.qwen3-coder-30b-a3b-v1:0"
+tier = 3
+supports_tools = false
+
+[models.gpt-oss-120b]
+provider = "litellm"
+model = "openai.gpt-oss-120b-1:0"
+tier = 3
+supports_tools = false
+
+[models.gemma-3-27b]
+provider = "litellm"
+model = "google.gemma-3-27b-it"
+tier = 3
+supports_tools = false
+
+[models.gemma-3-12b]
+provider = "litellm"
+model = "google.gemma-3-12b-it"
+tier = 3
+supports_tools = false
+
+[models.gpt-oss-20b]
+provider = "litellm"
+model = "openai.gpt-oss-20b-1:0"
+tier = 3
+supports_tools = false
+
+[models.ministral-14b]
+provider = "litellm"
+model = "mistral.ministral-3-14b-instruct"
+tier = 3
+supports_tools = false
+
+[models.ministral-8b]
+provider = "litellm"
+model = "mistral.ministral-3-8b-instruct"
+tier = 3
+supports_tools = false
+
+[models.ministral-3b]
+provider = "litellm"
+model = "mistral.ministral-3-3b-instruct"
+tier = 3
+supports_tools = false
+
+[models.gemma-3-4b]
+provider = "litellm"
+model = "google.gemma-3-4b-it"
+tier = 3
+supports_tools = false
+
+# --- Embedding Models ---
+
+[models.titan-embed-v2]
+provider = "litellm"
+model = "amazon.titan-embed-text-v2:0"
+tier = 3
+
+[models.embed-3-large]
+provider = "litellm"
+model = "text-embedding-3-large"
+tier = 3
+
+[models.titan-embed-v1]
+provider = "litellm"
+model = "amazon.titan-embed-text-v1"
+tier = 3
+
+[models.embed-3-small]
+provider = "litellm"
+model = "text-embedding-3-small"
+tier = 3
+
+# --- Semantic Aliases (friendly shorthand) ---
 
 [models.smart]
 provider = "litellm"
-model = "gpt-4o"
+model = "claude-opus-4-6"
+tier = 1
+
+[models.fast]
+provider = "litellm"
+model = "claude-haiku-4-5-20251001"
+tier = 3
+
+[models.cheap]
+provider = "litellm"
+model = "claude-haiku-4-5-20251001"
+tier = 3
+
+[models.code]
+provider = "litellm"
+model = "gpt-5.2-codex"
 tier = 2
 
 [context_management]
