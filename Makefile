@@ -5,7 +5,8 @@
         dev-setup dev dev-min \
         dashboard-install dashboard-build dashboard-dev \
         sync-zed sync-zed-dry check-prism check-zed check-all reconcile-cargo verify-patches regenerate-patches check-upstream-drift \
-        disk-usage clean-worktree-targets prune-worktrees
+        disk-usage clean-worktree-targets prune-worktrees \
+        build-zed run-zed dogfood
 
 # Development
 build:
@@ -114,6 +115,29 @@ check-zed:
 	cargo check -p zed
 
 check-all: check-prism check-zed
+
+# Build Zed from source (release build)
+build-zed:
+	cargo build -p zed --release
+
+# Run Zed from source (debug build — faster compile, slower runtime)
+run-zed:
+	cargo run -p zed
+
+# Dogfood: validate env then launch Zed with PrisM embedded gateway
+dogfood:
+	@echo "=== PrisM Dogfood ==="
+	@echo "Checking prerequisites..."
+	@( [ -n "$$ANTHROPIC_API_KEY" ] || [ -n "$$OPENAI_API_KEY" ] || [ -n "$$GOOGLE_AI_STUDIO_API_KEY" ] ) \
+		|| (echo "Error: Set at least one of ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_AI_STUDIO_API_KEY"; exit 1)
+	@echo "  ✓ Provider key found"
+	@which prism >/dev/null 2>&1 || (echo "Warning: prism-cli not found. Run 'make install-prism-cli' for agent spawning."; echo "")
+	@echo ""
+	@echo "Launching Zed with embedded PrisM gateway..."
+	@echo "  - Assistant panel: select a PrisM model to chat"
+	@echo "  - Agent roster: spawn prism-cli agents in worktrees"
+	@echo ""
+	cargo run -p zed
 
 check-upstream-drift:
 	bash scripts/check-upstream-drift.sh

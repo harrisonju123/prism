@@ -1,4 +1,4 @@
-use crate::types::{uh_binary, AgentStatus, WorkspaceContext};
+use crate::types::{prism_binary, uh_binary, AgentStatus, WorkspaceContext};
 use anyhow::Result;
 use db::kvp::KEY_VALUE_STORE;
 use gpui::{
@@ -374,9 +374,32 @@ impl AgentRosterPanel {
                 .await;
 
                 let open_task = cx.update(|app_cx| {
-                    open_paths(&[wt_path], app_state, OpenOptions::default(), app_cx)
+                    open_paths(&[wt_path.clone()], app_state, OpenOptions::default(), app_cx)
                 });
                 open_task.await?;
+
+                // Launch prism-cli agent in the new worktree (fire-and-forget)
+                cx.background_spawn({
+                    let wt_path = wt_path.clone();
+                    let name = name.clone();
+                    async move {
+                        std::process::Command::new(prism_binary())
+                            .args([
+                                "run",
+                                "--model",
+                                "claude-sonnet-4-6",
+                                &format!(
+                                    "You are agent '{}'. Explore the codebase and await instructions.",
+                                    name
+                                ),
+                            ])
+                            .current_dir(&wt_path)
+                            .env("UH_AGENT_NAME", &name)
+                            .spawn()
+                            .log_err();
+                    }
+                })
+                .detach();
 
                 anyhow::Ok(())
             }
@@ -724,23 +747,32 @@ impl Render for AgentRosterPanel {
                                 ),
                             )
                         })
-                        .children(worktrees.into_iter().enumerate().map(|(idx, (name, path))| {
-                            let path_clone = path.clone();
-                            let name_label = name.clone();
-                            h_flex()
-                                .id(ElementId::Name(format!("wt-item-{idx}").into()))
-                                .w_full()
-                                .px_2()
-                                .py_1()
-                                .cursor_pointer()
-                                .hover(|style| style.bg(cx.theme().colors().element_hover))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if let Some(app_state) = this.cached_app_state.clone() {
-                                        this.open_worktree(path_clone.clone(), app_state, cx);
-                                    }
-                                }))
-                                .child(Label::new(name_label).size(LabelSize::Small))
-                        })),
+                        .children(
+                            worktrees
+                                .into_iter()
+                                .enumerate()
+                                .map(|(idx, (name, path))| {
+                                    let path_clone = path.clone();
+                                    let name_label = name.clone();
+                                    h_flex()
+                                        .id(ElementId::Name(format!("wt-item-{idx}").into()))
+                                        .w_full()
+                                        .px_2()
+                                        .py_1()
+                                        .cursor_pointer()
+                                        .hover(|style| style.bg(cx.theme().colors().element_hover))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            if let Some(app_state) = this.cached_app_state.clone() {
+                                                this.open_worktree(
+                                                    path_clone.clone(),
+                                                    app_state,
+                                                    cx,
+                                                );
+                                            }
+                                        }))
+                                        .child(Label::new(name_label).size(LabelSize::Small))
+                                }),
+                        ),
                 )
                 .into_any_element();
         }
@@ -830,16 +862,11 @@ impl Render for AgentRosterPanel {
                     )
                     .when(self.editing_agent_name, |this| {
                         this.child(
-                            div()
-                                .px_2()
-                                .pb_1()
-                                .child(
-                                    Label::new(
-                                        "Set UH_AGENT_NAME env var, then click ✎ to refresh.",
-                                    )
+                            div().px_2().pb_1().child(
+                                Label::new("Set UH_AGENT_NAME env var, then click ✎ to refresh.")
                                     .size(LabelSize::Small)
                                     .color(Color::Muted),
-                                ),
+                            ),
                         )
                     }),
             )
@@ -858,14 +885,11 @@ impl Render for AgentRosterPanel {
                     })
                     .when_some(self.spawn_error.clone(), |this, err| {
                         this.child(
-                            div()
-                                .px_2()
-                                .py_1()
-                                .child(
-                                    Label::new(format!("Spawn failed: {err}"))
-                                        .size(LabelSize::Small)
-                                        .color(Color::Error),
-                                ),
+                            div().px_2().py_1().child(
+                                Label::new(format!("Spawn failed: {err}"))
+                                    .size(LabelSize::Small)
+                                    .color(Color::Error),
+                            ),
                         )
                     })
                     .when(self.spawn_task.is_some(), |this| {

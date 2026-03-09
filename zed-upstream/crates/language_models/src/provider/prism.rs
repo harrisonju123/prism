@@ -82,7 +82,7 @@ pub struct State {
     api_key_state: ApiKeyState,
     settings: PrismSettings,
     http_client: Arc<dyn HttpClient>,
-    fetched_models: Vec<String>,
+    fetched_models: Vec<FetchedModelInfo>,
     fetch_models_task: Option<Task<Result<()>>>,
     embedded: Option<Arc<prism::EmbeddedGateway>>,
     sidecar_status: SidecarStatus,
@@ -151,7 +151,7 @@ impl State {
                     if this.sidecar_status != SidecarStatus::Embedded {
                         this.sidecar_status = SidecarStatus::External;
                     }
-                    this.fetched_models = result.model_ids;
+                    this.fetched_models = result.models;
                     if let Some(cost) = result.session_cost_usd {
                         this.session_cost_usd = cost;
                     }
@@ -163,7 +163,7 @@ impl State {
                         match do_fetch_models(&http_client, &api_url, &api_key).await {
                             Ok(result) => {
                                 return this.update(cx, |this, cx| {
-                                    this.fetched_models = result.model_ids;
+                                    this.fetched_models = result.models;
                                     if let Some(cost) = result.session_cost_usd {
                                         this.session_cost_usd = cost;
                                     }
@@ -203,6 +203,9 @@ impl State {
                 Ok(gateway) => {
                     this.update(cx, |state, cx| {
                         state.settings.api_url = gateway.api_url();
+                        // Export gateway URL so child processes (prism-cli) can find it
+                        std::env::set_var("PRISM_URL", gateway.api_url());
+                        std::env::set_var("PRISM_API_KEY", "embedded");
                         state.embedded_session_cost = Some(session_cost);
                         state.embedded = Some(Arc::new(gateway));
                         state.sidecar_status = SidecarStatus::Embedded;
@@ -302,6 +305,15 @@ impl PrismLanguageModelProvider {
     }
 
     fn create_language_model(&self, model: AvailableModel) -> Arc<dyn LanguageModel> {
+        self.create_language_model_with_pricing(model, None, None)
+    }
+
+    fn create_language_model_with_pricing(
+        &self,
+        model: AvailableModel,
+        input_cost_per_1m: Option<f64>,
+        output_cost_per_1m: Option<f64>,
+    ) -> Arc<dyn LanguageModel> {
         Arc::new(PrismLanguageModel {
             id: LanguageModelId::from(model.name.clone()),
             provider_id: PROVIDER_ID,
@@ -310,6 +322,8 @@ impl PrismLanguageModelProvider {
             state: self.state.clone(),
             http_client: self.http_client.clone(),
             request_limiter: RateLimiter::new(4),
+            gateway_input_cost_per_1m: input_cost_per_1m,
+            gateway_output_cost_per_1m: output_cost_per_1m,
         })
     }
 }
@@ -345,14 +359,26 @@ impl LanguageModelProvider for PrismLanguageModelProvider {
 
     fn provided_models(&self, cx: &App) -> Vec<Arc<dyn LanguageModel>> {
         let state = self.state.read(cx);
+        // Index fetched pricing by model id
+        let fetched_pricing: HashMap<&str, (Option<f64>, Option<f64>)> = state
+            .fetched_models
+            .iter()
+            .map(|m| {
+                (
+                    m.id.as_str(),
+                    (m.input_cost_per_1m, m.output_cost_per_1m),
+                )
+            })
+            .collect();
+
         let mut models: HashMap<String, AvailableModel> = state
             .fetched_models
             .iter()
-            .map(|id| {
+            .map(|info| {
                 (
-                    id.clone(),
+                    info.id.clone(),
                     AvailableModel {
-                        name: id.clone(),
+                        name: info.id.clone(),
                         display_name: None,
                         max_tokens: 128_000,
                         max_output_tokens: None,
@@ -366,7 +392,13 @@ impl LanguageModelProvider for PrismLanguageModelProvider {
         }
         let mut result: Vec<Arc<dyn LanguageModel>> = models
             .into_values()
-            .map(|m| self.create_language_model(m))
+            .map(|m| {
+                let (input_cost, output_cost) = fetched_pricing
+                    .get(m.name.as_str())
+                    .copied()
+                    .unwrap_or((None, None));
+                self.create_language_model_with_pricing(m, input_cost, output_cost)
+            })
             .collect();
         result.sort_by_key(|m| m.name());
         result
@@ -404,6 +436,9 @@ pub struct PrismLanguageModel {
     state: Entity<State>,
     http_client: Arc<dyn HttpClient>,
     request_limiter: RateLimiter,
+    /// Pricing from gateway /v1/models response (may be None for older gateways).
+    gateway_input_cost_per_1m: Option<f64>,
+    gateway_output_cost_per_1m: Option<f64>,
 }
 
 impl PrismLanguageModel {
@@ -526,6 +561,18 @@ impl LanguageModel for PrismLanguageModel {
     }
 
     fn model_cost_info(&self) -> Option<LanguageModelCostInfo> {
+        // Use pricing from the gateway if available (takes priority over hardcoded table)
+        if let (Some(input), Some(output)) = (
+            self.gateway_input_cost_per_1m,
+            self.gateway_output_cost_per_1m,
+        ) {
+            return Some(LanguageModelCostInfo::TokenCost {
+                input_token_cost_per_1m: input,
+                output_token_cost_per_1m: output,
+            });
+        }
+
+        // Fallback to hardcoded table for backward compatibility with older gateways
         let (input, output) = match self.model.name.as_str() {
             s if s.contains("claude-3-5-haiku") => (0.80, 4.00),
             s if s.contains("claude-sonnet-4") => (3.00, 15.00),
@@ -913,8 +960,14 @@ fn is_connection_refused(err: &anyhow::Error) -> bool {
     false
 }
 
+struct FetchedModelInfo {
+    id: String,
+    input_cost_per_1m: Option<f64>,
+    output_cost_per_1m: Option<f64>,
+}
+
 struct FetchModelsResult {
-    model_ids: Vec<String>,
+    models: Vec<FetchedModelInfo>,
     session_cost_usd: Option<f64>,
 }
 
@@ -953,7 +1006,15 @@ async fn do_fetch_models(
         serde_json::from_str(&body).context("failed to parse PrisM models response")?;
 
     Ok(FetchModelsResult {
-        model_ids: parsed.data.into_iter().map(|m| m.id).collect(),
+        models: parsed
+            .data
+            .into_iter()
+            .map(|m| FetchedModelInfo {
+                id: m.id,
+                input_cost_per_1m: m.prism_input_cost_per_1m,
+                output_cost_per_1m: m.prism_output_cost_per_1m,
+            })
+            .collect(),
         session_cost_usd,
     })
 }
@@ -966,6 +1027,10 @@ struct PrismModelsResponse {
 #[derive(serde::Deserialize)]
 struct PrismModelEntry {
     id: String,
+    #[serde(default)]
+    prism_input_cost_per_1m: Option<f64>,
+    #[serde(default)]
+    prism_output_cost_per_1m: Option<f64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1129,78 +1194,75 @@ impl EditPredictionDelegate for PrismEditPredictionDelegate {
 
         let http_client = self.http_client.clone();
 
-        self.pending_request =
-            Some(cx.spawn(async move |this, cx| {
-                if debounce {
-                    cx.background_executor()
-                        .timer(EDIT_PREDICTION_DEBOUNCE)
-                        .await;
-                }
-
-                let cursor_offset = cursor_position.to_offset(&snapshot);
-                let cursor_point = cursor_offset.to_point(&snapshot);
-
-                let (_, context_range) =
-                    cursor_excerpt::editable_and_context_ranges_for_cursor_position(
-                        cursor_point,
-                        &snapshot,
-                        MAX_REWRITE_TOKENS,
-                        MAX_CONTEXT_TOKENS,
-                    );
-
-                let context_range = context_range.to_offset(&snapshot);
-                let excerpt_text = snapshot
-                    .text_for_range(context_range.clone())
-                    .collect::<String>();
-                let cursor_within_excerpt = cursor_offset
-                    .saturating_sub(context_range.start)
-                    .min(excerpt_text.len());
-                let prompt = excerpt_text[..cursor_within_excerpt].to_string();
-                let suffix = excerpt_text[cursor_within_excerpt..].to_string();
-
-                let completion_text =
-                    match Self::fetch_completion(
-                        http_client, api_key, api_url, model, prompt, suffix,
-                    )
-                    .await
-                    {
-                        Ok(text) => text,
-                        Err(e) => {
-                            log::error!("PrisM edit prediction fetch failed: {}", e);
-                            this.update(cx, |this, cx| {
-                                this.pending_request = None;
-                                cx.notify();
-                            })?;
-                            return Err(e);
-                        }
-                    };
-
-                if completion_text.trim().is_empty() {
-                    this.update(cx, |this, cx| {
-                        this.pending_request = None;
-                        cx.notify();
-                    })?;
-                    return Ok(());
-                }
-
-                let edits: Arc<[(Range<Anchor>, Arc<str>)]> =
-                    vec![(cursor_position..cursor_position, completion_text.into())].into();
-                let edit_preview = buffer
-                    .read_with(cx, |buffer, cx| buffer.preview_edits(edits.clone(), cx))
+        self.pending_request = Some(cx.spawn(async move |this, cx| {
+            if debounce {
+                cx.background_executor()
+                    .timer(EDIT_PREDICTION_DEBOUNCE)
                     .await;
+            }
 
+            let cursor_offset = cursor_position.to_offset(&snapshot);
+            let cursor_point = cursor_offset.to_point(&snapshot);
+
+            let (_, context_range) =
+                cursor_excerpt::editable_and_context_ranges_for_cursor_position(
+                    cursor_point,
+                    &snapshot,
+                    MAX_REWRITE_TOKENS,
+                    MAX_CONTEXT_TOKENS,
+                );
+
+            let context_range = context_range.to_offset(&snapshot);
+            let excerpt_text = snapshot
+                .text_for_range(context_range.clone())
+                .collect::<String>();
+            let cursor_within_excerpt = cursor_offset
+                .saturating_sub(context_range.start)
+                .min(excerpt_text.len());
+            let prompt = excerpt_text[..cursor_within_excerpt].to_string();
+            let suffix = excerpt_text[cursor_within_excerpt..].to_string();
+
+            let completion_text =
+                match Self::fetch_completion(http_client, api_key, api_url, model, prompt, suffix)
+                    .await
+                {
+                    Ok(text) => text,
+                    Err(e) => {
+                        log::error!("PrisM edit prediction fetch failed: {}", e);
+                        this.update(cx, |this, cx| {
+                            this.pending_request = None;
+                            cx.notify();
+                        })?;
+                        return Err(e);
+                    }
+                };
+
+            if completion_text.trim().is_empty() {
                 this.update(cx, |this, cx| {
-                    this.current_completion = Some(CurrentPrismCompletion {
-                        snapshot,
-                        edits,
-                        edit_preview,
-                    });
                     this.pending_request = None;
                     cx.notify();
                 })?;
+                return Ok(());
+            }
 
-                Ok(())
-            }));
+            let edits: Arc<[(Range<Anchor>, Arc<str>)]> =
+                vec![(cursor_position..cursor_position, completion_text.into())].into();
+            let edit_preview = buffer
+                .read_with(cx, |buffer, cx| buffer.preview_edits(edits.clone(), cx))
+                .await;
+
+            this.update(cx, |this, cx| {
+                this.current_completion = Some(CurrentPrismCompletion {
+                    snapshot,
+                    edits,
+                    edit_preview,
+                });
+                this.pending_request = None;
+                cx.notify();
+            })?;
+
+            Ok(())
+        }));
     }
 
     fn accept(&mut self, _cx: &mut Context<Self>) {
