@@ -42,10 +42,12 @@ pub struct PrismDashboardPanel {
     cost_expanded: bool,
     models_expanded: bool,
     waste_expanded: bool,
+    live_routing_expanded: bool,
     routing_expanded: bool,
     agents_expanded: bool,
     refresh_task: Option<Task<()>>,
     _auto_refresh: Task<()>,
+    _prism_subscription: Option<gpui::Subscription>,
     pending_serialization: Task<Option<()>>,
 }
 
@@ -58,6 +60,8 @@ struct SerializedPanel {
     models_expanded: bool,
     #[serde(default = "default_true")]
     waste_expanded: bool,
+    #[serde(default = "default_true")]
+    live_routing_expanded: bool,
     #[serde(default = "default_true")]
     routing_expanded: bool,
     #[serde(default = "default_true")]
@@ -85,6 +89,10 @@ impl PrismDashboardPanel {
             let gateway_url = std::env::var("PRISM_GATEWAY_URL").ok();
             let api_key = std::env::var("PRISM_API_KEY").ok();
 
+            let prism_subscription =
+                language_models::provider::prism::prism_state_entity(cx)
+                    .map(|state| cx.observe(&state, |_, _, cx| cx.notify()));
+
             let mut panel = Self {
                 focus_handle: cx.focus_handle(),
                 width: None,
@@ -97,10 +105,12 @@ impl PrismDashboardPanel {
                 cost_expanded: true,
                 models_expanded: true,
                 waste_expanded: true,
+                live_routing_expanded: true,
                 routing_expanded: true,
                 agents_expanded: true,
                 refresh_task: None,
                 _auto_refresh: Task::ready(()),
+                _prism_subscription: prism_subscription,
                 pending_serialization: Task::ready(None),
             };
 
@@ -140,6 +150,7 @@ impl PrismDashboardPanel {
                         panel.cost_expanded = serialized.cost_expanded;
                         panel.models_expanded = serialized.models_expanded;
                         panel.waste_expanded = serialized.waste_expanded;
+                        panel.live_routing_expanded = serialized.live_routing_expanded;
                         panel.routing_expanded = serialized.routing_expanded;
                         panel.agents_expanded = serialized.agents_expanded;
                         cx.notify();
@@ -155,6 +166,7 @@ impl PrismDashboardPanel {
         let cost_expanded = self.cost_expanded;
         let models_expanded = self.models_expanded;
         let waste_expanded = self.waste_expanded;
+        let live_routing_expanded = self.live_routing_expanded;
         let routing_expanded = self.routing_expanded;
         let agents_expanded = self.agents_expanded;
         self.pending_serialization = cx.background_spawn(
@@ -167,6 +179,7 @@ impl PrismDashboardPanel {
                             cost_expanded,
                             models_expanded,
                             waste_expanded,
+                            live_routing_expanded,
                             routing_expanded,
                             agents_expanded,
                         })?,
@@ -480,6 +493,141 @@ impl PrismDashboardPanel {
             })
     }
 
+    fn render_live_routing_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let live_routing_expanded = self.live_routing_expanded;
+        v_flex()
+            .w_full()
+            .child(Self::render_section_header(
+                "section-live-routing",
+                "Last Routing Decision",
+                live_routing_expanded,
+                cx.listener(|this, _, _, cx| {
+                    this.live_routing_expanded = !this.live_routing_expanded;
+                    this.serialize(cx);
+                    cx.notify();
+                }),
+                cx,
+            ))
+            .when(live_routing_expanded, |this| {
+                if let Some(info) =
+                    language_models::provider::prism::prism_last_routing_info(cx)
+                {
+                    let override_color = if info.was_overridden {
+                        Color::Error
+                    } else {
+                        Color::Success
+                    };
+                    let override_label = if info.was_overridden { "Yes" } else { "No" };
+                    this.child(
+                        v_flex()
+                            .w_full()
+                            .px_3()
+                            .pb_1()
+                            .gap_0p5()
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .justify_between()
+                                    .child(
+                                        Label::new("Provider")
+                                            .size(LabelSize::Small)
+                                            .color(Color::Muted),
+                                    )
+                                    .child(
+                                        Label::new(info.routed_provider.clone())
+                                            .size(LabelSize::Small),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .justify_between()
+                                    .child(
+                                        Label::new("Model")
+                                            .size(LabelSize::Small)
+                                            .color(Color::Muted),
+                                    )
+                                    .child(
+                                        Label::new(info.routed_model.clone())
+                                            .size(LabelSize::Small),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .justify_between()
+                                    .child(
+                                        Label::new("Overridden")
+                                            .size(LabelSize::Small)
+                                            .color(Color::Muted),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap_1()
+                                            .child(
+                                                div()
+                                                    .w(px(6.))
+                                                    .h(px(6.))
+                                                    .rounded_full()
+                                                    .flex_none()
+                                                    .bg(override_color.color(cx)),
+                                            )
+                                            .child(
+                                                Label::new(override_label)
+                                                    .size(LabelSize::Small),
+                                            ),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .justify_between()
+                                    .child(
+                                        Label::new("Reason")
+                                            .size(LabelSize::Small)
+                                            .color(Color::Muted),
+                                    )
+                                    .child(
+                                        Label::new(if info.routing_reason.is_empty() {
+                                            "none".to_string()
+                                        } else {
+                                            info.routing_reason.clone()
+                                        })
+                                        .size(LabelSize::Small),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .justify_between()
+                                    .child(
+                                        Label::new("Task Type")
+                                            .size(LabelSize::Small)
+                                            .color(Color::Muted),
+                                    )
+                                    .child(
+                                        Label::new(
+                                            info.task_type
+                                                .as_deref()
+                                                .unwrap_or("unknown")
+                                                .to_string(),
+                                        )
+                                        .size(LabelSize::Small),
+                                    ),
+                            ),
+                    )
+                } else {
+                    this.child(
+                        div().px_3().pb_1().child(
+                            Label::new("No requests yet")
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        ),
+                    )
+                }
+            })
+    }
+
     fn render_routing_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let routing_expanded = self.routing_expanded;
         let section_label = if let Some(p) = &self.data.policy {
@@ -740,6 +888,7 @@ impl Render for PrismDashboardPanel {
                     .child(self.render_cost_section(cx))
                     .child(self.render_models_section(cx))
                     .child(self.render_waste_section(cx))
+                    .child(self.render_live_routing_section(cx))
                     .child(self.render_routing_section(cx))
                     .child(self.render_agents_section(cx))
                     .child(

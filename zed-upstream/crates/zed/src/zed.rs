@@ -78,7 +78,7 @@ use std::{
 };
 use terminal_view::terminal_panel::{self, TerminalPanel};
 use theme::{ActiveTheme, GlobalTheme, SystemAppearance, ThemeRegistry, ThemeSettings};
-use ui::{PopoverMenuHandle, prelude::*};
+use ui::{ButtonLike, ContextMenu, PopoverMenu, PopoverMenuHandle, prelude::*};
 use util::markdown::MarkdownString;
 use util::rel_path::RelPath;
 use util::{ResultExt, asset_str, maybe};
@@ -362,6 +362,8 @@ pub struct PrismRoutingIndicator {
     _subscription: Option<gpui::Subscription>,
     _poll_task: Option<gpui::Task<()>>,
     cached_info: Option<language_models::provider::prism::RoutingInfo>,
+    cached_history: VecDeque<language_models::provider::prism::TimestampedRoutingInfo>,
+    popover_menu_handle: PopoverMenuHandle<ContextMenu>,
 }
 
 impl PrismRoutingIndicator {
@@ -370,23 +372,21 @@ impl PrismRoutingIndicator {
             language_models::provider::prism::prism_state_entity(cx)
                 .map(|state| cx.observe(&state, |_, _, cx| cx.notify()));
 
-        // Poll for routing info changes from the background Arc<Mutex>,
-        // since the write happens outside GPUI's entity update mechanism.
         let poll_task = cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
                     .timer(Duration::from_secs(2))
                     .await;
                 let should_notify = this
-                    .update(cx, |indicator, _cx| {
+                    .update(cx, |indicator, cx| {
                         let current =
-                            language_models::provider::prism::prism_last_routing_info(_cx);
-                        if current != indicator.cached_info {
-                            indicator.cached_info = current;
-                            true
-                        } else {
-                            false
-                        }
+                            language_models::provider::prism::prism_last_routing_info(cx);
+                        let history =
+                            language_models::provider::prism::prism_routing_history(cx);
+                        let changed = current != indicator.cached_info;
+                        indicator.cached_info = current;
+                        indicator.cached_history = VecDeque::from(history);
+                        changed
                     })
                     .unwrap_or(false);
                 if should_notify {
@@ -399,7 +399,21 @@ impl PrismRoutingIndicator {
             _subscription: subscription,
             _poll_task: Some(poll_task),
             cached_info: None,
+            cached_history: VecDeque::new(),
+            popover_menu_handle: PopoverMenuHandle::default(),
         }
+    }
+}
+
+fn format_elapsed(instant: std::time::Instant) -> String {
+    let elapsed = instant.elapsed();
+    let secs = elapsed.as_secs();
+    if secs < 60 {
+        format!("{}s ago", secs)
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else {
+        format!("{}h ago", secs / 3600)
     }
 }
 
@@ -415,36 +429,215 @@ impl Render for PrismRoutingIndicator {
             info.routed_provider.clone()
         };
 
-        let tooltip_text: SharedString = format!(
-            "Provider: {}\nModel: {}\nOverridden: {}\nReason: {}\nTask: {}",
-            info.routed_provider,
-            info.routed_model,
-            info.was_overridden,
-            if info.routing_reason.is_empty() {
-                "none"
-            } else {
-                &info.routing_reason
-            },
-            info.task_type.as_deref().unwrap_or("unknown"),
-        )
-        .into();
-
         let color = if info.was_overridden {
             ui::Color::Warning
         } else {
             ui::Color::Muted
         };
 
+        let requested_model = info.requested_model.clone();
+        let routed_provider = info.routed_provider.clone();
+        let routed_model = info.routed_model.clone();
+        let routing_reason = info.routing_reason.clone();
+        let task_type = info.task_type.clone();
+        let history: Vec<language_models::provider::prism::TimestampedRoutingInfo> =
+            self.cached_history.iter().skip(1).take(5).cloned().collect();
+
         gpui::div().child(
-            ui::Button::new("prism-routing-indicator", label)
-                .label_size(ui::LabelSize::Small)
-                .color(color)
-                .tooltip(ui::Tooltip::text(tooltip_text)),
+            PopoverMenu::new("prism-routing-popover")
+                .anchor(gpui::Corner::BottomLeft)
+                .menu(move |window, cx| {
+                    let requested_model = requested_model.clone();
+                    let routed_provider = routed_provider.clone();
+                    let routed_model = routed_model.clone();
+                    let routing_reason = routing_reason.clone();
+                    let task_type = task_type.clone();
+                    let history = history.clone();
+
+                    Some(ContextMenu::build(window, cx, move |menu, _, _| {
+                        let mut menu = menu
+                            .header("Routing Details")
+                            .separator()
+                            .custom_row({
+                                let requested = requested_model
+                                    .clone()
+                                    .unwrap_or_else(|| "unknown".to_string());
+                                move |_, _| {
+                                    gpui::div()
+                                        .child(ui::Label::new(format!("Requested: {}", requested))
+                                            .size(ui::LabelSize::Small)
+                                            .color(ui::Color::Muted))
+                                        .into_any_element()
+                                }
+                            })
+                            .custom_row({
+                                let provider = routed_provider.clone();
+                                let model = routed_model.clone();
+                                move |_, _| {
+                                    gpui::div()
+                                        .child(ui::Label::new(format!("Routed to: {} / {}", provider, model))
+                                            .size(ui::LabelSize::Small)
+                                            .color(ui::Color::Muted))
+                                        .into_any_element()
+                                }
+                            })
+                            .custom_row({
+                                let reason = routing_reason.clone();
+                                move |_, _| {
+                                    let display = if reason.is_empty() { "none" } else { &reason };
+                                    gpui::div()
+                                        .child(ui::Label::new(format!("Reason: {}", display))
+                                            .size(ui::LabelSize::Small)
+                                            .color(ui::Color::Muted))
+                                        .into_any_element()
+                                }
+                            })
+                            .custom_row({
+                                let task = task_type.clone();
+                                move |_, _| {
+                                    gpui::div()
+                                        .child(ui::Label::new(format!("Task: {}", task.as_deref().unwrap_or("unknown")))
+                                            .size(ui::LabelSize::Small)
+                                            .color(ui::Color::Muted))
+                                        .into_any_element()
+                                }
+                            });
+
+                        if !history.is_empty() {
+                            menu = menu.separator().header("Recent");
+                            for entry in &history {
+                                let label = format!(
+                                    "{}/{} — {}",
+                                    entry.info.routed_provider,
+                                    entry.info.routed_model,
+                                    format_elapsed(entry.timestamp),
+                                );
+                                menu = menu.custom_row({
+                                    let label = label;
+                                    move |_, _| {
+                                        gpui::div()
+                                            .child(ui::Label::new(label.clone())
+                                                .size(ui::LabelSize::Small)
+                                                .color(ui::Color::Muted))
+                                            .into_any_element()
+                                    }
+                                });
+                            }
+                        }
+
+                        menu = menu
+                            .separator()
+                            .custom_entry(
+                                |_, _| {
+                                    gpui::div()
+                                        .child(ui::Label::new("Open PrisM Dashboard")
+                                            .size(ui::LabelSize::Small))
+                                        .into_any_element()
+                                },
+                                |window, cx| {
+                                    window.dispatch_action(
+                                        prism_dashboard::ToggleFocus.boxed_clone(),
+                                        cx,
+                                    );
+                                },
+                            );
+
+                        menu
+                    }))
+                })
+                .trigger(
+                    ButtonLike::new("prism-routing-trigger")
+                        .child(ui::Label::new(label).size(ui::LabelSize::Small).color(color))
+                )
+                .with_handle(self.popover_menu_handle.clone()),
         )
     }
 }
 
 impl workspace::StatusItemView for PrismRoutingIndicator {
+    fn set_active_pane_item(
+        &mut self,
+        _active_pane_item: Option<&dyn workspace::item::ItemHandle>,
+        _window: &mut gpui::Window,
+        _cx: &mut Context<Self>,
+    ) {
+    }
+}
+
+pub struct CostGaugeStatusItem {
+    _subscription: Option<gpui::Subscription>,
+    _poll_task: Option<gpui::Task<()>>,
+    cached_cost: f64,
+}
+
+impl CostGaugeStatusItem {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        let subscription =
+            language_models::provider::prism::prism_state_entity(cx)
+                .map(|state| cx.observe(&state, |_, _, cx| cx.notify()));
+
+        let poll_task = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_secs(2))
+                    .await;
+                let should_notify = this
+                    .update(cx, |gauge, cx| {
+                        let current =
+                            language_models::provider::prism::prism_session_cost_usd(cx);
+                        if (current - gauge.cached_cost).abs() > 1e-9 {
+                            gauge.cached_cost = current;
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false);
+                if should_notify {
+                    this.update(cx, |_, cx| cx.notify()).ok();
+                }
+            }
+        });
+
+        Self {
+            _subscription: subscription,
+            _poll_task: Some(poll_task),
+            cached_cost: 0.0,
+        }
+    }
+}
+
+impl Render for CostGaugeStatusItem {
+    fn render(&mut self, _window: &mut gpui::Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        let cost = self.cached_cost;
+        if cost < 1e-9 {
+            return gpui::div();
+        }
+
+        let label = format!("${cost:.2}");
+        let color = if cost >= 5.0 {
+            ui::Color::Error
+        } else if cost >= 1.0 {
+            ui::Color::Warning
+        } else {
+            ui::Color::Success
+        };
+
+        let tooltip: SharedString = format!("PrisM session cost: ${cost:.4}").into();
+
+        gpui::div().child(
+            ui::Button::new("prism-cost-gauge", label)
+                .label_size(ui::LabelSize::Small)
+                .color(color)
+                .tooltip(ui::Tooltip::text(tooltip))
+                .on_click(|_, window, cx| {
+                    window.dispatch_action(prism_dashboard::ToggleFocus.boxed_clone(), cx);
+                }),
+        )
+    }
+}
+
+impl workspace::StatusItemView for CostGaugeStatusItem {
     fn set_active_pane_item(
         &mut self,
         _active_pane_item: Option<&dyn workspace::item::ItemHandle>,
@@ -580,12 +773,14 @@ pub fn initialize_workspace(
         let line_ending_indicator =
             cx.new(|_| line_ending_selector::LineEndingIndicator::default());
         let routing_indicator = cx.new(|cx| PrismRoutingIndicator::new(cx));
+        let cost_gauge = cx.new(|cx| CostGaugeStatusItem::new(cx));
         workspace.status_bar().update(cx, |status_bar, cx| {
             status_bar.add_left_item(search_button, window, cx);
             status_bar.add_left_item(lsp_button, window, cx);
             status_bar.add_left_item(diagnostic_summary, window, cx);
             status_bar.add_left_item(activity_indicator, window, cx);
             status_bar.add_left_item(routing_indicator, window, cx);
+            status_bar.add_left_item(cost_gauge, window, cx);
             status_bar.add_right_item(edit_prediction_ui, window, cx);
             status_bar.add_right_item(active_buffer_encoding, window, cx);
             status_bar.add_right_item(active_buffer_language, window, cx);
