@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use prism_cli::{acp, agent::Agent, config::Config, session::Session};
+use prism_cli::{acp, agent::Agent, config::Config, mcp, session::Session};
 use prism_client::PrismClient;
 
 #[derive(Parser)]
@@ -105,7 +105,8 @@ async fn run(cli: Cli) -> Result<()> {
             if let Some(m) = model {
                 config.prism_model = m;
             }
-            acp::run_acp_server(config).await?;
+            let mcp_registry = load_mcp_registry(&config).await;
+            acp::run_acp_server(config, mcp_registry).await?;
         }
         Commands::Run {
             task,
@@ -129,6 +130,7 @@ async fn run(cli: Cli) -> Result<()> {
                 config.system_prompt = Some(s);
             }
             let client = PrismClient::new(&config.prism_url).with_api_key(&config.prism_api_key);
+            let mcp_registry = load_mcp_registry(&config).await;
 
             if let Some(resume_flag) = resume {
                 // Resume a previous session
@@ -139,14 +141,14 @@ async fn run(cli: Cli) -> Result<()> {
                     session.episode_id.to_string()[..8].to_string(),
                     session.turns
                 );
-                let mut agent = Agent::from_session(client, config, session);
+                let mut agent = Agent::from_session(client, config, session, mcp_registry);
                 let task_str = task.as_deref().unwrap_or("");
                 agent.resume(task_str).await?;
             } else {
                 // New session
                 let task_str =
                     task.ok_or_else(|| anyhow::anyhow!("task is required for new sessions"))?;
-                let mut agent = Agent::new(client, config, &task_str);
+                let mut agent = Agent::new(client, config, &task_str, mcp_registry);
                 agent.run(&task_str).await?;
             }
         }
@@ -193,11 +195,7 @@ async fn run(cli: Cli) -> Result<()> {
             // For sessions subcommand, use sessions_dir from env or default; don't require API key
             let sessions_dir = std::env::var("PRISM_SESSIONS_DIR")
                 .map(std::path::PathBuf::from)
-                .unwrap_or_else(|_| {
-                    dirs::home_dir()
-                        .unwrap_or_else(|| std::path::PathBuf::from("."))
-                        .join(".prism/sessions")
-                });
+                .unwrap_or_else(|_| prism_cli::config::prism_home().join("sessions"));
             match cmd {
                 SessionsCmd::List => {
                     let summaries = Session::list_all(&sessions_dir)?;
@@ -237,4 +235,22 @@ async fn run(cli: Cli) -> Result<()> {
         }
     }
     Ok(())
+}
+
+async fn load_mcp_registry(config: &Config) -> Option<mcp::McpRegistry> {
+    match mcp::config::load_mcp_config(&config.mcp_config_path) {
+        Ok(mcp_config) if !mcp_config.mcp_servers.is_empty() => {
+            let registry = mcp::McpRegistry::connect_all(&mcp_config).await;
+            if registry.is_empty() {
+                None
+            } else {
+                Some(registry)
+            }
+        }
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!("failed to load MCP config: {e}");
+            None
+        }
+    }
 }

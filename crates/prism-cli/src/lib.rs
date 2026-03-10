@@ -1,6 +1,8 @@
 pub mod acp;
 pub mod agent;
+pub mod common;
 pub mod config;
+pub mod mcp;
 pub mod memory;
 pub mod session;
 pub mod tools;

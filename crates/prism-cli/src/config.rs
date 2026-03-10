@@ -1,6 +1,13 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
+/// Returns `~/.prism`, the base directory for all prism-cli state.
+pub fn prism_home() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".prism")
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub prism_url: String,
@@ -14,6 +21,7 @@ pub struct Config {
     pub memory_window_size: usize,
     pub max_session_messages: usize,
     pub max_sessions: usize,
+    pub mcp_config_path: PathBuf,
 }
 
 impl Config {
@@ -45,11 +53,7 @@ impl Config {
 
         let sessions_dir = std::env::var("PRISM_SESSIONS_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                dirs::home_dir()
-                    .unwrap_or_else(|| PathBuf::from("."))
-                    .join(".prism/sessions")
-            });
+            .unwrap_or_else(|_| prism_home().join("sessions"));
 
         let memory_window_size = std::env::var("PRISM_MEMORY_WINDOW_SIZE")
             .ok()
@@ -66,6 +70,8 @@ impl Config {
             .and_then(|s| s.parse().ok())
             .unwrap_or(64);
 
+        let mcp_config_path = crate::mcp::config::mcp_config_path();
+
         Ok(Self {
             prism_url,
             prism_api_key,
@@ -78,6 +84,7 @@ impl Config {
             memory_window_size,
             max_session_messages,
             max_sessions,
+            mcp_config_path,
         })
     }
 }

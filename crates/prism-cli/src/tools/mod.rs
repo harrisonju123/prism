@@ -8,6 +8,8 @@ use std::path::Path;
 use prism_types::{Tool, ToolFunction};
 use serde_json::json;
 
+use crate::mcp::McpRegistry;
+
 pub fn tool_definitions() -> Vec<Tool> {
     vec![
         make_tool(
@@ -138,7 +140,32 @@ fn resolve_path(path: Option<&str>, session_cwd: Option<&Path>) -> String {
     }
 }
 
-pub async fn dispatch(name: &str, args: &serde_json::Value, session_cwd: Option<&Path>) -> String {
+/// Returns built-in tools merged with MCP tools (if any).
+pub fn all_tool_definitions(mcp: Option<&McpRegistry>) -> Vec<Tool> {
+    let mut tools = tool_definitions();
+    if let Some(registry) = mcp {
+        tools.extend_from_slice(registry.tool_definitions());
+    }
+    tools
+}
+
+pub async fn dispatch(
+    name: &str,
+    args: &serde_json::Value,
+    session_cwd: Option<&Path>,
+    mcp: Option<&McpRegistry>,
+) -> String {
+    // Route MCP-namespaced tools to the registry
+    if McpRegistry::is_mcp_tool(name) {
+        if let Some(registry) = mcp {
+            return match registry.dispatch(name, args).await {
+                Ok(result) => result,
+                Err(e) => format!("{{\"error\": \"{e}\"}}"),
+            };
+        }
+        return format!("{{\"error\": \"MCP tool '{name}' called but no MCP registry available\"}}");
+    }
+
     match name {
         "read_file" => {
             let raw = args["path"].as_str().filter(|s| !s.is_empty());
