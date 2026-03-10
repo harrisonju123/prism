@@ -47,6 +47,8 @@ pub struct Config {
     pub denied_commands: Vec<String>,
     /// Sandbox mode controlling overall tool availability.
     pub sandbox_mode: SandboxMode,
+    pub max_session_messages: usize,
+    pub max_sessions: usize,
 }
 
 impl Config {
@@ -117,6 +119,16 @@ impl Config {
             .map(|s| SandboxMode::from_str(&s))
             .unwrap_or_default();
 
+        let max_session_messages = std::env::var("PRISM_MAX_SESSION_MESSAGES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(200);
+
+        let max_sessions = std::env::var("PRISM_MAX_SESSIONS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(64);
+
         Ok(Self {
             prism_url,
             prism_api_key,
@@ -134,6 +146,8 @@ impl Config {
             denied_paths,
             denied_commands,
             sandbox_mode,
+            max_session_messages,
+            max_sessions,
         })
     }
 }
