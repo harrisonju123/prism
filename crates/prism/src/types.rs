@@ -41,9 +41,32 @@ pub struct StreamOptions {
     pub include_usage: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MessageRole {
+    System,
+    User,
+    Assistant,
+    Tool,
+    #[serde(other)]
+    Unknown,
+}
+
+impl std::fmt::Display for MessageRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::System => f.write_str("system"),
+            Self::User => f.write_str("user"),
+            Self::Assistant => f.write_str("assistant"),
+            Self::Tool => f.write_str("tool"),
+            Self::Unknown => f.write_str("unknown"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
-    pub role: String,
+    pub role: MessageRole,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]

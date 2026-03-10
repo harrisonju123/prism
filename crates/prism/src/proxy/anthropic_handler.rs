@@ -20,7 +20,7 @@ use crate::models;
 use crate::proxy::cost::compute_cost;
 use crate::proxy::handler::AppState;
 use crate::proxy::streaming::StreamRelay;
-use crate::types::{EventStatus, InferenceEvent, Usage};
+use crate::types::{EventStatus, InferenceEvent, MessageRole, Usage};
 
 // ---------------------------------------------------------------------------
 // Anthropic-native request/response types
@@ -496,7 +496,7 @@ fn to_chat_completion_request(
 
     if let Some(ref system) = req.system {
         messages.push(crate::types::Message {
-            role: "system".into(),
+            role: MessageRole::System,
             content: Some(serde_json::Value::String(system.clone())),
             name: None,
             tool_calls: None,
@@ -535,7 +535,7 @@ fn to_chat_completion_request(
                                 _ => String::new(),
                             };
                             messages.push(crate::types::Message {
-                                role: "tool".into(),
+                                role: MessageRole::Tool,
                                 content: Some(serde_json::Value::String(content_str)),
                                 name: None,
                                 tool_calls: None,
@@ -552,7 +552,7 @@ fn to_chat_completion_request(
                         .collect();
                     if !text_parts.is_empty() {
                         messages.push(crate::types::Message {
-                            role: "user".into(),
+                            role: MessageRole::User,
                             content: Some(serde_json::Value::String(text_parts.join("\n"))),
                             name: None,
                             tool_calls: None,
@@ -593,7 +593,7 @@ fn to_chat_completion_request(
                         .collect();
 
                     messages.push(crate::types::Message {
-                        role: "assistant".into(),
+                        role: MessageRole::Assistant,
                         content,
                         name: None,
                         tool_calls: Some(tool_calls),
@@ -608,8 +608,11 @@ fn to_chat_completion_request(
                         .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
                         .collect::<Vec<_>>()
                         .join("");
+                    let role: MessageRole =
+                        serde_json::from_value(serde_json::Value::String(msg.role.clone()))
+                            .unwrap_or(MessageRole::Unknown);
                     messages.push(crate::types::Message {
-                        role: msg.role.clone(),
+                        role,
                         content: Some(serde_json::Value::String(text)),
                         name: None,
                         tool_calls: None,
@@ -620,8 +623,11 @@ fn to_chat_completion_request(
             }
             other => {
                 // String or other — pass through as-is
+                let role: MessageRole =
+                    serde_json::from_value(serde_json::Value::String(msg.role.clone()))
+                        .unwrap_or(MessageRole::Unknown);
                 messages.push(crate::types::Message {
-                    role: msg.role.clone(),
+                    role,
                     content: Some(other.clone()),
                     name: None,
                     tool_calls: None,
@@ -961,8 +967,8 @@ mod tests {
         let chat_req = to_chat_completion_request(&req);
         assert_eq!(chat_req.model, "claude-3-opus");
         assert_eq!(chat_req.messages.len(), 2); // system + user
-        assert_eq!(chat_req.messages[0].role, "system");
-        assert_eq!(chat_req.messages[1].role, "user");
+        assert_eq!(chat_req.messages[0].role, MessageRole::System);
+        assert_eq!(chat_req.messages[1].role, MessageRole::User);
         assert_eq!(chat_req.max_tokens, Some(1024));
     }
 
@@ -976,7 +982,7 @@ mod tests {
             choices: vec![crate::types::Choice {
                 index: 0,
                 message: crate::types::Message {
-                    role: "assistant".into(),
+                    role: MessageRole::Assistant,
                     content: Some(serde_json::Value::String("Hi there!".into())),
                     name: None,
                     tool_calls: None,
@@ -1114,7 +1120,7 @@ mod tests {
         let chat_req = to_chat_completion_request(&req);
         assert_eq!(chat_req.messages.len(), 1);
         let msg = &chat_req.messages[0];
-        assert_eq!(msg.role, "assistant");
+        assert_eq!(msg.role, MessageRole::Assistant);
         assert_eq!(
             msg.content.as_ref().and_then(|c| c.as_str()),
             Some("Let me check.")
@@ -1154,7 +1160,7 @@ mod tests {
         let chat_req = to_chat_completion_request(&req);
         assert_eq!(chat_req.messages.len(), 1);
         let msg = &chat_req.messages[0];
-        assert_eq!(msg.role, "tool");
+        assert_eq!(msg.role, MessageRole::Tool);
         assert_eq!(msg.tool_call_id.as_deref(), Some("toolu_abc"));
         assert_eq!(
             msg.content.as_ref().and_then(|c| c.as_str()),
@@ -1172,7 +1178,7 @@ mod tests {
             choices: vec![crate::types::Choice {
                 index: 0,
                 message: crate::types::Message {
-                    role: "assistant".into(),
+                    role: MessageRole::Assistant,
                     content: None,
                     name: None,
                     tool_calls: Some(vec![serde_json::json!({

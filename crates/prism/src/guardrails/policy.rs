@@ -54,13 +54,13 @@ impl GuardrailPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ChatCompletionRequest, Message};
+    use crate::types::{ChatCompletionRequest, Message, MessageRole};
 
     fn make_request(user_msg: &str) -> ChatCompletionRequest {
         ChatCompletionRequest {
             model: "test".into(),
             messages: vec![Message {
-                role: "user".into(),
+                role: MessageRole::User,
                 content: Some(serde_json::Value::String(user_msg.into())),
                 name: None,
                 tool_calls: None,

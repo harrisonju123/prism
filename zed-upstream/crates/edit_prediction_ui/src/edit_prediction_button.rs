@@ -1174,16 +1174,12 @@ impl EditPredictionButton {
                                 .color(Color::Warning)
                                 .into_any_element()
                         },
-                        |_window, cx| {
-                            cx.open_url(&zed_urls::account_url(cx))
-                        },
+                        |_window, cx| cx.open_url(&zed_urls::account_url(cx)),
                     )
                     .entry(
                         "Check your payment status to continue using this feature.",
                         None,
-                        |_window, cx| {
-                            cx.open_url(&zed_urls::account_url(cx))
-                        },
+                        |_window, cx| cx.open_url(&zed_urls::account_url(cx)),
                     )
                     .separator();
             }

@@ -12,7 +12,7 @@ use crate::error::{PrismError, Result};
 use crate::keys::MaybeAuth;
 use crate::keys::budget::BudgetCheckResult;
 use crate::proxy::handler::{AppState, EventContext, build_event, resolve_model_with_fallbacks};
-use crate::types::{ChatCompletionRequest, EventStatus, Message, ProviderResponse};
+use crate::types::{ChatCompletionRequest, EventStatus, Message, MessageRole, ProviderResponse};
 
 #[derive(Deserialize)]
 pub struct EditPredictionRequest {
@@ -102,7 +102,7 @@ pub async fn predict_edits(
         model: req.model.clone(),
         messages: vec![
             Message {
-                role: "system".to_string(),
+                role: MessageRole::System,
                 content: Some(serde_json::Value::String(
                     "You are a code completion assistant. Complete the code at <fim_middle>. \
                      Output only the inserted text, nothing else."
@@ -114,7 +114,7 @@ pub async fn predict_edits(
                 extra: Default::default(),
             },
             Message {
-                role: "user".to_string(),
+                role: MessageRole::User,
                 content: Some(serde_json::Value::String(req.prompt.clone())),
                 name: None,
                 tool_calls: None,

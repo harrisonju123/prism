@@ -14,38 +14,58 @@ pub fn prism_home() -> PathBuf {
 }
 
 #[derive(Debug, Clone)]
-pub struct Config {
-    pub prism_url: String,
-    pub prism_api_key: String,
-    pub prism_model: String,
+pub struct GatewayConfig {
+    pub url: String,
+    pub api_key: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelConfig {
+    pub model: String,
     pub max_turns: u32,
     pub max_cost_usd: Option<f64>,
     pub max_tool_output: usize,
     pub system_prompt: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionConfig {
     pub sessions_dir: PathBuf,
-    pub memory_window_size: usize,
     pub max_session_messages: usize,
     pub max_sessions: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompressionConfig {
+    pub model: Option<String>,
+    pub threshold: f64,
+    pub preserve_recent: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExtensionConfig {
     pub mcp_config_path: PathBuf,
-    pub permission_mode: Option<PermissionMode>,
     pub hooks_config_path: PathBuf,
-    /// Model for context compression summarization. None = disabled (FIFO only).
-    pub compression_model: Option<String>,
-    /// Trigger compression at this fraction of max_session_messages (default 0.7).
-    pub compression_threshold: f64,
-    /// Number of recent messages to preserve during compression (default 20).
-    pub compression_preserve_recent: usize,
+    pub permission_mode: Option<PermissionMode>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub gateway: GatewayConfig,
+    pub model: ModelConfig,
+    pub session: SessionConfig,
+    pub compression: CompressionConfig,
+    pub extensions: ExtensionConfig,
 }
 
 impl Config {
     pub fn from_env() -> Result<Self> {
-        let prism_url =
+        let url =
             std::env::var("PRISM_URL").unwrap_or_else(|_| "http://localhost:9100".to_string());
 
-        let prism_api_key = std::env::var("PRISM_API_KEY").unwrap_or_default();
+        let api_key = std::env::var("PRISM_API_KEY").unwrap_or_default();
 
-        let prism_model =
-            std::env::var("PRISM_MODEL").unwrap_or_else(|_| "gpt-5-2-codex".to_string());
+        let model = std::env::var("PRISM_MODEL").unwrap_or_else(|_| "gpt-5-2-codex".to_string());
 
         let max_turns = std::env::var("PRISM_MAX_TURNS")
             .ok()
@@ -66,11 +86,6 @@ impl Config {
         let sessions_dir = std::env::var("PRISM_SESSIONS_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| prism_home().join("sessions"));
-
-        let memory_window_size = std::env::var("PRISM_MEMORY_WINDOW_SIZE")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(4096);
 
         let max_session_messages = std::env::var("PRISM_MAX_SESSION_MESSAGES")
             .ok()
@@ -106,36 +121,42 @@ impl Config {
             .unwrap_or(20);
 
         Ok(Self {
-            prism_url,
-            prism_api_key,
-            prism_model,
-            max_turns,
-            max_cost_usd,
-            max_tool_output,
-            system_prompt,
-            sessions_dir,
-            memory_window_size,
-            max_session_messages,
-            max_sessions,
-            mcp_config_path,
-            permission_mode,
-            hooks_config_path,
-            compression_model,
-            compression_threshold,
-            compression_preserve_recent,
+            gateway: GatewayConfig { url, api_key },
+            model: ModelConfig {
+                model,
+                max_turns,
+                max_cost_usd,
+                max_tool_output,
+                system_prompt,
+            },
+            session: SessionConfig {
+                sessions_dir,
+                max_session_messages,
+                max_sessions,
+            },
+            compression: CompressionConfig {
+                model: compression_model,
+                threshold: compression_threshold,
+                preserve_recent: compression_preserve_recent,
+            },
+            extensions: ExtensionConfig {
+                mcp_config_path,
+                hooks_config_path,
+                permission_mode,
+            },
         })
     }
 
     pub fn build_hook_runner(&self) -> HookRunner {
-        HookRunner::new(HooksConfig::load(&self.hooks_config_path))
+        HookRunner::new(HooksConfig::load(&self.extensions.hooks_config_path))
     }
 
     pub fn build_compressor(&self) -> Option<ContextCompressor> {
-        self.compression_model.as_ref().map(|model| {
+        self.compression.model.as_ref().map(|model| {
             ContextCompressor::new(
                 model.clone(),
-                self.compression_threshold,
-                self.compression_preserve_recent,
+                self.compression.threshold,
+                self.compression.preserve_recent,
             )
         })
     }

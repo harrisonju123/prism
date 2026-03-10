@@ -5,7 +5,7 @@ use rand::Rng;
 use crate::config::Config;
 use crate::providers::ProviderRegistry;
 use crate::proxy::cost::compute_cost;
-use crate::types::{ChatCompletionRequest, Message, TaskType};
+use crate::types::{ChatCompletionRequest, Message, MessageRole, TaskType};
 
 pub struct Judge {
     pub judge_model: String,
@@ -129,7 +129,7 @@ fn build_judge_prompt(
 
     vec![
         Message {
-            role: "system".to_string(),
+            role: MessageRole::System,
             content: Some(serde_json::Value::String(system)),
             name: None,
             tool_calls: None,
@@ -137,7 +137,7 @@ fn build_judge_prompt(
             extra: serde_json::Map::new(),
         },
         Message {
-            role: "user".to_string(),
+            role: MessageRole::User,
             content: Some(serde_json::Value::String(user)),
             name: None,
             tool_calls: None,
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn judge_prompt_includes_rubric() {
         let messages = vec![Message {
-            role: "user".to_string(),
+            role: MessageRole::User,
             content: Some(serde_json::Value::String("Write hello world".to_string())),
             name: None,
             tool_calls: None,

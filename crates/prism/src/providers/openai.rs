@@ -113,7 +113,7 @@ impl Provider for OpenAIProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ChatCompletionRequest, Message};
+    use crate::types::{ChatCompletionRequest, Message, MessageRole};
 
     fn make_provider() -> OpenAIProvider {
         OpenAIProvider::new(
@@ -134,7 +134,7 @@ mod tests {
         let req = ChatCompletionRequest {
             model: "original-model".into(),
             messages: vec![Message {
-                role: "user".into(),
+                role: MessageRole::User,
                 content: Some(serde_json::Value::String("Hello".into())),
                 name: None,
                 tool_calls: None,

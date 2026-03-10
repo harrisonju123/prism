@@ -3,6 +3,7 @@ use std::io::Write;
 
 use crate::common::truncate_with_ellipsis;
 use crate::mcp::McpRegistry;
+use crate::tools::BuiltinTool;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum PermissionMode {
@@ -26,8 +27,14 @@ pub fn is_read_only(tool_name: &str) -> bool {
         return true;
     }
     matches!(
-        tool_name,
-        "read_file" | "list_dir" | "glob_files" | "grep_files" | "web_fetch"
+        BuiltinTool::from_str(tool_name),
+        Some(
+            BuiltinTool::ReadFile
+                | BuiltinTool::ListDir
+                | BuiltinTool::GlobFiles
+                | BuiltinTool::GrepFiles
+                | BuiltinTool::WebFetch
+        )
     )
 }
 
@@ -122,21 +129,23 @@ impl ToolPermissionGate {
 }
 
 fn tool_preview(tool_name: &str, args: &serde_json::Value) -> String {
-    match tool_name {
-        "bash" | "run_command" => {
+    match BuiltinTool::from_str(tool_name) {
+        Some(BuiltinTool::Bash | BuiltinTool::RunCommand) => {
             truncate_with_ellipsis(args["command"].as_str().unwrap_or("(unknown)"), 120)
         }
-        "write_file" => {
+        Some(BuiltinTool::WriteFile) => {
             let path = args["path"].as_str().unwrap_or("(unknown)");
             let content_len = args["content"].as_str().map(|s| s.len()).unwrap_or(0);
             format!("{path} ({content_len} bytes)")
         }
-        "edit_file" => args["path"].as_str().unwrap_or("(unknown)").to_string(),
-        "save_memory" => {
+        Some(BuiltinTool::EditFile) => args["path"].as_str().unwrap_or("(unknown)").to_string(),
+        Some(BuiltinTool::SaveMemory) => {
             let key = args["key"].as_str().unwrap_or("note");
             format!("key={key}")
         }
-        "spawn_agent" => truncate_with_ellipsis(args["task"].as_str().unwrap_or("(unknown)"), 100),
+        Some(BuiltinTool::SpawnAgent) => {
+            truncate_with_ellipsis(args["task"].as_str().unwrap_or("(unknown)"), 100)
+        }
         _ => truncate_with_ellipsis(&args.to_string(), 120),
     }
 }

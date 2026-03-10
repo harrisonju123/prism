@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::{PrismError, Result};
 use crate::types::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, Choice, ChunkChoice,
-    EmbeddingRequest, EmbeddingResponse, Message, PrismStreamError, ProviderResponse, Usage,
+    EmbeddingRequest, EmbeddingResponse, Message, MessageRole, PrismStreamError, ProviderResponse,
+    Usage,
 };
 
 use super::Provider;
@@ -118,8 +119,8 @@ fn to_gemini_request(req: &ChatCompletionRequest, model_id: &str) -> (String, Ge
             })
             .unwrap_or_default();
 
-        match msg.role.as_str() {
-            "system" => {
+        match msg.role {
+            MessageRole::System => {
                 system_instruction = Some(GeminiContent {
                     role: None,
                     parts: vec![GeminiPart {
@@ -129,7 +130,7 @@ fn to_gemini_request(req: &ChatCompletionRequest, model_id: &str) -> (String, Ge
                     }],
                 });
             }
-            "assistant" => {
+            MessageRole::Assistant => {
                 contents.push(GeminiContent {
                     role: Some("model".to_string()),
                     parts: vec![GeminiPart {
@@ -140,7 +141,7 @@ fn to_gemini_request(req: &ChatCompletionRequest, model_id: &str) -> (String, Ge
                 });
             }
             _ => {
-                // "user" and "tool" both map to "user"
+                // User, Tool, and Unknown all map to "user"
                 contents.push(GeminiContent {
                     role: Some("user".to_string()),
                     parts: vec![GeminiPart {
@@ -264,7 +265,7 @@ fn from_gemini_response(resp: GeminiResponse, model_id: &str) -> ChatCompletionR
         choices: vec![Choice {
             index: 0,
             message: Message {
-                role: "assistant".into(),
+                role: MessageRole::Assistant,
                 content,
                 name: None,
                 tool_calls: tool_calls_opt,
@@ -609,7 +610,7 @@ impl Provider for GoogleProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ChatCompletionRequest, Message};
+    use crate::types::{ChatCompletionRequest, Message, MessageRole};
 
     fn make_provider() -> GoogleProvider {
         GoogleProvider::new("test-key".into(), Client::new())
@@ -627,7 +628,7 @@ mod tests {
             model: "gemini-pro".into(),
             messages: vec![
                 Message {
-                    role: "system".into(),
+                    role: MessageRole::System,
                     content: Some(serde_json::Value::String("Be concise.".into())),
                     name: None,
                     tool_calls: None,
@@ -635,7 +636,7 @@ mod tests {
                     extra: Default::default(),
                 },
                 Message {
-                    role: "user".into(),
+                    role: MessageRole::User,
                     content: Some(serde_json::Value::String("Hi".into())),
                     name: None,
                     tool_calls: None,
@@ -643,7 +644,7 @@ mod tests {
                     extra: Default::default(),
                 },
                 Message {
-                    role: "assistant".into(),
+                    role: MessageRole::Assistant,
                     content: Some(serde_json::Value::String("Hello!".into())),
                     name: None,
                     tool_calls: None,

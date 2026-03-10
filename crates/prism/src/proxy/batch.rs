@@ -158,7 +158,7 @@ mod tests {
         ChatCompletionRequest {
             model: model.to_string(),
             messages: vec![crate::types::Message {
-                role: "user".into(),
+                role: crate::types::MessageRole::User,
                 content: Some(json!("hello")),
                 name: None,
                 tool_calls: None,

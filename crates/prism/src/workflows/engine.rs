@@ -9,7 +9,7 @@ use crate::config::Config;
 use crate::providers::ProviderRegistry;
 use crate::proxy::cost::compute_cost;
 use crate::proxy::handler::resolve_model;
-use crate::types::{ChatCompletionRequest, Message};
+use crate::types::{ChatCompletionRequest, Message, MessageRole};
 use crate::workflows::types::{ExecuteWorkflowRequest, NodeDefinition, NodeResult, WorkflowResult};
 
 /// Build a petgraph DAG from the workflow definition, returning (graph, node_id → index map).
@@ -209,7 +209,7 @@ async fn execute_node(
     let request = ChatCompletionRequest {
         model: node.model.clone(),
         messages: vec![Message {
-            role: "user".to_string(),
+            role: MessageRole::User,
             content: Some(serde_json::Value::String(prompt)),
             name: None,
             tool_calls: None,

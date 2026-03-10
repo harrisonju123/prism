@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::error::{PrismError, Result};
 use crate::providers::Provider;
-use crate::types::{ChatCompletionRequest, Message, TaskType};
+use crate::types::{ChatCompletionRequest, Message, MessageRole, TaskType};
 
 use super::taxonomy::{ClassificationResult, ClassifierInput};
 
@@ -104,7 +104,7 @@ pub async fn llm_classify(
         model: model.to_string(),
         messages: vec![
             Message {
-                role: "system".to_string(),
+                role: MessageRole::System,
                 content: Some(serde_json::Value::String(SYSTEM_PROMPT.to_string())),
                 name: None,
                 tool_calls: None,
@@ -112,7 +112,7 @@ pub async fn llm_classify(
                 extra: serde_json::Map::new(),
             },
             Message {
-                role: "user".to_string(),
+                role: MessageRole::User,
                 content: Some(serde_json::Value::String(prompt)),
                 name: None,
                 tool_calls: None,
