@@ -284,11 +284,20 @@ impl Agent {
                     model_name = self.config.prism_model.clone();
 
                     let (in_rate, out_rate): (f64, f64) = match model_name.as_str() {
-                        m if m.contains("claude-opus-4") => (15.0, 75.0),
-                        m if m.contains("claude-sonnet-4") => (3.0, 15.0),
-                        m if m.contains("claude-haiku-4") => (0.8, 4.0),
+                        m if m.contains("claude-opus-4") => (5.50, 27.50),
+                        m if m.contains("claude-sonnet-4") => (3.30, 16.50),
+                        m if m.contains("claude-haiku-4") => (1.00, 5.00),
+                        m if m.contains("gpt-5") && m.contains("codex") => (1.75, 14.0),
+                        m if m.contains("gpt-5") => (1.75, 14.0),
                         m if m.contains("gpt-4o-mini") => (0.15, 0.6),
                         m if m.contains("gpt-4o") => (2.5, 10.0),
+                        m if m.contains("qwen3") => (0.15, 1.20),
+                        m if m.contains("kimi") => (0.60, 3.00),
+                        m if m.contains("gpt-oss") => (0.15, 0.60),
+                        m if m.contains("minimax") => (0.30, 1.20),
+                        m if m.contains("gemma") => (0.23, 0.38),
+                        m if m.contains("ministral") => (0.20, 0.20),
+                        m if m.contains("nova") => (0.33, 2.75),
                         m if m.contains("gemini-1.5-pro") => (1.25, 5.0),
                         m if m.contains("gemini-1.5-flash") => (0.075, 0.3),
                         _ => (0.0, 0.0),
@@ -443,7 +452,7 @@ impl Agent {
                             let len = s.len();
                             (json!(s), len)
                         } else {
-                            match tools::dispatch(name, &args, &self.config).await {
+                            match tools::dispatch(name, &args, &self.config, None).await {
                                 tools::ToolResult::Text(s) => {
                                     let s = truncate_tool_output(name, &s, self.config.max_tool_output);
                                     let len = s.len();

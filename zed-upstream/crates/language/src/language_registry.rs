@@ -11,7 +11,7 @@ use futures::{
     Future,
     channel::{mpsc, oneshot},
 };
-use globset::GlobSet;
+use globset::GlobMatcher;
 use gpui::{App, BackgroundExecutor, SharedString};
 use lsp::LanguageServerId;
 use parking_lot::{Mutex, RwLock};
@@ -785,7 +785,7 @@ impl LanguageRegistry {
         self: &Arc<Self>,
         path: &Path,
         content: Option<&Rope>,
-        user_file_types: Option<&FxHashMap<Arc<str>, (GlobSet, Vec<String>)>>,
+        user_file_types: Option<&FxHashMap<Arc<str>, (Vec<GlobMatcher>, Vec<String>)>>,
     ) -> Option<AvailableLanguage> {
         let filename = path.file_name().and_then(|filename| filename.to_str());
         // `Path.extension()` returns None for files with a leading '.'
@@ -828,10 +828,14 @@ impl LanguageRegistry {
             let path_matches_custom_suffix = || {
                 user_file_types
                     .and_then(|types| types.get(language_name.as_ref()))
-                    .map_or(None, |(custom_suffixes, _)| {
+                    .map_or(None, |(custom_matchers, _)| {
                         path_suffixes
                             .iter()
-                            .find(|(_, candidate)| custom_suffixes.is_match_candidate(candidate))
+                            .find(|(_, candidate)| {
+                                custom_matchers
+                                    .iter()
+                                    .any(|m| m.is_match_candidate(candidate))
+                            })
                             .map(|(suffix, _)| suffix.len())
                     })
             };
@@ -1078,8 +1082,13 @@ impl LanguageRegistry {
                     let this = self.clone();
                     let wasm_path = wasm_path.clone();
                     *grammar = AvailableGrammar::Loading(wasm_path.clone(), vec![tx]);
-                    self.executor
-                        .spawn(async move {
+                    // Cranelift's e-graph optimization can recurse deeply
+                    // enough to overflow GCD dispatch thread stacks (~8MB).
+                    // Use a dedicated thread with a 64MB stack.
+                    std::thread::Builder::new()
+                        .name(format!("grammar-compiler-{}", name))
+                        .stack_size(64 * 1024 * 1024)
+                        .spawn(move || {
                             let grammar_result = maybe!({
                                 let wasm_bytes = std::fs::read(&wasm_path)?;
                                 let grammar_name = wasm_path
@@ -1108,7 +1117,7 @@ impl LanguageRegistry {
                                 }
                             }
                         })
-                        .detach();
+                        .expect("failed to spawn grammar compiler thread");
                 }
             }
         } else {

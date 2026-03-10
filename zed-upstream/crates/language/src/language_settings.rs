@@ -6,7 +6,7 @@ use ec4rs::{
     Properties as EditorconfigProperties,
     property::{FinalNewline, IndentSize, IndentStyle, MaxLineLen, TabWidth, TrimTrailingWs},
 };
-use globset::{Glob, GlobMatcher, GlobSet, GlobSetBuilder};
+use globset::{Glob, GlobMatcher, GlobSetBuilder};
 use gpui::{App, Modifiers, SharedString};
 use itertools::{Either, Itertools};
 use settings::{DocumentFoldingRanges, DocumentSymbols, IntoGpui, SemanticTokens};
@@ -20,6 +20,17 @@ pub use settings::{
 use settings::{RegisterSetting, Settings, SettingsLocation, SettingsStore};
 use shellexpand;
 use std::{borrow::Cow, num::NonZeroU32, path::Path, sync::Arc};
+
+/// Compile a `Glob` into a `GlobMatcher`, returning `None` if DFA compilation
+/// hits state-space explosion. `GlobSetBuilder::build()` surfaces the error
+/// that `compile_matcher()` would turn into a panic under `panic=abort`.
+fn try_compile_matcher(glob: &Glob) -> Option<GlobMatcher> {
+    GlobSetBuilder::new()
+        .add(glob.clone())
+        .build()
+        .ok()
+        .map(|_| glob.compile_matcher())
+}
 
 /// Returns the settings for the specified language from the provided file.
 pub fn language_settings<'a>(
@@ -53,7 +64,7 @@ pub struct AllLanguageSettings {
     pub edit_predictions: EditPredictionSettings,
     pub defaults: LanguageSettings,
     languages: HashMap<LanguageName, LanguageSettings>,
-    pub file_types: FxHashMap<Arc<str>, (GlobSet, Vec<String>)>,
+    pub file_types: FxHashMap<Arc<str>, (Vec<GlobMatcher>, Vec<String>)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -765,21 +776,40 @@ impl settings::Settings for AllLanguageSettings {
 
         let enabled_in_text_threads = edit_predictions.enabled_in_text_threads.unwrap();
 
-        let mut file_types: FxHashMap<Arc<str>, (GlobSet, Vec<String>)> = FxHashMap::default();
+        let mut file_types: FxHashMap<Arc<str>, (Vec<GlobMatcher>, Vec<String>)> =
+            FxHashMap::default();
+
+        const MAX_PATTERN_LEN: usize = 512;
+        const MAX_PATTERNS_PER_LANGUAGE: usize = 64;
 
         for (language, patterns) in all_languages.file_types.iter().flatten() {
-            log::info!(
-                "building glob set for language {language}: {patterns:?}"
-            );
-            let mut builder = GlobSetBuilder::new();
+            let mut matchers = Vec::new();
             let mut valid_patterns = Vec::new();
 
             for pattern in &patterns.0 {
-                log::info!("compiling glob pattern: {pattern:?}");
+                if valid_patterns.len() >= MAX_PATTERNS_PER_LANGUAGE {
+                    log::warn!(
+                        "Skipping remaining file_type globs for {language}: exceeded {MAX_PATTERNS_PER_LANGUAGE} pattern limit"
+                    );
+                    break;
+                }
+                if pattern.len() > MAX_PATTERN_LEN {
+                    log::warn!(
+                        "Skipping oversized file_type glob for {language}: pattern is {} bytes (max {MAX_PATTERN_LEN})",
+                        pattern.len()
+                    );
+                    continue;
+                }
                 match Glob::new(pattern) {
                     Ok(glob) => {
-                        builder.add(glob);
-                        valid_patterns.push(pattern.clone());
+                        if let Some(matcher) = try_compile_matcher(&glob) {
+                            matchers.push(matcher);
+                            valid_patterns.push(pattern.clone());
+                        } else {
+                            log::warn!(
+                                "Skipping file_type glob {pattern:?} for {language}: DFA compilation failed"
+                            );
+                        }
                     }
                     Err(err) => {
                         log::warn!(
@@ -789,16 +819,8 @@ impl settings::Settings for AllLanguageSettings {
                 }
             }
 
-            log::info!("building GlobSet with {} patterns for {language}", valid_patterns.len());
-            match builder.build() {
-                Ok(glob_set) => {
-                    file_types.insert(language.clone(), (glob_set, valid_patterns));
-                }
-                Err(err) => {
-                    log::warn!(
-                        "Failed to build GlobSet for language {language}: {err}"
-                    );
-                }
+            if !matchers.is_empty() {
+                file_types.insert(language.clone(), (matchers, valid_patterns));
             }
         }
 
@@ -813,8 +835,15 @@ impl settings::Settings for AllLanguageSettings {
                     .iter()
                     .filter_map(|g| {
                         let expanded_g = shellexpand::tilde(g).into_owned();
+                        let glob = globset::Glob::new(&expanded_g).ok()?;
+                        let matcher = try_compile_matcher(&glob).or_else(|| {
+                            log::warn!(
+                                "Skipping disabled glob {expanded_g:?}: DFA compilation failed"
+                            );
+                            None
+                        })?;
                         Some(DisabledGlob {
-                            matcher: globset::Glob::new(&expanded_g).ok()?.compile_matcher(),
+                            matcher,
                             is_absolute: Path::new(&expanded_g).is_absolute(),
                         })
                     })
@@ -874,10 +903,11 @@ mod tests {
                         #[cfg(windows)]
                         let glob_str = glob_str.as_str();
                         let expanded_glob_str = shellexpand::tilde(glob_str).into_owned();
+                        let glob = globset::Glob::new(&expanded_glob_str).unwrap();
+                        let matcher = try_compile_matcher(&glob)
+                            .expect("test glob should compile");
                         DisabledGlob {
-                            matcher: globset::Glob::new(&expanded_glob_str)
-                                .unwrap()
-                                .compile_matcher(),
+                            matcher,
                             is_absolute: Path::new(&expanded_glob_str).is_absolute(),
                         }
                     })

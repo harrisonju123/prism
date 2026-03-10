@@ -4,6 +4,8 @@ mod search;
 mod shell;
 mod web;
 
+use std::path::Path;
+
 use crate::config::{Config, SandboxMode};
 use prism_types::{Tool, ToolFunction};
 use serde_json::json;
@@ -183,7 +185,35 @@ pub fn is_command_denied(cmd: &str, config: &Config) -> bool {
     false
 }
 
-pub async fn dispatch(name: &str, args: &serde_json::Value, config: &Config) -> ToolResult {
+/// Resolve a shell tool's `cwd` argument. Returns `None` when no cwd is available
+/// (inherits the process working directory), avoiding a behavioral change for the
+/// non-ACP agent path where `session_cwd` is `None`.
+fn resolve_shell_cwd(explicit: Option<&str>, session_cwd: Option<&Path>) -> Option<String> {
+    let explicit = explicit.filter(|s| !s.is_empty());
+    match (explicit, session_cwd) {
+        (Some(_), _) => Some(resolve_path(explicit, session_cwd)),
+        (None, Some(cwd)) => Some(cwd.to_string_lossy().into_owned()),
+        (None, None) => None,
+    }
+}
+
+/// Resolve a path argument against a session working directory.
+/// Returns the path as-is if absolute or no cwd is provided; joins relative paths onto cwd.
+fn resolve_path(path: Option<&str>, session_cwd: Option<&Path>) -> String {
+    match (path, session_cwd) {
+        // Explicit absolute path — use as-is
+        (Some(p), _) if !p.is_empty() && Path::new(p).is_absolute() => p.to_string(),
+        // Relative path with a session cwd — resolve against it
+        (Some(p), Some(cwd)) if !p.is_empty() => cwd.join(p).to_string_lossy().into_owned(),
+        // No path arg but we have a session cwd — use cwd as the default
+        (None, Some(cwd)) => cwd.to_string_lossy().into_owned(),
+        // Fallback: use the provided path or "."
+        (Some(p), _) if !p.is_empty() => p.to_string(),
+        _ => ".".to_string(),
+    }
+}
+
+pub async fn dispatch(name: &str, args: &serde_json::Value, config: &Config, session_cwd: Option<&Path>) -> ToolResult {
     // Permission check
     if !is_tool_allowed(name, config) {
         return ToolResult::Text(format!(
@@ -204,11 +234,7 @@ pub async fn dispatch(name: &str, args: &serde_json::Value, config: &Config) -> 
 
     // Command-based permission for shell tools
     if matches!(name, "bash" | "run_command") {
-        let cmd = if name == "bash" {
-            args["command"].as_str().unwrap_or("")
-        } else {
-            args["command"].as_str().unwrap_or("")
-        };
+        let cmd = args["command"].as_str().unwrap_or("");
         if is_command_denied(cmd, config) {
             return ToolResult::Text(format!(
                 "{{\"error\": \"command is denied by policy\"}}"
@@ -216,26 +242,37 @@ pub async fn dispatch(name: &str, args: &serde_json::Value, config: &Config) -> 
         }
     }
 
-    dispatch_inner(name, args).await
+    dispatch_inner(name, args, session_cwd).await
 }
 
-async fn dispatch_inner(name: &str, args: &serde_json::Value) -> ToolResult {
+async fn dispatch_inner(name: &str, args: &serde_json::Value, session_cwd: Option<&Path>) -> ToolResult {
     match name {
         "read_file" => {
-            let offset = args["offset"].as_u64().map(|n| n as usize);
-            let limit = args["limit"].as_u64().map(|n| n as usize);
-            ToolResult::Text(files::read_file(args["path"].as_str().unwrap_or(""), offset, limit).await)
+            let raw = args["path"].as_str().filter(|s| !s.is_empty());
+            match raw {
+                Some(_) => {
+                    let offset = args["offset"].as_u64().map(|n| n as usize);
+                    let limit = args["limit"].as_u64().map(|n| n as usize);
+                    let path = resolve_path(raw, session_cwd);
+                    ToolResult::Text(files::read_file(&path, offset, limit).await)
+                }
+                None => ToolResult::Text("error: path is required".to_string()),
+            }
         }
         "write_file" => {
-            ToolResult::Text(
-                files::write_file(
-                    args["path"].as_str().unwrap_or(""),
-                    args["content"].as_str().unwrap_or(""),
-                )
-                .await,
-            )
+            let raw = args["path"].as_str().filter(|s| !s.is_empty());
+            match raw {
+                Some(_) => {
+                    let path = resolve_path(raw, session_cwd);
+                    ToolResult::Text(files::write_file(&path, args["content"].as_str().unwrap_or("")).await)
+                }
+                None => ToolResult::Text("error: path is required".to_string()),
+            }
         }
-        "list_dir" => ToolResult::Text(files::list_dir(args["path"].as_str().unwrap_or(".")).await),
+        "list_dir" => {
+            let path = resolve_path(args["path"].as_str(), session_cwd);
+            ToolResult::Text(files::list_dir(&path).await)
+        }
         "run_command" => {
             let cmd = args["command"].as_str().unwrap_or("");
             let raw_args: Vec<String> = args["args"]
@@ -247,33 +284,39 @@ async fn dispatch_inner(name: &str, args: &serde_json::Value) -> ToolResult {
                 })
                 .unwrap_or_default();
             let timeout = args["timeout_secs"].as_u64().unwrap_or(30).min(120);
-            let cwd = args["cwd"].as_str();
-            ToolResult::Text(shell::run_command(cmd, &raw_args, timeout, cwd).await)
+            let cwd = resolve_shell_cwd(args["cwd"].as_str(), session_cwd);
+            ToolResult::Text(shell::run_command(cmd, &raw_args, timeout, cwd.as_deref()).await)
         }
         "bash" => {
             let cmd = args["command"].as_str().unwrap_or("");
             let timeout = args["timeout_secs"].as_u64().unwrap_or(30).min(120);
-            let cwd = args["cwd"].as_str();
-            ToolResult::Text(shell::bash(cmd, timeout, cwd).await)
+            let cwd = resolve_shell_cwd(args["cwd"].as_str(), session_cwd);
+            ToolResult::Text(shell::bash(cmd, timeout, cwd.as_deref()).await)
         }
         "edit_file" => {
-            let path = args["path"].as_str().unwrap_or("");
-            let old_string = args["old_string"].as_str().unwrap_or("");
-            let new_string = args["new_string"].as_str().unwrap_or("");
-            ToolResult::Text(files::edit_file(path, old_string, new_string).await)
+            let raw = args["path"].as_str().filter(|s| !s.is_empty());
+            match raw {
+                Some(_) => {
+                    let path = resolve_path(raw, session_cwd);
+                    let old_string = args["old_string"].as_str().unwrap_or("");
+                    let new_string = args["new_string"].as_str().unwrap_or("");
+                    ToolResult::Text(files::edit_file(&path, old_string, new_string).await)
+                }
+                None => ToolResult::Text("error: path is required".to_string()),
+            }
         }
         "glob_files" => {
             let pattern = args["pattern"].as_str().unwrap_or("");
-            let dir = args["dir"].as_str().unwrap_or(".");
+            let dir = resolve_path(args["dir"].as_str(), session_cwd);
             let max_results = args["max_results"].as_u64().unwrap_or(100) as usize;
-            ToolResult::Text(search::glob_files(pattern, dir, max_results))
+            ToolResult::Text(search::glob_files(pattern, &dir, max_results))
         }
         "grep_files" => {
             let pattern = args["pattern"].as_str().unwrap_or("");
-            let dir = args["dir"].as_str().unwrap_or(".");
+            let dir = resolve_path(args["dir"].as_str(), session_cwd);
             let file_glob = args["file_glob"].as_str();
             let max_results = args["max_results"].as_u64().unwrap_or(50) as usize;
-            ToolResult::Text(search::grep_files(pattern, dir, file_glob, max_results))
+            ToolResult::Text(search::grep_files(pattern, &dir, file_glob, max_results))
         }
         "web_fetch" => {
             let url = args["url"].as_str().unwrap_or("");

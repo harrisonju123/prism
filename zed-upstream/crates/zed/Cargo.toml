@@ -33,7 +33,6 @@ visual-tests = [
     "dep:image",
     "dep:tempfile",
     "dep:action_log",
-    "dep:agent_servers",
     "workspace/test-support",
     "project/test-support",
     "editor/test-support",
@@ -123,7 +122,7 @@ tempfile = { workspace = true, optional = true }
 clock = { workspace = true, optional = true }
 acp_thread.workspace = true
 action_log = { workspace = true, optional = true }
-agent_servers = { workspace = true, optional = true }
+agent_servers.workspace = true
 gpui_tokio.workspace = true
 rayon.workspace = true
 

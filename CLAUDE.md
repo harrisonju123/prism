@@ -271,6 +271,27 @@ git add zed-upstream/ patches/zed/ && git commit -m "chore(zed): sync upstream t
 
 See `patches/zed/PATCHES.md` for per-file risk notes and what to watch for during conflict resolution.
 
+## Rust Memory & Stack Safety
+
+Rust does not auto-grow thread stacks. Each thread gets a fixed stack (typically 2-8MB), and overflows crash the process. Apply these rules when writing or reviewing Rust code:
+
+### Stack overflow prevention
+- **Recursive code / deep call chains:** Wrap with `stacker::maybe_grow(512 * 1024, 8 * 1024 * 1024, || { ... })` when calling into recursive third-party code (cranelift, tree-sitter, etc.) or writing recursive functions without bounded depth. `stacker` is already a workspace dependency.
+- **Large stack allocations:** Never put large arrays or structs on the stack. Use `Box::new(...)` or `Vec` for anything over a few KB.
+- **Spawned threads:** Use `std::thread::Builder::new().stack_size(N)` when the workload needs more than the default 8MB. The Zed codebase already does this for grammar loading (64MB thread in `language_registry.rs`).
+- **Async futures:** Each `.await` point adds to the future's in-memory size. Break very deep async chains into `tokio::spawn` to reset the stack.
+
+### Heap memory leaks
+- **`Arc` cycles:** Use `Weak` to break reference cycles between `Arc` pointers. If two structs hold `Arc` to each other, neither will ever drop.
+- **Unbounded collections:** `Vec`, `HashMap`, and channels that grow without bound are the most common Rust leak. Add eviction, capacity limits, or periodic cleanup.
+- **Detached tasks:** `task.detach()` means no one will ever cancel or collect that work. Prefer storing `Task` handles and dropping them when the owner is dropped.
+- **Static caches:** Mutex-guarded `Vec` pools (like `PARSERS` in `language.rs`) grow but never shrink. Be aware of this when adding similar patterns.
+
+### Zed-specific stack pressure areas
+- **Cranelift/WASM compilation:** Deep recursive IR lowering in `WasmStore::new()`. Mitigated with `stacker::maybe_grow` in `with_parser()`.
+- **Tree-sitter parsing:** Recursive descent on deeply nested syntax. Grammar loading uses a dedicated 64MB thread.
+- **GCD dispatch threads (macOS):** Have ~8MB stacks and are not under our control — always guard recursive work that may run on GCD threads.
+
 ## Known Issues
 
 - `classify_summarization` test is flaky (classifies as Documentation instead of Summarization) — pre-existing Phase 2 issue. Keyword-based classifier is brittle; agents don't use textbook phrasing.

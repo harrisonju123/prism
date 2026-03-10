@@ -79,20 +79,30 @@ pub fn validate_policy(policy: &RoutingPolicy) -> Result<(), String> {
 
 /// Build a default policy based on task difficulty.
 fn build_default_policy() -> RoutingPolicy {
+    let mut rules = Vec::new();
+
+    // Reasoning/architecture: route to highest quality (Opus)
+    for task_str in &["reasoning", "architecture"] {
+        rules.push(RoutingRule {
+            task_type: task_str.to_string(),
+            criteria: SelectionCriteria::HighestQualityUnderCost,
+            min_quality: 0.85,
+            max_cost_per_1k: None,
+            max_latency_ms: None,
+            fallback: Some("claude-opus-4-6".into()),
+            fallback_chain: vec![],
+        });
+    }
+
+    // Other hard tasks: cheapest above quality floor
     let hard_types = [
         "code_generation",
         "code_review",
-        "reasoning",
-        "architecture",
         "debugging",
         "refactoring",
         "fill_in_the_middle",
         "code_edit",
     ];
-
-    let mut rules = Vec::new();
-
-    // Hard tasks: higher quality floor
     for task_str in &hard_types {
         rules.push(RoutingRule {
             task_type: task_str.to_string(),
@@ -100,7 +110,7 @@ fn build_default_policy() -> RoutingPolicy {
             min_quality: 0.70,
             max_cost_per_1k: None,
             max_latency_ms: None,
-            fallback: None,
+            fallback: Some("gpt-5-2-codex".into()),
             fallback_chain: vec![],
         });
     }

@@ -102,17 +102,21 @@ pub fn with_parser<F, R>(func: F) -> R
 where
     F: FnOnce(&mut Parser) -> R,
 {
-    let mut parser = PARSERS.lock().pop().unwrap_or_else(|| {
-        let mut parser = Parser::new();
-        parser
-            .set_wasm_store(WasmStore::new(&WASM_ENGINE).unwrap())
-            .unwrap();
-        parser
-    });
-    parser.set_included_ranges(&[]).unwrap();
-    let result = func(&mut parser);
-    PARSERS.lock().push(parser);
-    result
+    // Cranelift compilation during WasmStore::new() can overflow the stack on
+    // GCD dispatch threads (~8MB). Grow dynamically when less than 512KB remains.
+    stacker::maybe_grow(512 * 1024, 8 * 1024 * 1024, || {
+        let mut parser = PARSERS.lock().pop().unwrap_or_else(|| {
+            let mut parser = Parser::new();
+            parser
+                .set_wasm_store(WasmStore::new(&WASM_ENGINE).unwrap())
+                .unwrap();
+            parser
+        });
+        parser.set_included_ranges(&[]).unwrap();
+        let result = func(&mut parser);
+        PARSERS.lock().push(parser);
+        result
+    })
 }
 
 pub fn with_query_cursor<F, R>(func: F) -> R
@@ -126,7 +130,11 @@ where
 static NEXT_LANGUAGE_ID: AtomicUsize = AtomicUsize::new(0);
 static NEXT_GRAMMAR_ID: AtomicUsize = AtomicUsize::new(0);
 static WASM_ENGINE: LazyLock<wasmtime::Engine> = LazyLock::new(|| {
-    wasmtime::Engine::new(&wasmtime::Config::new()).expect("Failed to create Wasmtime engine")
+    let mut config = wasmtime::Config::new();
+    // SpeedAndSize avoids the deep e-graph recursion in cranelift's
+    // `constructor_simplify` that overflows GCD thread stacks (~8MB).
+    config.cranelift_opt_level(wasmtime::OptLevel::SpeedAndSize);
+    wasmtime::Engine::new(&config).expect("Failed to create Wasmtime engine")
 });
 
 /// A shared grammar for plain text, exposed for reuse by downstream crates.

@@ -245,6 +245,15 @@ members = [
     "zed-upstream/tooling/perf",
     "zed-upstream/tooling/xtask",
 ]
+default-members = [
+    "crates/prism",
+    "crates/uglyhat",
+    "crates/prism-types",
+    "crates/prism-client",
+    "crates/prism-cli",
+    "crates/uglyhat-panel",
+    "crates/prism-dashboard",
+]
 
 [workspace.package]
 publish = false
@@ -721,6 +730,7 @@ slotmap = "1.0.6"
 smallvec = { version = "1.6", features = ["union", "const_new"] }
 smol = "2.0"
 sqlformat = "0.2"
+stacker = "0.1"
 stacksafe = "0.1"
 streaming-iterator = "0.1"
 strsim = "0.11"
@@ -873,6 +883,10 @@ libwebrtc = { git = "https://github.com/zed-industries/livekit-rust-sdks", rev =
 split-debuginfo = "unpacked"
 incremental = true
 codegen-units = 16
+# rustc 1.94.0 debug-mode precondition checks (copy_nonoverlapping alignment,
+# Vec internals) cause SIGILL on aarch64. Disable globally until rustc is fixed.
+debug-assertions = false
+debug = "line-tables-only"
 
 [profile.dev.build-override]
 codegen-units = 16

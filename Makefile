@@ -8,7 +8,7 @@ export CARGO_TARGET_DIR ?= $(HOME)/.cache/prism-build
         dev-setup dev dev-min \
         dashboard-install dashboard-build dashboard-dev \
         sync-zed sync-zed-dry check-prism check-zed check-all reconcile-cargo verify-patches regenerate-patches check-upstream-drift \
-        disk-usage prune-build-cache \
+        disk-usage prune-build-cache sweep \
         build-zed run-zed dogfood
 
 # Development
@@ -135,10 +135,17 @@ build-zed:
 run-zed:
 	$(CARGO) run -p zed
 
-# Prune incremental cache when it exceeds threshold, plus remove legacy target dirs
+# Remove build artifacts not accessed in the last 7 days, cap cache at 20GB
+# Requires: cargo install cargo-sweep (auto-installed on first run)
+sweep:
+	@command -v cargo-sweep >/dev/null 2>&1 || (echo "Installing cargo-sweep..." && $(CARGO) install cargo-sweep)
+	$(CARGO) sweep --time 7
+	$(CARGO) sweep --maxsize 20
+
+# Prune incremental cache when it exceeds threshold, sweep stale artifacts, clean worktrees
 CACHE_PRUNE_THRESHOLD_GB ?= 5
 prune-build-cache:
-	@cache_dir="$(HOME)/.cache/prism-build/debug/incremental"; \
+	@cache_dir="$(CARGO_TARGET_DIR)/debug/incremental"; \
 	if [ -d "$$cache_dir" ]; then \
 		size_kb=$$(du -sk "$$cache_dir" 2>/dev/null | cut -f1); \
 		size_gb=$$((size_kb / 1048576)); \
@@ -152,6 +159,12 @@ prune-build-cache:
 	@for wt in .worktrees/*/; do \
 		[ -d "$$wt/target" ] && echo "  Removing $$wt/target ..." && rm -rf "$$wt/target"; \
 	done; true
+	@echo "  Pruning stale worktrees..."
+	@git worktree prune -v
+	@if command -v cargo-sweep >/dev/null 2>&1; then \
+		echo "  Running cargo-sweep..."; \
+		$(MAKE) --no-print-directory sweep; \
+	fi
 
 # Dogfood: validate env then launch Zed with PrisM embedded gateway
 dogfood: prune-build-cache

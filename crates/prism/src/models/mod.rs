@@ -219,13 +219,98 @@ static MISTRAL_SMALL_QUALITIES: &[(&str, f64)] = &[
     ("testing", 0.59),
 ];
 
+// ---------------------------------------------------------------------------
+// LiteLLM-routed model quality scores
+// ---------------------------------------------------------------------------
+
+static GPT52_CODEX_QUALITIES: &[(&str, f64)] = &[
+    ("classification", 0.85),
+    ("code_generation", 0.87),
+    ("code_review", 0.84),
+    ("conversation", 0.82),
+    ("extraction", 0.83),
+    ("reasoning", 0.84),
+    ("summarization", 0.82),
+    ("tool_selection", 0.83),
+    ("architecture", 0.82),
+    ("debugging", 0.86),
+    ("refactoring", 0.84),
+    ("documentation", 0.78),
+    ("testing", 0.83),
+];
+
+static QWEN3_80B_QUALITIES: &[(&str, f64)] = &[
+    ("classification", 0.74),
+    ("code_generation", 0.72),
+    ("code_review", 0.68),
+    ("conversation", 0.72),
+    ("extraction", 0.73),
+    ("reasoning", 0.68),
+    ("summarization", 0.72),
+    ("tool_selection", 0.66),
+    ("architecture", 0.64),
+    ("debugging", 0.66),
+    ("refactoring", 0.64),
+    ("documentation", 0.70),
+    ("testing", 0.65),
+];
+
+static QWEN3_CODER_QUALITIES: &[(&str, f64)] = &[
+    ("classification", 0.70),
+    ("code_generation", 0.74),
+    ("code_review", 0.70),
+    ("conversation", 0.66),
+    ("extraction", 0.68),
+    ("reasoning", 0.62),
+    ("summarization", 0.66),
+    ("tool_selection", 0.64),
+    ("architecture", 0.60),
+    ("debugging", 0.68),
+    ("refactoring", 0.66),
+    ("documentation", 0.64),
+    ("testing", 0.66),
+];
+
+static GPT_OSS_120B_QUALITIES: &[(&str, f64)] = &[
+    ("classification", 0.72),
+    ("code_generation", 0.70),
+    ("code_review", 0.66),
+    ("conversation", 0.70),
+    ("extraction", 0.71),
+    ("reasoning", 0.66),
+    ("summarization", 0.70),
+    ("tool_selection", 0.64),
+    ("architecture", 0.62),
+    ("debugging", 0.64),
+    ("refactoring", 0.62),
+    ("documentation", 0.68),
+    ("testing", 0.63),
+];
+
+static KIMI_K2_QUALITIES: &[(&str, f64)] = &[
+    ("classification", 0.80),
+    ("code_generation", 0.78),
+    ("code_review", 0.74),
+    ("conversation", 0.78),
+    ("extraction", 0.79),
+    ("reasoning", 0.76),
+    ("summarization", 0.78),
+    ("tool_selection", 0.72),
+    ("architecture", 0.72),
+    ("debugging", 0.74),
+    ("refactoring", 0.72),
+    ("documentation", 0.74),
+    ("testing", 0.72),
+];
+
 /// Semantic aliases map human-friendly names to concrete models.
 pub static SEMANTIC_ALIASES: &[(&str, &str)] = &[
-    ("fast", "claude-3-5-haiku-latest"),
-    ("smart", "claude-sonnet-4-6"),
-    ("cheap", "claude-3-5-haiku-latest"),
-    ("balanced", "claude-sonnet-4-6"),
+    ("fast", "qwen3-coder-30b"),
+    ("smart", "claude-opus-4-6"),
+    ("cheap", "gemma-3-4b"),
+    ("balanced", "gpt-5-2-codex"),
     ("powerful", "claude-opus-4-6"),
+    ("code", "gpt-5-2-codex"),
 ];
 
 pub fn resolve_alias(name: &str) -> Option<&'static str> {
@@ -853,6 +938,409 @@ pub static MODEL_CATALOG: LazyLock<HashMap<&'static str, ModelInfo>> = LazyLock:
                 downgrade_to: None,
             },
         ),
+        // =====================================================================
+        // LiteLLM-routed models (Bedrock / OpenAI via LiteLLM proxy)
+        // =====================================================================
+        (
+            "claude-opus-4-6",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "claude-opus-4-6",
+                display_name: "Claude Opus 4.6 (LiteLLM)",
+                context_window: 200_000,
+                max_output_tokens: 32_000,
+                input_cost_per_1m: 5.50,
+                output_cost_per_1m: 27.50,
+                tier: 1,
+                supports_streaming: true,
+                supports_tools: true,
+                supports_vision: true,
+                task_qualities: OPUS_4_QUALITIES,
+                downgrade_to: Some("claude-sonnet-4-6"),
+            },
+        ),
+        (
+            "claude-opus-4-5",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "claude-opus-4-5-20251101",
+                display_name: "Claude Opus 4.5 (LiteLLM)",
+                context_window: 200_000,
+                max_output_tokens: 32_000,
+                input_cost_per_1m: 5.50,
+                output_cost_per_1m: 27.50,
+                tier: 1,
+                supports_streaming: true,
+                supports_tools: true,
+                supports_vision: true,
+                task_qualities: OPUS_4_QUALITIES,
+                downgrade_to: Some("claude-sonnet-4-6"),
+            },
+        ),
+        (
+            "gpt-5-2-codex",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "gpt-5.2-codex",
+                display_name: "GPT-5.2 Codex (LiteLLM)",
+                context_window: 200_000,
+                max_output_tokens: 32_000,
+                input_cost_per_1m: 1.75,
+                output_cost_per_1m: 14.0,
+                tier: 2,
+                supports_streaming: true,
+                supports_tools: true,
+                supports_vision: false,
+                task_qualities: GPT52_CODEX_QUALITIES,
+                downgrade_to: Some("gpt-5-2"),
+            },
+        ),
+        (
+            "gpt-5-2",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "gpt-5.2-chat-latest",
+                display_name: "GPT-5.2 Chat (LiteLLM)",
+                context_window: 200_000,
+                max_output_tokens: 32_000,
+                input_cost_per_1m: 1.75,
+                output_cost_per_1m: 14.0,
+                tier: 2,
+                supports_streaming: true,
+                supports_tools: true,
+                supports_vision: true,
+                task_qualities: GPT52_CODEX_QUALITIES,
+                downgrade_to: Some("claude-sonnet-4-6"),
+            },
+        ),
+        (
+            "claude-sonnet-4-6",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "claude-sonnet-4-6",
+                display_name: "Claude Sonnet 4.6 (LiteLLM)",
+                context_window: 200_000,
+                max_output_tokens: 16_000,
+                input_cost_per_1m: 3.30,
+                output_cost_per_1m: 16.50,
+                tier: 2,
+                supports_streaming: true,
+                supports_tools: true,
+                supports_vision: true,
+                task_qualities: SONNET_4_QUALITIES,
+                downgrade_to: Some("claude-haiku-4-5"),
+            },
+        ),
+        (
+            "claude-sonnet-4-5",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "claude-sonnet-4-5-20250929",
+                display_name: "Claude Sonnet 4.5 (LiteLLM)",
+                context_window: 200_000,
+                max_output_tokens: 16_000,
+                input_cost_per_1m: 3.30,
+                output_cost_per_1m: 16.50,
+                tier: 2,
+                supports_streaming: true,
+                supports_tools: true,
+                supports_vision: true,
+                task_qualities: SONNET_4_QUALITIES,
+                downgrade_to: Some("claude-haiku-4-5"),
+            },
+        ),
+        (
+            "claude-haiku-4-5",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "claude-haiku-4-5-20251001",
+                display_name: "Claude Haiku 4.5 (LiteLLM)",
+                context_window: 200_000,
+                max_output_tokens: 8_192,
+                input_cost_per_1m: 1.00,
+                output_cost_per_1m: 5.00,
+                tier: 2,
+                supports_streaming: true,
+                supports_tools: true,
+                supports_vision: true,
+                task_qualities: HAIKU_35_QUALITIES,
+                downgrade_to: Some("kimi-k2-5"),
+            },
+        ),
+        (
+            "kimi-k2-5",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "moonshotai.kimi-k2.5",
+                display_name: "Kimi K2.5 (LiteLLM)",
+                context_window: 128_000,
+                max_output_tokens: 8_192,
+                input_cost_per_1m: 0.60,
+                output_cost_per_1m: 3.00,
+                tier: 2,
+                supports_streaming: true,
+                supports_tools: false,
+                supports_vision: false,
+                task_qualities: KIMI_K2_QUALITIES,
+                downgrade_to: None,
+            },
+        ),
+        (
+            "kimi-k2-thinking",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "moonshot.kimi-k2-thinking",
+                display_name: "Kimi K2 Thinking (LiteLLM)",
+                context_window: 128_000,
+                max_output_tokens: 8_192,
+                input_cost_per_1m: 0.60,
+                output_cost_per_1m: 3.00,
+                tier: 2,
+                supports_streaming: true,
+                supports_tools: false,
+                supports_vision: false,
+                task_qualities: KIMI_K2_QUALITIES,
+                downgrade_to: None,
+            },
+        ),
+        (
+            "qwen3-vl-235b",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "qwen.qwen3-vl-235b-a22b",
+                display_name: "Qwen3 VL 235B (LiteLLM)",
+                context_window: 128_000,
+                max_output_tokens: 8_192,
+                input_cost_per_1m: 0.15,
+                output_cost_per_1m: 1.20,
+                tier: 2,
+                supports_streaming: true,
+                supports_tools: false,
+                supports_vision: true,
+                task_qualities: QWEN3_80B_QUALITIES,
+                downgrade_to: Some("qwen3-next-80b"),
+            },
+        ),
+        (
+            "nova-2-lite",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "us.amazon.nova-2-lite-v1:0",
+                display_name: "Nova 2 Lite (LiteLLM)",
+                context_window: 128_000,
+                max_output_tokens: 8_192,
+                input_cost_per_1m: 0.33,
+                output_cost_per_1m: 2.75,
+                tier: 2,
+                supports_streaming: true,
+                supports_tools: false,
+                supports_vision: false,
+                task_qualities: &[
+                    ("code_generation", 0.72),
+                    ("reasoning", 0.68),
+                    ("conversation", 0.74),
+                ],
+                downgrade_to: None,
+            },
+        ),
+        (
+            "qwen3-next-80b",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "qwen.qwen3-next-80b-a3b",
+                display_name: "Qwen3 Next 80B (LiteLLM)",
+                context_window: 128_000,
+                max_output_tokens: 8_192,
+                input_cost_per_1m: 0.15,
+                output_cost_per_1m: 1.20,
+                tier: 3,
+                supports_streaming: true,
+                supports_tools: false,
+                supports_vision: false,
+                task_qualities: QWEN3_80B_QUALITIES,
+                downgrade_to: Some("qwen3-coder-30b"),
+            },
+        ),
+        (
+            "qwen3-coder-30b",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "qwen.qwen3-coder-30b-a3b-v1:0",
+                display_name: "Qwen3 Coder 30B (LiteLLM)",
+                context_window: 128_000,
+                max_output_tokens: 8_192,
+                input_cost_per_1m: 0.15,
+                output_cost_per_1m: 1.20,
+                tier: 3,
+                supports_streaming: true,
+                supports_tools: false,
+                supports_vision: false,
+                task_qualities: QWEN3_CODER_QUALITIES,
+                downgrade_to: None,
+            },
+        ),
+        (
+            "gpt-oss-120b",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "openai.gpt-oss-120b-1:0",
+                display_name: "GPT-OSS 120B (LiteLLM)",
+                context_window: 128_000,
+                max_output_tokens: 8_192,
+                input_cost_per_1m: 0.15,
+                output_cost_per_1m: 0.60,
+                tier: 3,
+                supports_streaming: true,
+                supports_tools: false,
+                supports_vision: false,
+                task_qualities: GPT_OSS_120B_QUALITIES,
+                downgrade_to: Some("gpt-oss-20b"),
+            },
+        ),
+        (
+            "gpt-oss-20b",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "openai.gpt-oss-20b-1:0",
+                display_name: "GPT-OSS 20B (LiteLLM)",
+                context_window: 128_000,
+                max_output_tokens: 8_192,
+                input_cost_per_1m: 0.15,
+                output_cost_per_1m: 0.60,
+                tier: 3,
+                supports_streaming: true,
+                supports_tools: false,
+                supports_vision: false,
+                task_qualities: &[],
+                downgrade_to: None,
+            },
+        ),
+        (
+            "minimax-m2-1",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "minimax.minimax-m2.1",
+                display_name: "MiniMax M2.1 (LiteLLM)",
+                context_window: 128_000,
+                max_output_tokens: 8_192,
+                input_cost_per_1m: 0.30,
+                output_cost_per_1m: 1.20,
+                tier: 3,
+                supports_streaming: true,
+                supports_tools: false,
+                supports_vision: false,
+                task_qualities: &[],
+                downgrade_to: None,
+            },
+        ),
+        (
+            "gemma-3-27b",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "google.gemma-3-27b-it",
+                display_name: "Gemma 3 27B (LiteLLM)",
+                context_window: 128_000,
+                max_output_tokens: 8_192,
+                input_cost_per_1m: 0.23,
+                output_cost_per_1m: 0.38,
+                tier: 3,
+                supports_streaming: true,
+                supports_tools: false,
+                supports_vision: false,
+                task_qualities: &[],
+                downgrade_to: Some("gemma-3-12b"),
+            },
+        ),
+        (
+            "gemma-3-12b",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "google.gemma-3-12b-it",
+                display_name: "Gemma 3 12B (LiteLLM)",
+                context_window: 128_000,
+                max_output_tokens: 8_192,
+                input_cost_per_1m: 0.23,
+                output_cost_per_1m: 0.38,
+                tier: 3,
+                supports_streaming: true,
+                supports_tools: false,
+                supports_vision: false,
+                task_qualities: &[],
+                downgrade_to: Some("gemma-3-4b"),
+            },
+        ),
+        (
+            "gemma-3-4b",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "google.gemma-3-4b-it",
+                display_name: "Gemma 3 4B (LiteLLM)",
+                context_window: 128_000,
+                max_output_tokens: 8_192,
+                input_cost_per_1m: 0.23,
+                output_cost_per_1m: 0.38,
+                tier: 3,
+                supports_streaming: true,
+                supports_tools: false,
+                supports_vision: false,
+                task_qualities: &[],
+                downgrade_to: None,
+            },
+        ),
+        (
+            "ministral-14b",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "mistral.ministral-3-14b-instruct",
+                display_name: "Ministral 14B (LiteLLM)",
+                context_window: 128_000,
+                max_output_tokens: 8_192,
+                input_cost_per_1m: 0.20,
+                output_cost_per_1m: 0.20,
+                tier: 3,
+                supports_streaming: true,
+                supports_tools: false,
+                supports_vision: false,
+                task_qualities: &[],
+                downgrade_to: Some("ministral-8b"),
+            },
+        ),
+        (
+            "ministral-8b",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "mistral.ministral-3-8b-instruct",
+                display_name: "Ministral 8B (LiteLLM)",
+                context_window: 128_000,
+                max_output_tokens: 8_192,
+                input_cost_per_1m: 0.20,
+                output_cost_per_1m: 0.20,
+                tier: 3,
+                supports_streaming: true,
+                supports_tools: false,
+                supports_vision: false,
+                task_qualities: &[],
+                downgrade_to: Some("ministral-3b"),
+            },
+        ),
+        (
+            "ministral-3b",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "mistral.ministral-3-3b-instruct",
+                display_name: "Ministral 3B (LiteLLM)",
+                context_window: 128_000,
+                max_output_tokens: 8_192,
+                input_cost_per_1m: 0.20,
+                output_cost_per_1m: 0.20,
+                tier: 3,
+                supports_streaming: true,
+                supports_tools: false,
+                supports_vision: false,
+                task_qualities: &[],
+                downgrade_to: None,
+            },
+        ),
     ];
 
     models.into_iter().collect()
@@ -896,6 +1384,13 @@ pub fn infer_provider(model: &str) -> &'static str {
         "together"
     } else if model.contains("bedrock") || model.contains("amazon") {
         "bedrock"
+    } else if model.starts_with("kimi")
+        || model.starts_with("nova")
+        || model.starts_with("minimax")
+        || model.starts_with("qwen")
+        || model.starts_with("gpt-oss")
+    {
+        "litellm"
     } else {
         "openai" // default: assume OpenAI-compatible
     }
@@ -938,9 +1433,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalog_has_30_plus_models() {
+    fn catalog_has_50_plus_models() {
         assert!(
-            MODEL_CATALOG.len() >= 30,
+            MODEL_CATALOG.len() >= 50,
             "catalog has {} models",
             MODEL_CATALOG.len()
         );
@@ -1008,11 +1503,12 @@ mod tests {
 
     #[test]
     fn test_resolve_alias() {
-        assert_eq!(resolve_alias("fast"), Some("claude-3-5-haiku-latest"));
-        assert_eq!(resolve_alias("smart"), Some("claude-sonnet-4-6"));
-        assert_eq!(resolve_alias("cheap"), Some("claude-3-5-haiku-latest"));
-        assert_eq!(resolve_alias("balanced"), Some("claude-sonnet-4-6"));
+        assert_eq!(resolve_alias("fast"), Some("qwen3-coder-30b"));
+        assert_eq!(resolve_alias("smart"), Some("claude-opus-4-6"));
+        assert_eq!(resolve_alias("cheap"), Some("gemma-3-4b"));
+        assert_eq!(resolve_alias("balanced"), Some("gpt-5-2-codex"));
         assert_eq!(resolve_alias("powerful"), Some("claude-opus-4-6"));
+        assert_eq!(resolve_alias("code"), Some("gpt-5-2-codex"));
         assert_eq!(resolve_alias("unknown"), None);
     }
 }
