@@ -336,7 +336,7 @@ pub struct AgentMetricsResponse {
 // Thread cost types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadCostResponse {
     pub thread_id: String,
     pub total_cost_usd: f64,

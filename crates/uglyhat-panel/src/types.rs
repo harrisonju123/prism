@@ -63,6 +63,8 @@ pub struct SessionEntry {
     pub task_name: Option<String>,
     #[serde(default)]
     pub task_id: Option<String>,
+    #[serde(default)]
+    pub thread_id: Option<String>,
     pub action: String,
     pub summary: String,
 }

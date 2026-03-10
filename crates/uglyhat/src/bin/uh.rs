@@ -1,54 +1,14 @@
-use std::path::{Path, PathBuf};
 use std::process;
 
 use chrono::Utc;
 use clap::{Parser, Subcommand};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use uuid::Uuid;
 
+use uglyhat::config::{self, Config, CONFIG_FILE};
 use uglyhat::store::sqlite::SqliteStore;
 use uglyhat::store::{ActivityFilters, MemoryFilters, Store};
 use uglyhat::util::parse_duration;
-
-// ---------------------------------------------------------------------------
-// Config
-// ---------------------------------------------------------------------------
-
-const CONFIG_FILE: &str = ".uglyhat.json";
-const DB_FILE: &str = ".uglyhat.db";
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Config {
-    workspace_id: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    db_path: String,
-}
-
-fn find_config() -> Result<PathBuf, String> {
-    let mut dir = std::env::current_dir().map_err(|e| e.to_string())?;
-    loop {
-        let path = dir.join(CONFIG_FILE);
-        if path.exists() {
-            return Ok(path);
-        }
-        if !dir.pop() {
-            return Err(format!("no {CONFIG_FILE} found (run 'uh init' first)"));
-        }
-    }
-}
-
-fn load_config(path: &Path) -> Result<Config, String> {
-    let data = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&data).map_err(|e| e.to_string())
-}
-
-fn db_path_from_config(config_path: &Path, config: &Config) -> String {
-    if !config.db_path.is_empty() {
-        return config.db_path.clone();
-    }
-    let dir = config_path.parent().unwrap_or(config_path);
-    dir.join(DB_FILE).to_string_lossy().to_string()
-}
 
 fn agent_name() -> String {
     std::env::var("UH_AGENT_NAME").unwrap_or_else(|_| "claude".to_string())
@@ -239,9 +199,13 @@ async fn run(cli: Cli) -> Result<(), String> {
         return run_init(name, desc).await;
     }
 
-    let config_path = find_config()?;
-    let config = load_config(&config_path)?;
-    let db = db_path_from_config(&config_path, &config);
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let config_path = config::find_config(&cwd)
+        .ok_or_else(|| format!("no {CONFIG_FILE} found (run 'uh init' first)"))?;
+    let config = config::load_config(&config_path)?;
+    let db = config::resolve_db_path(&config_path, &config)
+        .to_string_lossy()
+        .to_string();
     let workspace_id: Uuid = config
         .workspace_id
         .parse()
@@ -490,7 +454,7 @@ async fn run(cli: Cli) -> Result<(), String> {
 async fn run_init(name: &str, desc: &str) -> Result<(), String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let config_path = cwd.join(CONFIG_FILE);
-    let db_path = cwd.join(DB_FILE);
+    let db_path = cwd.join(config::DB_FILE);
 
     if config_path.exists() {
         return Err(format!("{CONFIG_FILE} already exists"));

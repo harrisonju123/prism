@@ -1,4 +1,3 @@
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
@@ -8,20 +7,10 @@ use uglyhat::store::sqlite::SqliteStore;
 use uglyhat::store::{ActivityFilters, Store};
 use uuid::Uuid;
 
-const CONFIG_FILE: &str = ".uglyhat.json";
-const DB_FILE: &str = ".uglyhat.db";
-
-#[derive(serde::Deserialize)]
-struct UglyhatConfig {
-    workspace_id: String,
-    #[serde(default)]
-    db_path: String,
-}
-
 /// GPUI Global that holds uglyhat state. Lives on the main thread.
 /// Use `handle()` to get a cloneable, Send-able handle for background work.
 pub struct UglyhatService {
-    inner: UglyhatHandle,
+    inner: Option<UglyhatHandle>,
 }
 
 impl Global for UglyhatService {}
@@ -31,50 +20,56 @@ impl Global for UglyhatService {}
 pub struct UglyhatHandle {
     store: Arc<SqliteStore>,
     workspace_id: Uuid,
-    runtime: Arc<tokio::runtime::Runtime>,
+    handle: tokio::runtime::Handle,
 }
 
 impl UglyhatService {
     /// Initialize the service by discovering `.uglyhat.json` from `workspace_root`.
-    pub fn init(workspace_root: &Path, cx: &mut App) -> Result<()> {
-        let config_path = find_config(workspace_root)
+    /// Config discovery is synchronous; store opening is async (non-blocking).
+    pub fn init(workspace_root: &std::path::Path, cx: &mut App) -> Result<()> {
+        let config_path = uglyhat::config::find_config(workspace_root)
             .context("uglyhat not initialized in this workspace")?;
-        let config_data = std::fs::read_to_string(&config_path)?;
-        let config: UglyhatConfig = serde_json::from_str(&config_data)?;
+        let config = uglyhat::config::load_config(&config_path)
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
         let workspace_id: Uuid = config.workspace_id.parse()
             .context("invalid workspace_id in .uglyhat.json")?;
 
-        let db_path = if config.db_path.is_empty() {
-            config_path
-                .parent()
-                .unwrap_or(&config_path)
-                .join(DB_FILE)
-                .to_string_lossy()
-                .to_string()
-        } else {
-            config.db_path
-        };
+        let db_path = uglyhat::config::resolve_db_path(&config_path, &config)
+            .to_string_lossy()
+            .to_string();
 
-        let runtime = tokio::runtime::Runtime::new()
-            .context("failed to create tokio runtime")?;
+        let tokio_handle = gpui_tokio::Tokio::handle(cx);
 
-        let store = runtime.block_on(SqliteStore::open(&db_path))
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        // Set global immediately with no handle — callers already handle None gracefully
+        cx.set_global(UglyhatService { inner: None });
 
-        let service = Self {
-            inner: UglyhatHandle {
-                store: Arc::new(store),
-                workspace_id,
-                runtime: Arc::new(runtime),
-            },
-        };
+        // Open the store on the tokio runtime, update global when ready
+        let open_task = gpui_tokio::Tokio::spawn_result(cx, async move {
+            SqliteStore::open(&db_path).await.map_err(|e| anyhow::anyhow!("{e}"))
+        });
 
-        cx.set_global(service);
+        cx.spawn(async move |cx| {
+            match open_task.await {
+                Ok(store) => {
+                    cx.update(|cx| {
+                        cx.global_mut::<UglyhatService>().inner = Some(UglyhatHandle {
+                            store: Arc::new(store),
+                            workspace_id,
+                            handle: tokio_handle,
+                        });
+                    });
+                }
+                Err(e) => {
+                    log::warn!("failed to open uglyhat store: {e}");
+                }
+            }
+        }).detach();
+
         Ok(())
     }
 
     /// Get a cloneable handle that can be sent to background threads.
-    pub fn handle(&self) -> UglyhatHandle {
+    pub fn handle(&self) -> Option<UglyhatHandle> {
         self.inner.clone()
     }
 }
@@ -88,7 +83,7 @@ impl UglyhatHandle {
     where
         F: std::future::Future<Output = std::result::Result<T, uglyhat::error::Error>>,
     {
-        self.runtime.block_on(f).map_err(|e| anyhow::anyhow!("{e}"))
+        self.handle.block_on(f).map_err(|e| anyhow::anyhow!("{e}"))
     }
 
     pub fn get_workspace_overview(&self) -> Result<WorkspaceOverview> {
@@ -112,7 +107,7 @@ impl UglyhatHandle {
         let name = name.to_string();
         let store = self.store.clone();
         let wid = self.workspace_id;
-        self.runtime.block_on(async move {
+        self.handle.block_on(async move {
             store
                 .checkin(wid, &name, capabilities, thread_id)
                 .await
@@ -132,7 +127,7 @@ impl UglyhatHandle {
         let summary = summary.to_string();
         let store = self.store.clone();
         let wid = self.workspace_id;
-        self.runtime.block_on(async move {
+        self.handle.block_on(async move {
             store
                 .checkout(wid, &name, &summary, findings, files_touched, next_steps)
                 .await
@@ -153,7 +148,7 @@ impl UglyhatHandle {
         let thread_name = thread_name.map(|s| s.to_string());
         let store = self.store.clone();
         let wid = self.workspace_id;
-        self.runtime.block_on(async move {
+        self.handle.block_on(async move {
             let thread_id = if let Some(ref tn) = thread_name {
                 store.get_thread(wid, tn).await.ok().map(|t| t.id)
             } else {
@@ -176,7 +171,7 @@ impl UglyhatHandle {
         let description = description.to_string();
         let store = self.store.clone();
         let wid = self.workspace_id;
-        self.runtime.block_on(async move {
+        self.handle.block_on(async move {
             store
                 .create_thread(wid, &name, &description, tags)
                 .await
@@ -192,21 +187,8 @@ pub fn get_uglyhat_handle<T: 'static>(
     cx: &mut gpui::AsyncApp,
 ) -> Option<UglyhatHandle> {
     this.update(cx, |_, cx| {
-        cx.try_global::<UglyhatService>().map(|svc| svc.handle())
+        cx.try_global::<UglyhatService>().and_then(|svc| svc.handle())
     })
     .ok()
     .flatten()
-}
-
-fn find_config(workspace_root: &Path) -> Option<PathBuf> {
-    let mut dir = workspace_root.to_path_buf();
-    loop {
-        let path = dir.join(CONFIG_FILE);
-        if path.exists() {
-            return Some(path);
-        }
-        if !dir.pop() {
-            return None;
-        }
-    }
 }
