@@ -26,8 +26,8 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use agent_client_protocol as acp;
 use anyhow::Result;
@@ -97,8 +97,7 @@ impl PrismAgent {
 
     async fn send_update(&self, session_id: &str, update: acp::SessionUpdate) {
         let conn = self.connection();
-        let notification =
-            acp::SessionNotification::new(acp::SessionId::new(session_id), update);
+        let notification = acp::SessionNotification::new(acp::SessionId::new(session_id), update);
         if let Err(e) = acp::Client::session_notification(&*conn, notification).await {
             tracing::warn!("failed to send session update: {e:?}");
         }
@@ -107,9 +106,9 @@ impl PrismAgent {
     async fn send_text_chunk(&self, session_id: &str, text: &str) {
         self.send_update(
             session_id,
-            acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(
-                acp::ContentBlock::from(text),
-            )),
+            acp::SessionUpdate::AgentMessageChunk(acp::ContentChunk::new(acp::ContentBlock::from(
+                text,
+            ))),
         )
         .await;
     }
@@ -259,8 +258,8 @@ impl PrismAgent {
     }
 
     async fn run_agent_loop(&self, session_id: &str) -> acp::StopReason {
-        let client = PrismClient::new(&self.config.prism_url)
-            .with_api_key(&self.config.prism_api_key);
+        let client =
+            PrismClient::new(&self.config.prism_url).with_api_key(&self.config.prism_api_key);
         let model_fallback = self.config.prism_model.clone();
 
         // cwd is set once at session creation and never changes
@@ -299,7 +298,8 @@ impl PrismAgent {
             let mut stream = match stream_result {
                 Ok(s) => s,
                 Err(e) => {
-                    self.send_text_chunk(session_id, &format!("\n[error] {e}")).await;
+                    self.send_text_chunk(session_id, &format!("\n[error] {e}"))
+                        .await;
                     return acp::StopReason::EndTurn;
                 }
             };
@@ -327,11 +327,7 @@ impl PrismAgent {
                     content_buf.push_str(&chunk.delta);
                 }
 
-                if let Some(tc_arr) = chunk
-                    .tool_calls
-                    .as_ref()
-                    .and_then(|v| v.as_array())
-                {
+                if let Some(tc_arr) = chunk.tool_calls.as_ref().and_then(|v| v.as_array()) {
                     accumulate_tool_call_deltas(tc_arr, &mut tc_builders);
                 }
 
@@ -362,10 +358,7 @@ impl PrismAgent {
                         tool_call_id: None,
                         extra: Default::default(),
                     });
-                    Self::trim_messages(
-                        &mut session.messages,
-                        self.config.max_session_messages,
-                    );
+                    Self::trim_messages(&mut session.messages, self.config.max_session_messages);
                 }
             }
 
@@ -387,8 +380,7 @@ impl PrismAgent {
                             .unwrap_or(json!({}));
 
                         tool_call_counter += 1;
-                        let tool_call_id =
-                            acp::ToolCallId::new(format!("tc_{tool_call_counter}"));
+                        let tool_call_id = acp::ToolCallId::new(format!("tc_{tool_call_counter}"));
 
                         let kind = tool_kind(name);
                         let title = tool_title(name, &args);
@@ -420,17 +412,17 @@ impl PrismAgent {
                                 // Emit rejection as a failed tool call
                                 self.send_update(
                                     session_id,
-                                    acp::SessionUpdate::ToolCallUpdate(
-                                        acp::ToolCallUpdate::new(
-                                            tool_call_id,
-                                            acp::ToolCallUpdateFields::new()
-                                                .status(acp::ToolCallStatus::Failed)
-                                                .content(vec![acp::ContentBlock::from(
+                                    acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+                                        tool_call_id,
+                                        acp::ToolCallUpdateFields::new()
+                                            .status(acp::ToolCallStatus::Failed)
+                                            .content(vec![
+                                                acp::ContentBlock::from(
                                                     "Permission denied by user".to_string(),
                                                 )
-                                                .into()]),
-                                        ),
-                                    ),
+                                                .into(),
+                                            ]),
+                                    )),
                                 )
                                 .await;
 
@@ -456,20 +448,23 @@ impl PrismAgent {
                         }
 
                         let result = if name == "save_memory" {
-                            let key =
-                                args["key"].as_str().unwrap_or("note").to_string();
-                            let value =
-                                args["value"].as_str().unwrap_or("").to_string();
+                            let key = args["key"].as_str().unwrap_or("note").to_string();
+                            let value = args["value"].as_str().unwrap_or("").to_string();
                             self.memory.borrow_mut().append(key.clone(), value);
                             json!({"saved": true, "key": key}).to_string()
                         } else {
-                            tools::dispatch(name, &args, &self.config, Some(&session_cwd), self.mcp_registry.as_ref()).await.into_text()
+                            tools::dispatch(
+                                name,
+                                &args,
+                                &self.config,
+                                Some(&session_cwd),
+                                self.mcp_registry.as_ref(),
+                            )
+                            .await
+                            .into_text()
                         };
-                        let result = truncate_tool_output(
-                            name,
-                            &result,
-                            self.config.max_tool_output,
-                        );
+                        let result =
+                            truncate_tool_output(name, &result, self.config.max_tool_output);
 
                         // Push tool result to messages before sending update to avoid clone
                         {
@@ -493,8 +488,7 @@ impl PrismAgent {
                                 tool_call_id,
                                 acp::ToolCallUpdateFields::new()
                                     .status(acp::ToolCallStatus::Completed)
-                                    .content(vec![acp::ContentBlock::from(result)
-                                        .into()]),
+                                    .content(vec![acp::ContentBlock::from(result).into()]),
                             )),
                         )
                         .await;
@@ -525,22 +519,10 @@ fn tool_kind(name: &str) -> acp::ToolKind {
 
 fn tool_title(name: &str, args: &serde_json::Value) -> String {
     match name {
-        "read_file" => format!(
-            "Read {}",
-            args["path"].as_str().unwrap_or("file")
-        ),
-        "write_file" => format!(
-            "Write {}",
-            args["path"].as_str().unwrap_or("file")
-        ),
-        "edit_file" => format!(
-            "Edit {}",
-            args["path"].as_str().unwrap_or("file")
-        ),
-        "list_dir" => format!(
-            "List {}",
-            args["path"].as_str().unwrap_or(".")
-        ),
+        "read_file" => format!("Read {}", args["path"].as_str().unwrap_or("file")),
+        "write_file" => format!("Write {}", args["path"].as_str().unwrap_or("file")),
+        "edit_file" => format!("Edit {}", args["path"].as_str().unwrap_or("file")),
+        "list_dir" => format!("List {}", args["path"].as_str().unwrap_or(".")),
         "bash" => {
             let cmd = args["command"].as_str().unwrap_or("command");
             let preview = if cmd.len() > 60 {
@@ -551,26 +533,11 @@ fn tool_title(name: &str, args: &serde_json::Value) -> String {
             };
             format!("Run: {preview}")
         }
-        "run_command" => format!(
-            "Run: {}",
-            args["command"].as_str().unwrap_or("command")
-        ),
-        "glob_files" => format!(
-            "Glob {}",
-            args["pattern"].as_str().unwrap_or("*")
-        ),
-        "grep_files" => format!(
-            "Grep {}",
-            args["pattern"].as_str().unwrap_or("pattern")
-        ),
-        "web_fetch" => format!(
-            "Fetch {}",
-            args["url"].as_str().unwrap_or("url")
-        ),
-        "save_memory" => format!(
-            "Save memory: {}",
-            args["key"].as_str().unwrap_or("note")
-        ),
+        "run_command" => format!("Run: {}", args["command"].as_str().unwrap_or("command")),
+        "glob_files" => format!("Glob {}", args["pattern"].as_str().unwrap_or("*")),
+        "grep_files" => format!("Grep {}", args["pattern"].as_str().unwrap_or("pattern")),
+        "web_fetch" => format!("Fetch {}", args["url"].as_str().unwrap_or("url")),
+        "save_memory" => format!("Save memory: {}", args["key"].as_str().unwrap_or("note")),
         other => other.to_string(),
     }
 }
@@ -621,10 +588,7 @@ impl acp::Agent for PrismAgent {
         Ok(acp::NewSessionResponse::new(session_id))
     }
 
-    async fn prompt(
-        &self,
-        args: acp::PromptRequest,
-    ) -> acp::Result<acp::PromptResponse> {
+    async fn prompt(&self, args: acp::PromptRequest) -> acp::Result<acp::PromptResponse> {
         let session_id = args.session_id.to_string();
 
         // Extract text from prompt content blocks
@@ -642,8 +606,7 @@ impl acp::Agent for PrismAgent {
         {
             let mut sessions = self.sessions.borrow_mut();
             let session = sessions.get_mut(&session_id).ok_or_else(|| {
-                acp::Error::invalid_params()
-                    .data(json!(format!("session not found: {session_id}")))
+                acp::Error::invalid_params().data(json!(format!("session not found: {session_id}")))
             })?;
             session.cancelled.store(false, Ordering::Release);
             session.messages.push(Message {
@@ -731,14 +694,10 @@ pub async fn run_acp_server(config: Config, mcp_registry: Option<McpRegistry>) -
     let stdin = tokio::io::stdin().compat();
     let stdout = tokio::io::stdout().compat_write();
 
-    let (connection, io_task) = acp::AgentSideConnection::new(
-        agent.clone(),
-        stdout,
-        stdin,
-        |fut| {
+    let (connection, io_task) =
+        acp::AgentSideConnection::new(agent.clone(), stdout, stdin, |fut| {
             tokio::task::spawn_local(fut);
-        },
-    );
+        });
 
     agent.set_connection(connection);
 
@@ -794,20 +753,14 @@ mod tests {
 
     #[test]
     fn test_trim_messages_within_limit() {
-        let mut msgs = vec![
-            make_msg("system"),
-            make_msg("user"),
-            make_msg("assistant"),
-        ];
+        let mut msgs = vec![make_msg("system"), make_msg("user"), make_msg("assistant")];
         PrismAgent::trim_messages(&mut msgs, 10);
         assert_eq!(msgs.len(), 3);
     }
 
     #[test]
     fn test_trim_messages_exceeds_limit() {
-        let mut msgs: Vec<Message> = (0..20)
-            .map(|i| make_msg(&format!("msg-{i}")))
-            .collect();
+        let mut msgs: Vec<Message> = (0..20).map(|i| make_msg(&format!("msg-{i}"))).collect();
         msgs[0].role = "system".into();
         PrismAgent::trim_messages(&mut msgs, 5);
         assert_eq!(msgs.len(), 5);

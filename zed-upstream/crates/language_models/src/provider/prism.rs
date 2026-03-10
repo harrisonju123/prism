@@ -379,12 +379,7 @@ impl LanguageModelProvider for PrismLanguageModelProvider {
         let fetched_pricing: HashMap<&str, (Option<f64>, Option<f64>)> = state
             .fetched_models
             .iter()
-            .map(|m| {
-                (
-                    m.id.as_str(),
-                    (m.input_cost_per_1m, m.output_cost_per_1m),
-                )
-            })
+            .map(|m| (m.id.as_str(), (m.input_cost_per_1m, m.output_cost_per_1m)))
             .collect();
 
         let mut models: HashMap<String, AvailableModel> = state

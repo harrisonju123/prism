@@ -32,7 +32,12 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub fn new(client: PrismClient, config: Config, task: &str, mcp_registry: Option<McpRegistry>) -> Self {
+    pub fn new(
+        client: PrismClient,
+        config: Config,
+        task: &str,
+        mcp_registry: Option<McpRegistry>,
+    ) -> Self {
         let episode_id = Uuid::new_v4();
         let session = Session::new(episode_id, task, &config.prism_model);
         let memory_dir = crate::config::prism_home().join("memory");
@@ -47,7 +52,12 @@ impl Agent {
         }
     }
 
-    pub fn from_session(client: PrismClient, config: Config, session: Session, mcp_registry: Option<McpRegistry>) -> Self {
+    pub fn from_session(
+        client: PrismClient,
+        config: Config,
+        session: Session,
+        mcp_registry: Option<McpRegistry>,
+    ) -> Self {
         let messages = session.messages.clone();
         let memory_dir = crate::config::prism_home().join("memory");
         let memory = MemoryManager::new(&memory_dir, config.memory_window_size);
@@ -340,7 +350,9 @@ impl Agent {
                             )
                             .await
                             {
-                                Ok(r) => serde_json::to_string(&r).unwrap_or_else(|_| r.summary.clone()),
+                                Ok(r) => {
+                                    serde_json::to_string(&r).unwrap_or_else(|_| r.summary.clone())
+                                }
                                 Err(e) => format!("{{\"status\":\"error\",\"summary\":\"{e}\"}}"),
                             };
                             let len = s.len();

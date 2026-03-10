@@ -904,8 +904,7 @@ mod tests {
                         let glob_str = glob_str.as_str();
                         let expanded_glob_str = shellexpand::tilde(glob_str).into_owned();
                         let glob = globset::Glob::new(&expanded_glob_str).unwrap();
-                        let matcher = try_compile_matcher(&glob)
-                            .expect("test glob should compile");
+                        let matcher = try_compile_matcher(&glob).expect("test glob should compile");
                         DisabledGlob {
                             matcher,
                             is_absolute: Path::new(&expanded_glob_str).is_absolute(),

@@ -296,11 +296,8 @@ pub async fn chat_completions(
     // Resolve aliases (DB cache first, then static) before routing
     // Skip if the model name is already a config-defined model — config takes priority
     if !state.config.models.contains_key(&request.model) {
-        if let Some(resolved) = models::resolve_alias_cached(
-            &request.model,
-            state.alias_cache.as_deref(),
-        )
-        .await
+        if let Some(resolved) =
+            models::resolve_alias_cached(&request.model, state.alias_cache.as_deref()).await
         {
             tracing::debug!(alias = %request.model, resolved = %resolved, "model alias resolved");
             request.model = resolved;

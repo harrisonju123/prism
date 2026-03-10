@@ -2,52 +2,38 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use super::SqliteStore;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::model::AgentMetrics;
 
 impl SqliteStore {
-    pub(super) async fn agent_metrics_impl(&self, workspace_id: Uuid) -> Result<Vec<AgentMetrics>> {
-        let ws_str = workspace_id.to_string();
-
-        // Single query: conditional aggregation + CTE for avg completion time.
-        // Binds ws_str twice (once in the CTE, once in the main filter).
-        let rows = sqlx::query(r#"
-            WITH task_durations AS (
-                SELECT actor, entity_id,
-                    (julianday(MAX(created_at)) - julianday(MIN(created_at))) * 24 * 60 AS duration_mins
-                FROM activity_log
-                WHERE workspace_id = ? AND entity_type = 'task'
-                GROUP BY actor, entity_id
-                HAVING COUNT(*) > 1
-            )
-            SELECT
-                a.actor,
-                SUM(CASE WHEN a.action = 'claim' THEN 1 ELSE 0 END) AS tasks_claimed,
-                SUM(CASE WHEN a.action IN ('update', 'complete') AND a.summary LIKE '%done%' THEN 1 ELSE 0 END) AS tasks_done,
-                SUM(CASE WHEN a.action = 'block' THEN 1 ELSE 0 END) AS tasks_blocked,
-                COALESCE(AVG(d.duration_mins), 0.0) AS avg_completion_mins
-            FROM activity_log a
-            LEFT JOIN task_durations d ON a.actor = d.actor
-            WHERE a.workspace_id = ? AND a.actor != ''
-            GROUP BY a.actor
-            ORDER BY a.actor
-        "#)
-        .bind(&ws_str)
-        .bind(&ws_str)
+    pub(crate) async fn agent_metrics_impl(&self, workspace_id: Uuid) -> Result<Vec<AgentMetrics>> {
+        let rows = sqlx::query(
+            "SELECT
+                a.name as agent_name,
+                (SELECT COUNT(*) FROM agent_sessions s WHERE s.agent_id = a.id) as total_sessions,
+                (SELECT COUNT(*) FROM tasks t WHERE t.assignee = a.name AND t.workspace_id = $1 AND t.status = 'done') as total_tasks_completed,
+                (SELECT COUNT(*) FROM handoffs h WHERE h.agent_name = a.name AND h.workspace_id = $1) as total_handoffs
+             FROM agents a
+             WHERE a.workspace_id = $1
+             ORDER BY a.name",
+        )
+        .bind(workspace_id.to_string())
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| crate::error::Error::Internal(format!("agent_metrics: {e}")))?;
+        .map_err(|e| Error::Internal(e.to_string()))?;
 
-        rows.iter()
-            .map(|row| {
-                Ok(AgentMetrics {
-                    agent: row.try_get("actor")?,
-                    tasks_claimed: row.try_get("tasks_claimed")?,
-                    tasks_done: row.try_get("tasks_done")?,
-                    tasks_blocked: row.try_get("tasks_blocked")?,
-                    avg_completion_mins: row.try_get("avg_completion_mins")?,
-                })
-            })
-            .collect()
+        let mut metrics = Vec::new();
+        for row in &rows {
+            metrics.push(AgentMetrics {
+                agent_name: row
+                    .try_get("agent_name")
+                    .map_err(|e| Error::Internal(e.to_string()))?,
+                total_sessions: row.try_get("total_sessions").unwrap_or(0),
+                total_tasks_completed: row.try_get("total_tasks_completed").unwrap_or(0),
+                total_handoffs: row.try_get("total_handoffs").unwrap_or(0),
+            });
+        }
+
+        Ok(metrics)
     }
 }

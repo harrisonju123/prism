@@ -269,18 +269,24 @@ mod tests {
     #[test]
     fn reconstruct_preserves_index_order() {
         let mut builders = HashMap::new();
-        builders.insert(2, ToolCallBuilder {
-            id: "tc_2".into(),
-            tc_type: "function".into(),
-            name: "b".into(),
-            arguments_buf: "{}".into(),
-        });
-        builders.insert(0, ToolCallBuilder {
-            id: "tc_0".into(),
-            tc_type: "function".into(),
-            name: "a".into(),
-            arguments_buf: "{}".into(),
-        });
+        builders.insert(
+            2,
+            ToolCallBuilder {
+                id: "tc_2".into(),
+                tc_type: "function".into(),
+                name: "b".into(),
+                arguments_buf: "{}".into(),
+            },
+        );
+        builders.insert(
+            0,
+            ToolCallBuilder {
+                id: "tc_0".into(),
+                tc_type: "function".into(),
+                name: "a".into(),
+                arguments_buf: "{}".into(),
+            },
+        );
 
         let result = reconstruct_tool_calls(&builders).unwrap();
         assert_eq!(result.len(), 2);

@@ -206,8 +206,12 @@ mod tests {
         // With synthetic fitness, tier-3 models (quality 0.56) meet the 0.55 floor
         // and are cheaper than tier-2 models
         let tier1_models = [
-            "claude-opus-4", "o1", "claude-3-opus", "gpt-4-turbo",
-            "claude-opus-4-6", "claude-opus-4-5",
+            "claude-opus-4",
+            "o1",
+            "claude-3-opus",
+            "gpt-4-turbo",
+            "claude-opus-4-6",
+            "claude-opus-4-5",
         ];
         assert!(
             !tier1_models.contains(&d.selected_model.as_str()),
@@ -237,8 +241,12 @@ mod tests {
         // Tier-1 preservation should kick in: criteria becomes HighestQualityUnderCost
         // with min_quality 0.85 — only tier-1 models (0.93 quality) pass
         let tier1_models = [
-            "claude-opus-4", "o1", "claude-3-opus", "gpt-4-turbo",
-            "claude-opus-4-6", "claude-opus-4-5",
+            "claude-opus-4",
+            "o1",
+            "claude-3-opus",
+            "gpt-4-turbo",
+            "claude-opus-4-6",
+            "claude-opus-4-5",
         ];
         assert!(
             tier1_models.contains(&d.selected_model.as_str()),

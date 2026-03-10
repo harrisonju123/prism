@@ -87,7 +87,9 @@ impl McpRegistry {
             return String::new();
         }
 
-        let mut section = String::from("\n\n## MCP Tools\n\nYou also have access to external tools from MCP servers:\n\n");
+        let mut section = String::from(
+            "\n\n## MCP Tools\n\nYou also have access to external tools from MCP servers:\n\n",
+        );
 
         for (server_name, client) in clients {
             for mcp_tool in client.tools() {
@@ -119,9 +121,9 @@ impl McpRegistry {
 
     /// Dispatch a tool call to the appropriate MCP server.
     pub async fn dispatch(&self, name: &str, args: &serde_json::Value) -> Result<String> {
-        let (server_name, tool_name) = name
-            .split_once(MCP_SEPARATOR)
-            .ok_or_else(|| anyhow::anyhow!("invalid MCP tool name (missing `{MCP_SEPARATOR}`): {name}"))?;
+        let (server_name, tool_name) = name.split_once(MCP_SEPARATOR).ok_or_else(|| {
+            anyhow::anyhow!("invalid MCP tool name (missing `{MCP_SEPARATOR}`): {name}")
+        })?;
 
         let client = self
             .clients

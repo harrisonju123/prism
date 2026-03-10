@@ -171,7 +171,8 @@ mod tests {
 
     #[test]
     fn deserialize_error_response() {
-        let json = r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32600,"message":"invalid request"}}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32600,"message":"invalid request"}}"#;
         let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
         assert!(resp.error.is_some());
         let err = resp.error.unwrap();
@@ -194,5 +195,4 @@ mod tests {
         assert_eq!(result.content[0].text.as_deref(), Some("hello"));
         assert_eq!(result.is_error, Some(false));
     }
-
 }

@@ -250,7 +250,9 @@ pub async fn dispatch(
                 Err(e) => ToolResult::Text(format!("{{\"error\": \"{e}\"}}")),
             };
         }
-        return ToolResult::Text(format!("{{\"error\": \"MCP tool '{name}' called but no MCP registry available\"}}"));
+        return ToolResult::Text(format!(
+            "{{\"error\": \"MCP tool '{name}' called but no MCP registry available\"}}"
+        ));
     }
 
     // Permission check
@@ -358,7 +360,14 @@ async fn dispatch_inner(name: &str, args: &serde_json::Value, session_cwd: Optio
             let max_results = args["max_results"].as_u64().unwrap_or(50) as usize;
             let output_mode = args["output_mode"].as_str();
             let context_lines = args["context"].as_u64().map(|n| n as usize);
-            ToolResult::Text(search::grep_files(pattern, &dir, file_glob, max_results, output_mode, context_lines))
+            ToolResult::Text(search::grep_files(
+                pattern,
+                &dir,
+                file_glob,
+                max_results,
+                output_mode,
+                context_lines,
+            ))
         }
         "web_fetch" => {
             let url = args["url"].as_str().unwrap_or("");
