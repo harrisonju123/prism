@@ -7,7 +7,7 @@ use aws_sdk_bedrockruntime::types::{
 use crate::error::{PrismError, Result};
 use crate::types::{
     ChatCompletionRequest, ChatCompletionResponse, Choice, EmbeddingRequest, EmbeddingResponse,
-    Message, PrismStreamError, ProviderResponse, Usage,
+    Message, MessageRole, PrismStreamError, ProviderResponse, Usage,
 };
 
 use super::Provider;
@@ -35,9 +35,9 @@ impl BedrockProvider {
 // Format conversion: OpenAI <-> Bedrock Converse API
 // ---------------------------------------------------------------------------
 
-fn to_bedrock_role(role: &str) -> ConversationRole {
+fn to_bedrock_role(role: &MessageRole) -> ConversationRole {
     match role {
-        "assistant" => ConversationRole::Assistant,
+        MessageRole::Assistant => ConversationRole::Assistant,
         _ => ConversationRole::User,
     }
 }
@@ -57,12 +57,12 @@ fn extract_messages(req: &ChatCompletionRequest) -> (Vec<SystemContentBlock>, Ve
     let mut messages: Vec<BedrockMessage> = Vec::new();
 
     for msg in &req.messages {
-        if msg.role == "system" {
+        if msg.role == MessageRole::System {
             if let Some(content) = &msg.content {
                 let text = content_value_to_string(content);
                 system_prompts.push(SystemContentBlock::Text(text));
             }
-        } else if msg.role == "tool" {
+        } else if msg.role == MessageRole::Tool {
             if let Some(content) = &msg.content {
                 let text = content_value_to_string(content);
                 let bedrock_msg = BedrockMessage::builder()
@@ -74,6 +74,7 @@ fn extract_messages(req: &ChatCompletionRequest) -> (Vec<SystemContentBlock>, Ve
             }
         } else {
             let role = to_bedrock_role(&msg.role);
+
             let text = msg
                 .content
                 .as_ref()
@@ -141,7 +142,7 @@ fn from_converse_output(
         choices: vec![Choice {
             index: 0,
             message: Message {
-                role: "assistant".into(),
+                role: MessageRole::Assistant,
                 content: Some(serde_json::Value::String(text)),
                 name: None,
                 tool_calls: None,
@@ -357,9 +358,15 @@ mod tests {
 
     #[test]
     fn test_to_bedrock_role() {
-        assert_eq!(to_bedrock_role("assistant"), ConversationRole::Assistant);
-        assert_eq!(to_bedrock_role("user"), ConversationRole::User);
-        assert_eq!(to_bedrock_role("anything_else"), ConversationRole::User);
+        assert_eq!(
+            to_bedrock_role(&MessageRole::Assistant),
+            ConversationRole::Assistant
+        );
+        assert_eq!(to_bedrock_role(&MessageRole::User), ConversationRole::User);
+        assert_eq!(
+            to_bedrock_role(&MessageRole::Unknown),
+            ConversationRole::User
+        );
     }
 
     #[test]
@@ -400,7 +407,7 @@ mod tests {
         assert_eq!(response.object, "chat.completion");
         assert_eq!(response.model, "anthropic.claude-3-haiku-20240307-v1:0");
         assert_eq!(response.choices.len(), 1);
-        assert_eq!(response.choices[0].message.role, "assistant");
+        assert_eq!(response.choices[0].message.role, MessageRole::Assistant);
         assert_eq!(
             response.choices[0].message.content,
             Some(serde_json::Value::String("test response".into()))
@@ -438,7 +445,7 @@ mod tests {
         let req = ChatCompletionRequest {
             messages: vec![
                 Message {
-                    role: "system".into(),
+                    role: MessageRole::System,
                     content: Some(serde_json::Value::String("You are helpful.".into())),
                     name: None,
                     tool_calls: None,
@@ -446,7 +453,7 @@ mod tests {
                     extra: Default::default(),
                 },
                 Message {
-                    role: "user".into(),
+                    role: MessageRole::User,
                     content: Some(serde_json::Value::String("Hello".into())),
                     name: None,
                     tool_calls: None,

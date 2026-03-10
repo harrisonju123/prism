@@ -1,4 +1,4 @@
-use crate::types::Message;
+use crate::types::{Message, MessageRole};
 
 /// Estimate token count via character heuristic (4 chars ≈ 1 token).
 pub fn estimate_tokens(text: &str) -> u32 {
@@ -33,7 +33,7 @@ pub fn truncate_to_fit(messages: &mut Vec<Message>, budget: u32) -> usize {
     let mut dropped = 0;
     while messages.len() > 1 && total > budget {
         // Find first non-system message and remove it
-        let Some(idx) = messages.iter().position(|m| m.role != "system") else {
+        let Some(idx) = messages.iter().position(|m| m.role != MessageRole::System) else {
             break; // Only system messages remain — cannot truncate further
         };
         total = total.saturating_sub(estimate_tokens(&message_text(&messages[idx])));
@@ -46,11 +46,11 @@ pub fn truncate_to_fit(messages: &mut Vec<Message>, budget: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Message;
+    use crate::types::{Message, MessageRole};
 
-    fn make_msg(role: &str, content: &str) -> Message {
+    fn make_msg(role: MessageRole, content: &str) -> Message {
         Message {
-            role: role.to_string(),
+            role,
             content: Some(serde_json::Value::String(content.to_string())),
             name: None,
             tool_calls: None,
@@ -69,21 +69,21 @@ mod tests {
     #[test]
     fn test_truncate_to_fit() {
         let mut messages = vec![
-            make_msg("system", "You are a helpful assistant."),
-            make_msg("user", "message one"),
-            make_msg("assistant", "response one"),
-            make_msg("user", "message two"),
+            make_msg(MessageRole::System, "You are a helpful assistant."),
+            make_msg(MessageRole::User, "message one"),
+            make_msg(MessageRole::Assistant, "response one"),
+            make_msg(MessageRole::User, "message two"),
         ];
         // With a very small budget, should drop non-system messages
         let dropped = truncate_to_fit(&mut messages, 10);
         assert!(dropped > 0);
         // System message should be preserved
-        assert_eq!(messages[0].role, "system");
+        assert_eq!(messages[0].role, MessageRole::System);
     }
 
     #[test]
     fn test_no_truncation_needed() {
-        let mut messages = vec![make_msg("user", "hi")];
+        let mut messages = vec![make_msg(MessageRole::User, "hi")];
         let dropped = truncate_to_fit(&mut messages, 10_000);
         assert_eq!(dropped, 0);
         assert_eq!(messages.len(), 1);

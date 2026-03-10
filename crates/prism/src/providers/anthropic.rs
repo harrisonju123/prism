@@ -8,7 +8,8 @@ use std::collections::HashMap;
 use crate::error::{PrismError, Result};
 use crate::types::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, Choice, ChunkChoice,
-    EmbeddingRequest, EmbeddingResponse, Message, PrismStreamError, ProviderResponse, Usage,
+    EmbeddingRequest, EmbeddingResponse, Message, MessageRole, PrismStreamError, ProviderResponse,
+    Usage,
 };
 
 use super::Provider;
@@ -416,7 +417,7 @@ fn to_anthropic_request(
     let mut messages = Vec::new();
 
     for msg in &req.messages {
-        if msg.role == "system" {
+        if msg.role == MessageRole::System {
             // Anthropic uses a top-level system field.
             // Inject cache_control for long system prompts when prompt caching is enabled.
             if let Some(content) = &msg.content {
@@ -431,7 +432,7 @@ fn to_anthropic_request(
                     Some(serde_json::Value::String(text))
                 };
             }
-        } else if msg.role == "tool" {
+        } else if msg.role == MessageRole::Tool {
             // OpenAI tool result → Anthropic tool_result block in a user turn
             messages.push(AnthropicMessage {
                 role: "user".into(),
@@ -443,7 +444,7 @@ fn to_anthropic_request(
                         .unwrap_or("")
                 }]),
             });
-        } else if msg.role == "assistant" && msg.tool_calls.is_some() {
+        } else if msg.role == MessageRole::Assistant && msg.tool_calls.is_some() {
             // OpenAI assistant with tool_calls → Anthropic tool_use blocks
             let calls = msg.tool_calls.as_ref().unwrap();
             let mut blocks: Vec<serde_json::Value> = Vec::new();
@@ -472,7 +473,7 @@ fn to_anthropic_request(
             });
         } else {
             messages.push(AnthropicMessage {
-                role: msg.role.clone(),
+                role: msg.role.to_string(),
                 content: msg
                     .content
                     .clone()
@@ -553,7 +554,7 @@ fn from_anthropic_response(resp: AnthropicResponse) -> ChatCompletionResponse {
         choices: vec![Choice {
             index: 0,
             message: Message {
-                role: "assistant".into(),
+                role: MessageRole::Assistant,
                 content,
                 name: None,
                 tool_calls: tool_calls_opt,
@@ -666,7 +667,7 @@ impl Provider for AnthropicProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ChatCompletionRequest, Message, Tool, ToolFunction};
+    use crate::types::{ChatCompletionRequest, Message, MessageRole, Tool, ToolFunction};
 
     fn make_provider() -> AnthropicProvider {
         AnthropicProvider::new(
@@ -688,7 +689,7 @@ mod tests {
             model: "claude-3-opus".into(),
             messages: vec![
                 Message {
-                    role: "system".into(),
+                    role: MessageRole::System,
                     content: Some(serde_json::Value::String("You are helpful.".into())),
                     name: None,
                     tool_calls: None,
@@ -696,7 +697,7 @@ mod tests {
                     extra: Default::default(),
                 },
                 Message {
-                    role: "user".into(),
+                    role: MessageRole::User,
                     content: Some(serde_json::Value::String("Hello".into())),
                     name: None,
                     tool_calls: None,
@@ -719,7 +720,7 @@ mod tests {
             model: "claude-3".into(),
             messages: vec![
                 Message {
-                    role: "user".into(),
+                    role: MessageRole::User,
                     content: Some(serde_json::Value::String("Hi".into())),
                     name: None,
                     tool_calls: None,
@@ -727,7 +728,7 @@ mod tests {
                     extra: Default::default(),
                 },
                 Message {
-                    role: "assistant".into(),
+                    role: MessageRole::Assistant,
                     content: Some(serde_json::Value::String("Hello!".into())),
                     name: None,
                     tool_calls: None,
@@ -750,7 +751,7 @@ mod tests {
         let req = ChatCompletionRequest {
             model: "claude-3".into(),
             messages: vec![Message {
-                role: "user".into(),
+                role: MessageRole::User,
                 content: Some(serde_json::Value::String("Use tool".into())),
                 name: None,
                 tool_calls: None,
@@ -994,7 +995,7 @@ mod tests {
             model: "claude-3".into(),
             messages: vec![
                 Message {
-                    role: "assistant".into(),
+                    role: MessageRole::Assistant,
                     content: None,
                     name: None,
                     tool_calls: Some(vec![serde_json::json!({
@@ -1006,7 +1007,7 @@ mod tests {
                     extra: Default::default(),
                 },
                 Message {
-                    role: "tool".into(),
+                    role: MessageRole::Tool,
                     content: Some(serde_json::Value::String("Sunny, 22°C".into())),
                     name: None,
                     tool_calls: None,
@@ -1034,7 +1035,7 @@ mod tests {
         let req = ChatCompletionRequest {
             model: "claude-3".into(),
             messages: vec![Message {
-                role: "assistant".into(),
+                role: MessageRole::Assistant,
                 content: Some(serde_json::Value::String("Let me check.".into())),
                 name: None,
                 tool_calls: Some(vec![serde_json::json!({

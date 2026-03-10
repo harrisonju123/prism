@@ -37,7 +37,7 @@ impl ResponseCache {
         let mut hasher = Sha256::new();
         hasher.update(request.model.as_bytes());
         for msg in &request.messages {
-            hasher.update(msg.role.as_bytes());
+            hasher.update(msg.role.to_string().as_bytes());
             if let Some(content) = &msg.content {
                 hasher.update(content.to_string().as_bytes());
             }
@@ -364,13 +364,15 @@ impl S3CacheBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ChatCompletionRequest, ChatCompletionResponse, Choice, Message, Usage};
+    use crate::types::{
+        ChatCompletionRequest, ChatCompletionResponse, Choice, Message, MessageRole, Usage,
+    };
 
     fn make_request(model: &str, user_msg: &str) -> ChatCompletionRequest {
         ChatCompletionRequest {
             model: model.to_string(),
             messages: vec![Message {
-                role: "user".to_string(),
+                role: MessageRole::User,
                 content: Some(serde_json::Value::String(user_msg.to_string())),
                 name: None,
                 tool_calls: None,
@@ -400,7 +402,7 @@ mod tests {
             choices: vec![Choice {
                 index: 0,
                 message: Message {
-                    role: "assistant".to_string(),
+                    role: MessageRole::Assistant,
                     content: Some(serde_json::Value::String(text.to_string())),
                     name: None,
                     tool_calls: None,

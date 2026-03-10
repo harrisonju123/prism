@@ -1,6 +1,6 @@
 use crate::common::truncate_with_ellipsis;
 use prism_client::PrismClient;
-use prism_types::{ChatCompletionRequest, Message};
+use prism_types::{ChatCompletionRequest, Message, MessageRole};
 use serde_json::json;
 
 /// Max total chars for the transcript sent to the summarization model.
@@ -63,7 +63,7 @@ impl ContextCompressor {
         let mut result = Vec::with_capacity(3 + recent_messages.len());
         result.push(system_msg);
         result.push(Message {
-            role: "user".into(),
+            role: MessageRole::User,
             content: Some(json!(format!(
                 "[Context compressed — summary of {} earlier messages]\n\n{}",
                 old_messages.len(),
@@ -75,7 +75,7 @@ impl ContextCompressor {
             extra: Default::default(),
         });
         result.push(Message {
-            role: "assistant".into(),
+            role: MessageRole::Assistant,
             content: Some(json!(
                 "Understood. I have the context from the earlier conversation summary and will continue from here."
             )),
@@ -129,7 +129,7 @@ impl ContextCompressor {
         let req = ChatCompletionRequest {
             model: self.summary_model.clone(),
             messages: vec![Message {
-                role: "user".into(),
+                role: MessageRole::User,
                 content: Some(json!(prompt)),
                 name: None,
                 tool_calls: None,
@@ -167,9 +167,9 @@ pub fn trim_messages_fifo(messages: &mut Vec<Message>, max: usize) {
 mod tests {
     use super::*;
 
-    fn make_msg(role: &str, content: &str) -> Message {
+    fn make_msg(role: MessageRole, content: &str) -> Message {
         Message {
-            role: role.into(),
+            role,
             content: Some(json!(content)),
             name: None,
             tool_calls: None,
@@ -200,7 +200,10 @@ mod tests {
 
     #[test]
     fn trim_messages_fifo_within_limit() {
-        let mut msgs = vec![make_msg("system", "sys"), make_msg("user", "hi")];
+        let mut msgs = vec![
+            make_msg(MessageRole::System, "sys"),
+            make_msg(MessageRole::User, "hi"),
+        ];
         trim_messages_fifo(&mut msgs, 10);
         assert_eq!(msgs.len(), 2);
     }
@@ -208,12 +211,12 @@ mod tests {
     #[test]
     fn trim_messages_fifo_exceeds_limit() {
         let mut msgs: Vec<Message> = (0..20)
-            .map(|i| make_msg("user", &format!("msg-{i}")))
+            .map(|i| make_msg(MessageRole::User, &format!("msg-{i}")))
             .collect();
-        msgs[0] = make_msg("system", "sys");
+        msgs[0] = make_msg(MessageRole::System, "sys");
         trim_messages_fifo(&mut msgs, 5);
         assert_eq!(msgs.len(), 5);
-        assert_eq!(msgs[0].role, "system");
+        assert_eq!(msgs[0].role, MessageRole::System);
         // Should keep the last 4
         assert_eq!(
             msgs[4].content.as_ref().unwrap().as_str().unwrap(),
@@ -223,7 +226,10 @@ mod tests {
 
     #[test]
     fn trim_messages_fifo_zero_max_noop() {
-        let mut msgs = vec![make_msg("system", "sys"), make_msg("user", "hi")];
+        let mut msgs = vec![
+            make_msg(MessageRole::System, "sys"),
+            make_msg(MessageRole::User, "hi"),
+        ];
         trim_messages_fifo(&mut msgs, 0);
         assert_eq!(msgs.len(), 2);
     }

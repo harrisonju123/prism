@@ -182,7 +182,7 @@ fn simple_hash(chars: &[char]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ChatCompletionResponse, Choice, Message, Usage};
+    use crate::types::{ChatCompletionResponse, Choice, Message, MessageRole, Usage};
 
     fn make_response(text: &str) -> ChatCompletionResponse {
         ChatCompletionResponse {
@@ -193,7 +193,7 @@ mod tests {
             choices: vec![Choice {
                 index: 0,
                 message: Message {
-                    role: "assistant".into(),
+                    role: MessageRole::Assistant,
                     content: Some(serde_json::Value::String(text.into())),
                     name: None,
                     tool_calls: None,

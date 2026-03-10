@@ -37,7 +37,7 @@ use crate::routing::FitnessCache;
 use crate::routing::types::RoutingPolicy;
 use crate::types::{
     ChatCompletionRequest, ChatCompletionResponse, EmbeddingRequest, EventStatus, InferenceEvent,
-    ProviderResponse, Usage,
+    MessageRole, ProviderResponse, Usage,
 };
 
 /// POST /v1/chat/completions
@@ -1036,7 +1036,7 @@ fn build_classifier_input(request: &ChatCompletionRequest) -> ClassifierInput {
     let system_prompt_text: Option<String> = request
         .messages
         .iter()
-        .find(|m| m.role == "system")
+        .find(|m| m.role == MessageRole::System)
         .and_then(|m| m.content.as_ref())
         .and_then(|c| c.as_str())
         .map(|s| s.to_string());
@@ -1050,7 +1050,7 @@ fn build_classifier_input(request: &ChatCompletionRequest) -> ClassifierInput {
         .messages
         .iter()
         .rev()
-        .find(|m| m.role == "user")
+        .find(|m| m.role == MessageRole::User)
         .and_then(|m| m.content.as_ref())
         .and_then(|c| c.as_str())
         .unwrap_or("")
@@ -1183,7 +1183,7 @@ pub(crate) fn resolve_model_with_fallbacks(
 fn hash_messages(messages: &[crate::types::Message]) -> String {
     let mut hasher = Sha256::new();
     for msg in messages {
-        hasher.update(msg.role.as_bytes());
+        hasher.update(msg.role.to_string().as_bytes());
         if let Some(content) = &msg.content {
             hasher.update(content.to_string().as_bytes());
         }
@@ -1320,7 +1320,7 @@ fn extract_completion_text(response: &ChatCompletionResponse) -> String {
 
 /// Prepend text to the system message, or insert a new system message at the start.
 fn prepend_system_prompt(messages: &mut Vec<crate::types::Message>, prefix: &str) {
-    if let Some(sys_msg) = messages.iter_mut().find(|m| m.role == "system") {
+    if let Some(sys_msg) = messages.iter_mut().find(|m| m.role == MessageRole::System) {
         let existing = sys_msg
             .content
             .as_ref()
@@ -1331,7 +1331,7 @@ fn prepend_system_prompt(messages: &mut Vec<crate::types::Message>, prefix: &str
         messages.insert(
             0,
             crate::types::Message {
-                role: "system".to_string(),
+                role: MessageRole::System,
                 content: Some(serde_json::Value::String(prefix.to_string())),
                 name: None,
                 tool_calls: None,
@@ -1355,7 +1355,7 @@ fn reconstruct_response(
         choices: vec![crate::types::Choice {
             index: 0,
             message: crate::types::Message {
-                role: "assistant".to_string(),
+                role: MessageRole::Assistant,
                 content: Some(serde_json::Value::String(result.completion_text.clone())),
                 name: None,
                 tool_calls: None,
@@ -1580,7 +1580,7 @@ mod tests {
                 crate::types::Choice {
                     index: 0,
                     message: crate::types::Message {
-                        role: "assistant".to_string(),
+                        role: MessageRole::Assistant,
                         content: Some(serde_json::Value::String("Hello ".to_string())),
                         name: None,
                         tool_calls: None,
@@ -1592,7 +1592,7 @@ mod tests {
                 crate::types::Choice {
                     index: 1,
                     message: crate::types::Message {
-                        role: "assistant".to_string(),
+                        role: MessageRole::Assistant,
                         content: Some(serde_json::Value::String("World".to_string())),
                         name: None,
                         tool_calls: None,

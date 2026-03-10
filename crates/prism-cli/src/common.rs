@@ -1,6 +1,8 @@
-use prism_types::Message;
+use prism_types::{Message, MessageRole};
 use serde_json::json;
 use std::collections::HashMap;
+
+use crate::tools::BuiltinTool;
 
 pub const SYSTEM_PROMPT: &str = "\
 You are PrisM Code Agent, an autonomous coding assistant. \
@@ -54,7 +56,7 @@ pub fn build_system_prompt(
 /// Build a system Message from the given prompt string.
 pub fn system_message(prompt: String) -> Message {
     Message {
-        role: "system".into(),
+        role: MessageRole::System,
         content: Some(json!(prompt)),
         name: None,
         tool_calls: None,
@@ -168,8 +170,10 @@ pub fn truncate_tool_output(tool_name: &str, output: &str, limit: usize) -> Stri
         return output.to_string();
     }
 
-    if (tool_name == "run_command" || tool_name == "bash")
-        && let Ok(mut val) = serde_json::from_str::<serde_json::Value>(output)
+    if matches!(
+        BuiltinTool::from_str(tool_name),
+        Some(BuiltinTool::RunCommand | BuiltinTool::Bash)
+    ) && let Ok(mut val) = serde_json::from_str::<serde_json::Value>(output)
     {
         let field_limit = limit / 2;
         for field in ["stdout", "stderr"] {
