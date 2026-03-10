@@ -41,7 +41,10 @@ use crate::common::{
     self, ToolCallBuilder, accumulate_tool_call_deltas, build_system_prompt,
     reconstruct_tool_calls, truncate_tool_output,
 };
+use crate::compression::{self, ContextCompressor};
 use crate::config::Config;
+use crate::hooks::HookRunner;
+use crate::hooks::config::PreToolAction;
 use crate::mcp::McpRegistry;
 use crate::memory::MemoryManager;
 use crate::tools;
@@ -68,18 +71,24 @@ pub struct PrismAgent {
     config: Config,
     memory: RefCell<MemoryManager>,
     mcp_registry: Option<McpRegistry>,
+    hook_runner: HookRunner,
+    compressor: Option<ContextCompressor>,
 }
 
 impl PrismAgent {
     pub fn new(config: Config, mcp_registry: Option<McpRegistry>) -> Self {
         let memory_dir = crate::config::prism_home().join("memory");
         let memory = MemoryManager::new(&memory_dir, config.memory_window_size);
+        let hook_runner = config.build_hook_runner();
+        let compressor = config.build_compressor();
         Self {
             sessions: RefCell::new(HashMap::new()),
             connection: RefCell::new(None),
             config,
             memory: RefCell::new(memory),
             mcp_registry,
+            hook_runner,
+            compressor,
         }
     }
 
@@ -224,12 +233,7 @@ impl PrismAgent {
 
     /// Trim old messages to stay within max_session_messages, preserving the system prompt.
     fn trim_messages(messages: &mut Vec<Message>, max: usize) {
-        if max == 0 || messages.len() <= max {
-            return;
-        }
-        // Keep system prompt (index 0) + the most recent (max - 1) messages
-        let drain_end = messages.len() - (max - 1);
-        messages.drain(1..drain_end);
+        compression::trim_messages_fifo(messages, max);
     }
 
     /// Evict oldest sessions when we exceed max_sessions.
@@ -347,6 +351,55 @@ impl PrismAgent {
                         tool_call_id: None,
                         extra: Default::default(),
                     });
+                }
+            }
+
+            // Context compression (or FIFO fallback)
+            if let Some(ref compressor) = self.compressor {
+                let msg_count = {
+                    let sessions = self.sessions.borrow();
+                    sessions
+                        .get(session_id)
+                        .map(|s| s.messages.len())
+                        .unwrap_or(0)
+                };
+                if compressor.should_compress(msg_count, self.config.max_session_messages) {
+                    // Clone messages out to avoid holding RefCell across await
+                    let messages = {
+                        let sessions = self.sessions.borrow();
+                        sessions
+                            .get(session_id)
+                            .map(|s| s.messages.clone())
+                            .unwrap_or_default()
+                    };
+                    if let Some(compressed) = compressor
+                        .compress(&client, &messages, self.config.max_session_messages)
+                        .await
+                    {
+                        tracing::info!(
+                            before = messages.len(),
+                            after = compressed.len(),
+                            "context compressed"
+                        );
+                        let mut sessions = self.sessions.borrow_mut();
+                        if let Some(session) = sessions.get_mut(session_id) {
+                            session.messages = compressed;
+                        }
+                    } else {
+                        tracing::info!("compression failed, falling back to FIFO trim");
+                        let mut sessions = self.sessions.borrow_mut();
+                        if let Some(session) = sessions.get_mut(session_id) {
+                            Self::trim_messages(
+                                &mut session.messages,
+                                self.config.max_session_messages,
+                            );
+                        }
+                    }
+                }
+            } else {
+                // No compressor — use FIFO trim
+                let mut sessions = self.sessions.borrow_mut();
+                if let Some(session) = sessions.get_mut(session_id) {
                     Self::trim_messages(&mut session.messages, self.config.max_session_messages);
                 }
             }
@@ -363,10 +416,33 @@ impl PrismAgent {
 
                         let id = tc["id"].as_str().unwrap_or("").to_string();
                         let name = tc["function"]["name"].as_str().unwrap_or("");
-                        let args: serde_json::Value = tc["function"]["arguments"]
+                        let mut args: serde_json::Value = tc["function"]["arguments"]
                             .as_str()
                             .and_then(|s| serde_json::from_str(s).ok())
                             .unwrap_or(json!({}));
+
+                        // Pre-tool-use hooks (run before permission check)
+                        match self.hook_runner.run_pre_hooks(name, &args).await {
+                            PreToolAction::Deny { message } => {
+                                tracing::info!(tool = name, "hook denied: {message}");
+                                let mut sessions = self.sessions.borrow_mut();
+                                if let Some(session) = sessions.get_mut(session_id) {
+                                    session.messages.push(Message {
+                                        role: "tool".into(),
+                                        content: Some(json!(format!("Hook denied: {message}"))),
+                                        name: None,
+                                        tool_calls: None,
+                                        tool_call_id: Some(id),
+                                        extra: Default::default(),
+                                    });
+                                }
+                                continue;
+                            }
+                            PreToolAction::Modify { args: new_args } => {
+                                args = new_args;
+                            }
+                            PreToolAction::Allow => {}
+                        }
 
                         tool_call_counter += 1;
                         let tool_call_id = acp::ToolCallId::new(format!("tc_{tool_call_counter}"));
@@ -451,6 +527,9 @@ impl PrismAgent {
                         };
                         let result =
                             truncate_tool_output(name, &result, self.config.max_tool_output);
+
+                        // Post-tool-use hooks
+                        let result = self.hook_runner.run_post_hooks(name, &args, &result).await;
 
                         // Push tool result to messages before sending update to avoid clone
                         {

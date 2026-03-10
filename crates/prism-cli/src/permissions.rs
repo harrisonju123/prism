@@ -17,8 +17,7 @@ pub enum PermissionDecision {
     Deny,
 }
 
-pub const PERMISSION_DENIED_MSG: &str =
-    "Permission denied by user. Do not retry this tool call. \
+pub const PERMISSION_DENIED_MSG: &str = "Permission denied by user. Do not retry this tool call. \
      Inform the user what you wanted to do and ask how to proceed.";
 
 /// Shared tool classification: read-only tools that don't mutate state.
@@ -81,11 +80,7 @@ impl ToolPermissionGate {
         }
     }
 
-    fn prompt_or_allow(
-        &mut self,
-        tool_name: &str,
-        args: &serde_json::Value,
-    ) -> PermissionDecision {
+    fn prompt_or_allow(&mut self, tool_name: &str, args: &serde_json::Value) -> PermissionDecision {
         if self.session_allowed.contains(tool_name) {
             return PermissionDecision::Allow;
         }
@@ -96,18 +91,20 @@ impl ToolPermissionGate {
         self.prompt_user(tool_name, args)
     }
 
-    fn prompt_user(
-        &mut self,
-        tool_name: &str,
-        args: &serde_json::Value,
-    ) -> PermissionDecision {
+    fn prompt_user(&mut self, tool_name: &str, args: &serde_json::Value) -> PermissionDecision {
         let preview = tool_preview(tool_name, args);
 
         let border_len = 40.max(tool_name.len() + 4);
-        let top = format!("┌ {} {}", tool_name, "─".repeat(border_len - tool_name.len() - 3));
+        let top = format!(
+            "┌ {} {}",
+            tool_name,
+            "─".repeat(border_len - tool_name.len() - 3)
+        );
         let bottom = format!("└{}", "─".repeat(border_len - 1));
 
-        eprint!("\n{top}\n│ {preview}\n{bottom}\n  [y] Allow once  [a] Allow for session  [n] Deny: ");
+        eprint!(
+            "\n{top}\n│ {preview}\n{bottom}\n  [y] Allow once  [a] Allow for session  [n] Deny: "
+        );
         let _ = std::io::stderr().flush();
 
         let response = read_tty_char();
@@ -139,9 +136,7 @@ fn tool_preview(tool_name: &str, args: &serde_json::Value) -> String {
             let key = args["key"].as_str().unwrap_or("note");
             format!("key={key}")
         }
-        "spawn_agent" => {
-            truncate_with_ellipsis(args["task"].as_str().unwrap_or("(unknown)"), 100)
-        }
+        "spawn_agent" => truncate_with_ellipsis(args["task"].as_str().unwrap_or("(unknown)"), 100),
         _ => truncate_with_ellipsis(&args.to_string(), 120),
     }
 }
@@ -262,10 +257,22 @@ mod tests {
     #[test]
     fn permission_mode_parsing() {
         use clap::ValueEnum;
-        assert_eq!(PermissionMode::from_str("default", true), Ok(PermissionMode::Default));
-        assert_eq!(PermissionMode::from_str("plan", true), Ok(PermissionMode::Plan));
-        assert_eq!(PermissionMode::from_str("auto", true), Ok(PermissionMode::Auto));
-        assert_eq!(PermissionMode::from_str("AUTO", true), Ok(PermissionMode::Auto));
+        assert_eq!(
+            PermissionMode::from_str("default", true),
+            Ok(PermissionMode::Default)
+        );
+        assert_eq!(
+            PermissionMode::from_str("plan", true),
+            Ok(PermissionMode::Plan)
+        );
+        assert_eq!(
+            PermissionMode::from_str("auto", true),
+            Ok(PermissionMode::Auto)
+        );
+        assert_eq!(
+            PermissionMode::from_str("AUTO", true),
+            Ok(PermissionMode::Auto)
+        );
         assert!(PermissionMode::from_str("invalid", true).is_err());
     }
 }

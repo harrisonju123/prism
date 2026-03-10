@@ -15,7 +15,10 @@ use crate::common::{
     self, ToolCallBuilder, accumulate_tool_call_deltas, build_system_prompt,
     reconstruct_tool_calls, truncate_tool_output,
 };
+use crate::compression::{self, ContextCompressor};
 use crate::config::Config;
+use crate::hooks::HookRunner;
+use crate::hooks::config::PreToolAction;
 use crate::mcp::McpRegistry;
 use crate::memory::MemoryManager;
 use crate::permissions::{self, PermissionDecision, ToolPermissionGate};
@@ -30,6 +33,8 @@ pub struct Agent {
     memory: MemoryManager,
     mcp_registry: Option<McpRegistry>,
     permission_gate: ToolPermissionGate,
+    hook_runner: HookRunner,
+    compressor: Option<ContextCompressor>,
 }
 
 impl Agent {
@@ -44,6 +49,8 @@ impl Agent {
         let memory_dir = crate::config::prism_home().join("memory");
         let memory = MemoryManager::new(&memory_dir, config.memory_window_size);
         let permission_gate = ToolPermissionGate::resolve(config.permission_mode);
+        let hook_runner = config.build_hook_runner();
+        let compressor = config.build_compressor();
         Self {
             client,
             config,
@@ -52,6 +59,8 @@ impl Agent {
             memory,
             mcp_registry,
             permission_gate,
+            hook_runner,
+            compressor,
         }
     }
 
@@ -65,6 +74,8 @@ impl Agent {
         let memory_dir = crate::config::prism_home().join("memory");
         let memory = MemoryManager::new(&memory_dir, config.memory_window_size);
         let permission_gate = ToolPermissionGate::resolve(config.permission_mode);
+        let hook_runner = config.build_hook_runner();
+        let compressor = config.build_compressor();
         Self {
             client,
             config,
@@ -73,6 +84,8 @@ impl Agent {
             memory,
             mcp_registry,
             permission_gate,
+            hook_runner,
+            compressor,
         }
     }
 
@@ -256,6 +269,34 @@ impl Agent {
                 tracing::warn!("failed to save session: {e}");
             }
 
+            // Context compression (or FIFO fallback)
+            if let Some(ref compressor) = self.compressor
+                && compressor
+                    .should_compress(self.messages.len(), self.config.max_session_messages)
+            {
+                if let Some(compressed) = compressor
+                    .compress(
+                        &self.client,
+                        &self.messages,
+                        self.config.max_session_messages,
+                    )
+                    .await
+                {
+                    tracing::info!(
+                        before = self.messages.len(),
+                        after = compressed.len(),
+                        "context compressed"
+                    );
+                    self.messages = compressed;
+                } else {
+                    tracing::info!("compression failed, falling back to FIFO trim");
+                    compression::trim_messages_fifo(
+                        &mut self.messages,
+                        self.config.max_session_messages,
+                    );
+                }
+            }
+
             // Check cost cap
             if let Some(cap) = self.config.max_cost_usd
                 && total_cost_usd >= cap
@@ -280,10 +321,30 @@ impl Agent {
                     for tc in tool_calls_vec.unwrap_or_default() {
                         let id = tc["id"].as_str().unwrap_or("").to_string();
                         let name = tc["function"]["name"].as_str().unwrap_or("");
-                        let args: serde_json::Value = tc["function"]["arguments"]
+                        let mut args: serde_json::Value = tc["function"]["arguments"]
                             .as_str()
                             .and_then(|s| serde_json::from_str(s).ok())
                             .unwrap_or(json!({}));
+
+                        // Pre-tool-use hooks (run before permission check)
+                        match self.hook_runner.run_pre_hooks(name, &args).await {
+                            PreToolAction::Deny { message } => {
+                                eprintln!("[hook] {name}  denied: {message}");
+                                self.messages.push(Message {
+                                    role: "tool".into(),
+                                    content: Some(json!(format!("Hook denied: {message}"))),
+                                    name: None,
+                                    tool_calls: None,
+                                    tool_call_id: Some(id),
+                                    extra: Default::default(),
+                                });
+                                continue;
+                            }
+                            PreToolAction::Modify { args: new_args } => {
+                                args = new_args;
+                            }
+                            PreToolAction::Allow => {}
+                        }
 
                         let args_preview = common::truncate_with_ellipsis(&args.to_string(), 120);
                         eprintln!("[tool] {name}  args={args_preview}");
@@ -340,6 +401,10 @@ impl Agent {
                         };
                         let result =
                             truncate_tool_output(name, &result, self.config.max_tool_output);
+
+                        // Post-tool-use hooks
+                        let result = self.hook_runner.run_post_hooks(name, &args, &result).await;
+
                         let elapsed_ms = t0.elapsed().as_millis();
 
                         let result_preview =
