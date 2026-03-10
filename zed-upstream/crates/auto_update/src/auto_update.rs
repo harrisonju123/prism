@@ -182,29 +182,7 @@ pub fn init(client: Arc<Client>, cx: &mut App) {
     let auto_updater = cx.new(|cx| {
         let updater = AutoUpdater::new(version, client, cx);
 
-        let poll_for_updates = ReleaseChannel::try_global(cx)
-            .map(|channel| channel.poll_for_updates())
-            .unwrap_or(false);
-
-        if option_env!("ZED_UPDATE_EXPLANATION").is_none()
-            && env::var("ZED_UPDATE_EXPLANATION").is_err()
-            && poll_for_updates
-        {
-            let mut update_subscription = AutoUpdateSetting::get_global(cx)
-                .0
-                .then(|| updater.start_polling(cx));
-
-            cx.observe_global::<SettingsStore>(move |updater: &mut AutoUpdater, cx| {
-                if AutoUpdateSetting::get_global(cx).0 {
-                    if update_subscription.is_none() {
-                        update_subscription = Some(updater.start_polling(cx))
-                    }
-                } else {
-                    update_subscription.take();
-                }
-            })
-            .detach();
-        }
+        // PrisM: auto-update polling disabled — updates are managed externally
 
         updater
     });

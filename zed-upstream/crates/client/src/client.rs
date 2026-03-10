@@ -86,9 +86,9 @@ pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(20);
 actions!(
     client,
     [
-        /// Signs in to Zed account.
+        /// Signs in to account (disabled in PrisM).
         SignIn,
-        /// Signs out of Zed account.
+        /// Signs out of account (disabled in PrisM).
         SignOut,
         /// Reconnects to the collaboration server.
         Reconnect
@@ -150,12 +150,9 @@ impl Settings for ProxySettings {
 pub fn init(client: &Arc<Client>, cx: &mut App) {
     let client = Arc::downgrade(client);
     cx.on_action({
-        let client = client.clone();
-        move |_: &SignIn, cx| {
-            if let Some(client) = client.upgrade() {
-                cx.spawn(async move |cx| client.sign_in_with_optional_connect(true, cx).await)
-                    .detach_and_log_err(cx);
-            }
+        move |_: &SignIn, _cx| {
+            // PrisM: sign-in disabled — no Zed.dev account required
+            log::info!("sign-in is disabled in PrisM");
         }
     })
     .on_action({
