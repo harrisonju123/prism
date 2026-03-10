@@ -66,7 +66,9 @@ impl Session {
 
     fn tree(&self) -> &ConversationTree {
         // Safe: new() and load() both guarantee tree is Some
-        self.tree.as_ref().expect("tree must be initialized via new() or load()")
+        self.tree
+            .as_ref()
+            .expect("tree must be initialized via new() or load()")
     }
 
     fn tree_mut(&mut self) -> &mut ConversationTree {

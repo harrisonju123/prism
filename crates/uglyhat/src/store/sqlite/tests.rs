@@ -235,14 +235,23 @@ async fn test_decisions() {
             "JWT with refresh tokens",
             Some(t.id),
             vec!["auth".into()],
+            DecisionScope::Thread,
         )
         .await
         .expect("save decision");
     assert_eq!(d.title, "Use JWT");
     assert_eq!(d.status, DecisionStatus::Active);
+    assert_eq!(d.scope, DecisionScope::Thread);
 
     store
-        .save_decision(ws.id, "Global decision", "something", None, vec![])
+        .save_decision(
+            ws.id,
+            "Global decision",
+            "something",
+            None,
+            vec![],
+            DecisionScope::Thread,
+        )
         .await
         .expect("save global decision");
 
@@ -263,6 +272,56 @@ async fn test_decisions() {
 }
 
 #[tokio::test]
+async fn test_decision_supersede() {
+    let (store, ws) = setup().await;
+
+    let d1 = store
+        .save_decision(
+            ws.id,
+            "Use sessions",
+            "HTTP sessions",
+            None,
+            vec![],
+            DecisionScope::Thread,
+        )
+        .await
+        .expect("save d1");
+
+    let d2 = store
+        .supersede_decision(ws.id, d1.id, "Use JWT", "JWT is better", None, vec![])
+        .await
+        .expect("supersede");
+    assert_eq!(d2.status, DecisionStatus::Active);
+    assert_eq!(d2.supersedes, Some(d1.id));
+
+    // Old decision should be superseded
+    let all = store.list_decisions(ws.id, None, None).await.expect("list");
+    let old = all.iter().find(|d| d.id == d1.id).expect("find old");
+    assert_eq!(old.status, DecisionStatus::Superseded);
+    assert_eq!(old.superseded_by, Some(d2.id));
+}
+
+#[tokio::test]
+async fn test_decision_revoke() {
+    let (store, ws) = setup().await;
+
+    let d = store
+        .save_decision(
+            ws.id,
+            "Bad idea",
+            "nope",
+            None,
+            vec![],
+            DecisionScope::Thread,
+        )
+        .await
+        .expect("save");
+
+    let revoked = store.revoke_decision(ws.id, d.id).await.expect("revoke");
+    assert_eq!(revoked.status, DecisionStatus::Revoked);
+}
+
+#[tokio::test]
 async fn test_agent_checkin_checkout() {
     let (store, ws) = setup().await;
 
@@ -277,12 +336,14 @@ async fn test_agent_checkin_checkout() {
         .await
         .expect("checkin");
     assert_eq!(ctx.agent.name, "claude-1");
+    assert_eq!(ctx.agent.state, AgentState::Idle);
     assert_eq!(ctx.session.thread_id, Some(t.id));
 
     // Agent appears in list
     let agents = store.list_agents(ws.id).await.expect("list agents");
     assert_eq!(agents.len(), 1);
     assert_eq!(agents[0].name, "claude-1");
+    assert_eq!(agents[0].state, AgentState::Idle);
     assert!(agents[0].session_open);
     assert_eq!(agents[0].current_thread.as_deref(), Some("work-thread"));
 
@@ -301,6 +362,234 @@ async fn test_agent_checkin_checkout() {
     assert_eq!(session.summary, "Did some work");
     assert_eq!(session.findings, vec!["found a bug"]);
     assert!(session.ended_at.is_some());
+}
+
+#[tokio::test]
+async fn test_agent_heartbeat_and_state() {
+    let (store, ws) = setup().await;
+
+    // Checkin first
+    store
+        .checkin(ws.id, "claude-1", vec![], None)
+        .await
+        .expect("checkin");
+
+    // Heartbeat
+    store.heartbeat(ws.id, "claude-1").await.expect("heartbeat");
+
+    // Set state
+    store
+        .set_agent_state(ws.id, "claude-1", AgentState::Working)
+        .await
+        .expect("set state");
+
+    let agents = store.list_agents(ws.id).await.expect("list");
+    assert_eq!(agents[0].state, AgentState::Working);
+    assert!(agents[0].last_heartbeat.is_some());
+}
+
+#[tokio::test]
+async fn test_handoff_lifecycle() {
+    let (store, ws) = setup().await;
+
+    // Create two agents
+    store
+        .checkin(ws.id, "parent", vec![], None)
+        .await
+        .expect("checkin parent");
+    store
+        .checkin(ws.id, "child", vec![], None)
+        .await
+        .expect("checkin child");
+
+    // Create handoff
+    let h = store
+        .create_handoff(
+            ws.id,
+            "parent",
+            "fix the bug in auth.rs",
+            None,
+            HandoffConstraints::default(),
+            HandoffMode::DelegateAndAwait,
+        )
+        .await
+        .expect("create handoff");
+    assert_eq!(h.status, HandoffStatus::Pending);
+    assert_eq!(h.task, "fix the bug in auth.rs");
+
+    // Accept
+    let h2 = store
+        .accept_handoff(ws.id, h.id, "child")
+        .await
+        .expect("accept");
+    assert_eq!(h2.status, HandoffStatus::Accepted);
+
+    // Complete
+    let h3 = store
+        .complete_handoff(ws.id, h.id, serde_json::json!({"fixed": true}))
+        .await
+        .expect("complete");
+    assert_eq!(h3.status, HandoffStatus::Completed);
+    assert!(h3.result.is_some());
+
+    // List
+    let all = store.list_handoffs(ws.id, None, None).await.expect("list");
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].status, HandoffStatus::Completed);
+}
+
+#[tokio::test]
+async fn test_guardrails() {
+    let (store, ws) = setup().await;
+
+    let t = store
+        .create_thread(ws.id, "restricted", "", vec![])
+        .await
+        .expect("create thread");
+    store
+        .checkin(ws.id, "agent-a", vec![], None)
+        .await
+        .expect("checkin");
+
+    // Look up agent-a's id for owner
+    let ctx = store
+        .checkin(ws.id, "agent-a", vec![], None)
+        .await
+        .expect("checkin");
+    let owner_id = ctx.agent.id;
+
+    // Set guardrails
+    let g = store
+        .set_guardrails(
+            ws.id,
+            "restricted",
+            ThreadGuardrails {
+                id: uuid::Uuid::new_v4(),
+                thread_id: t.id,
+                workspace_id: ws.id,
+                owner_agent_id: Some(owner_id),
+                locked: true,
+                allowed_files: vec!["src/*".to_string()],
+                allowed_tools: vec!["read_file".to_string(), "edit_file".to_string()],
+                cost_budget_usd: Some(1.0),
+                cost_spent_usd: 0.0,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            },
+        )
+        .await
+        .expect("set guardrails");
+    assert!(g.locked);
+
+    // Get guardrails
+    let fetched = store
+        .get_guardrails(ws.id, "restricted")
+        .await
+        .expect("get")
+        .expect("should exist");
+    assert_eq!(fetched.allowed_tools, vec!["read_file", "edit_file"]);
+
+    // Check: owner can use allowed tool on allowed file
+    let check = store
+        .check_guardrail(
+            ws.id,
+            "restricted",
+            "agent-a",
+            "read_file",
+            Some("src/main.rs"),
+        )
+        .await
+        .expect("check");
+    assert!(check.allowed);
+
+    // Check: disallowed tool
+    let check2 = store
+        .check_guardrail(ws.id, "restricted", "agent-a", "bash", None)
+        .await
+        .expect("check");
+    assert!(!check2.allowed);
+    assert!(check2.reason.unwrap().contains("not in allowed tools"));
+
+    // Check: disallowed file
+    let check3 = store
+        .check_guardrail(
+            ws.id,
+            "restricted",
+            "agent-a",
+            "read_file",
+            Some("tests/main.rs"),
+        )
+        .await
+        .expect("check");
+    assert!(!check3.allowed);
+    assert!(check3.reason.unwrap().contains("not in allowed files"));
+
+    // Check: non-owner on locked thread
+    store
+        .checkin(ws.id, "agent-b", vec![], None)
+        .await
+        .expect("checkin b");
+    let check4 = store
+        .check_guardrail(
+            ws.id,
+            "restricted",
+            "agent-b",
+            "read_file",
+            Some("src/main.rs"),
+        )
+        .await
+        .expect("check");
+    assert!(!check4.allowed);
+    assert!(check4.reason.unwrap().contains("locked"));
+}
+
+#[tokio::test]
+async fn test_decision_notifications() {
+    let (store, ws) = setup().await;
+
+    // Create two agents with open sessions
+    store
+        .checkin(ws.id, "agent-a", vec![], None)
+        .await
+        .expect("checkin a");
+    store
+        .checkin(ws.id, "agent-b", vec![], None)
+        .await
+        .expect("checkin b");
+
+    // Agent-a makes a workspace-scoped decision
+    let d = store
+        .save_decision(
+            ws.id,
+            "Use JWT",
+            "auth",
+            None,
+            vec![],
+            DecisionScope::Workspace,
+        )
+        .await
+        .expect("save decision");
+
+    // Agent-b should have a pending notification
+    let pending = store
+        .pending_decision_notifications(ws.id, "agent-b")
+        .await
+        .expect("pending");
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].title, "Use JWT");
+
+    // Acknowledge
+    store
+        .acknowledge_decisions(ws.id, "agent-b", vec![d.id])
+        .await
+        .expect("ack");
+
+    // No more pending
+    let pending2 = store
+        .pending_decision_notifications(ws.id, "agent-b")
+        .await
+        .expect("pending2");
+    assert!(pending2.is_empty());
 }
 
 #[tokio::test]
@@ -323,7 +612,14 @@ async fn test_recall_thread() {
         .expect("save memory");
 
     store
-        .save_decision(ws.id, "Use React", "Modern UI", Some(t.id), vec![])
+        .save_decision(
+            ws.id,
+            "Use React",
+            "Modern UI",
+            Some(t.id),
+            vec![],
+            DecisionScope::Thread,
+        )
         .await
         .expect("save decision");
 
@@ -416,12 +712,26 @@ async fn test_tag_exact_match() {
 
     // Same for decisions
     store
-        .save_decision(ws.id, "D1", "", None, vec!["auth".into()])
+        .save_decision(
+            ws.id,
+            "D1",
+            "",
+            None,
+            vec!["auth".into()],
+            DecisionScope::Thread,
+        )
         .await
         .expect("save decision with auth tag");
 
     store
-        .save_decision(ws.id, "D2", "", None, vec!["authentication".into()])
+        .save_decision(
+            ws.id,
+            "D2",
+            "",
+            None,
+            vec!["authentication".into()],
+            DecisionScope::Thread,
+        )
         .await
         .expect("save decision with authentication tag");
 

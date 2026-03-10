@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use gpui::{App, Global, WeakEntity};
-use uglyhat::model::{ActivityEntry, AgentSession, AgentStatus, CheckinContext, Memory, Thread, WorkspaceOverview};
+use uglyhat::model::{
+    ActivityEntry, AgentSession, AgentStatus, CheckinContext, Memory, Thread, WorkspaceOverview,
+};
 use uglyhat::store::sqlite::SqliteStore;
 use uglyhat::store::{ActivityFilters, Store};
 use uuid::Uuid;
@@ -29,9 +31,11 @@ impl UglyhatService {
     pub fn init(workspace_root: &std::path::Path, cx: &mut App) -> Result<()> {
         let config_path = uglyhat::config::find_config(workspace_root)
             .context("uglyhat not initialized in this workspace")?;
-        let config = uglyhat::config::load_config(&config_path)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        let workspace_id: Uuid = config.workspace_id.parse()
+        let config =
+            uglyhat::config::load_config(&config_path).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let workspace_id: Uuid = config
+            .workspace_id
+            .parse()
             .context("invalid workspace_id in .uglyhat.json")?;
 
         let db_path = uglyhat::config::resolve_db_path(&config_path, &config)
@@ -45,25 +49,26 @@ impl UglyhatService {
 
         // Open the store on the tokio runtime, update global when ready
         let open_task = gpui_tokio::Tokio::spawn_result(cx, async move {
-            SqliteStore::open(&db_path).await.map_err(|e| anyhow::anyhow!("{e}"))
+            SqliteStore::open(&db_path)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))
         });
 
-        cx.spawn(async move |cx| {
-            match open_task.await {
-                Ok(store) => {
-                    cx.update(|cx| {
-                        cx.global_mut::<UglyhatService>().inner = Some(UglyhatHandle {
-                            store: Arc::new(store),
-                            workspace_id,
-                            handle: tokio_handle,
-                        });
+        cx.spawn(async move |cx| match open_task.await {
+            Ok(store) => {
+                cx.update(|cx| {
+                    cx.global_mut::<UglyhatService>().inner = Some(UglyhatHandle {
+                        store: Arc::new(store),
+                        workspace_id,
+                        handle: tokio_handle,
                     });
-                }
-                Err(e) => {
-                    log::warn!("failed to open uglyhat store: {e}");
-                }
+                });
             }
-        }).detach();
+            Err(e) => {
+                log::warn!("failed to open uglyhat store: {e}");
+            }
+        })
+        .detach();
 
         Ok(())
     }
@@ -187,7 +192,8 @@ pub fn get_uglyhat_handle<T: 'static>(
     cx: &mut gpui::AsyncApp,
 ) -> Option<UglyhatHandle> {
     this.update(cx, |_, cx| {
-        cx.try_global::<UglyhatService>().and_then(|svc| svc.handle())
+        cx.try_global::<UglyhatService>()
+            .and_then(|svc| svc.handle())
     })
     .ok()
     .flatten()

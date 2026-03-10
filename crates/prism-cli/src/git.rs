@@ -126,7 +126,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
-        Command::new("git").args(["init"]).current_dir(dir).output().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
         Command::new("git")
             .args(["config", "user.email", "test@test.com"])
             .current_dir(dir)
@@ -139,7 +143,11 @@ mod tests {
             .unwrap();
 
         fs::write(dir.join("file.txt"), "hello").unwrap();
-        Command::new("git").args(["add", "."]).current_dir(dir).output().unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir)
+            .output()
+            .unwrap();
         Command::new("git")
             .args(["commit", "-m", "initial commit"])
             .current_dir(dir)
@@ -156,7 +164,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir = tmp.path();
 
-        Command::new("git").args(["init"]).current_dir(dir).output().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
         Command::new("git")
             .args(["config", "user.email", "test@test.com"])
             .current_dir(dir)
@@ -169,7 +181,11 @@ mod tests {
             .unwrap();
 
         fs::write(dir.join("a.txt"), "a").unwrap();
-        Command::new("git").args(["add", "."]).current_dir(dir).output().unwrap();
+        Command::new("git")
+            .args(["add", "."])
+            .current_dir(dir)
+            .output()
+            .unwrap();
         Command::new("git")
             .args(["commit", "-m", "init"])
             .current_dir(dir)

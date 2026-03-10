@@ -41,6 +41,12 @@ macro_rules! row_to_struct {
     (@extract $row:ident, bool, $col:literal) => {
         $row.try_get($col)?
     };
+    (@extract $row:ident, f64, $col:literal) => {
+        $row.try_get::<f64, _>($col)?
+    };
+    (@extract $row:ident, opt_f64, $col:literal) => {
+        $row.try_get::<Option<f64>, _>($col)?
+    };
     (@extract $row:ident, custom, $col:literal, $custom:expr) => {
         $custom
     };

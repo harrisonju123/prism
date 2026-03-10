@@ -14068,6 +14068,7 @@ dependencies = [
  "db",
  "futures 0.3.32",
  "gpui",
+ "language_models",
  "prism-client",
  "prism-types",
  "serde",

@@ -352,7 +352,11 @@ impl SessionHistoryPanel {
             )
     }
 
-    fn render_detail_view(&self, session: &SessionEntry, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_detail_view(
+        &self,
+        session: &SessionEntry,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let session = session.clone();
         let cost = self.thread_cost.clone();
 
@@ -446,14 +450,29 @@ impl SessionHistoryPanel {
                                 .child(
                                     h_flex()
                                         .gap_2()
-                                        .child(Label::new(format!("${:.4}", cost.total_cost_usd)).size(LabelSize::Small))
-                                        .child(Label::new(format!("{} requests", cost.request_count)).size(LabelSize::Small).color(Color::Muted)),
+                                        .child(
+                                            Label::new(format!("${:.4}", cost.total_cost_usd))
+                                                .size(LabelSize::Small),
+                                        )
+                                        .child(
+                                            Label::new(format!("{} requests", cost.request_count))
+                                                .size(LabelSize::Small)
+                                                .color(Color::Muted),
+                                        ),
                                 )
                                 .child(
                                     h_flex()
                                         .gap_2()
-                                        .child(Label::new(format!("{} in", cost.total_input_tokens)).size(LabelSize::Small).color(Color::Muted))
-                                        .child(Label::new(format!("{} out", cost.total_output_tokens)).size(LabelSize::Small).color(Color::Muted)),
+                                        .child(
+                                            Label::new(format!("{} in", cost.total_input_tokens))
+                                                .size(LabelSize::Small)
+                                                .color(Color::Muted),
+                                        )
+                                        .child(
+                                            Label::new(format!("{} out", cost.total_output_tokens))
+                                                .size(LabelSize::Small)
+                                                .color(Color::Muted),
+                                        ),
                                 ),
                         )
                     }),

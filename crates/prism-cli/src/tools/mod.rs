@@ -181,13 +181,23 @@ pub fn tool_definitions() -> Vec<Tool> {
         ),
         make_tool(
             "spawn_agent",
-            "Spawn a sub-agent to execute a task. The sub-agent runs independently and returns a JSON result with status, summary, and cost. Set run_in_background=true to fire-and-forget — you'll be notified on completion.",
+            "Spawn a sub-agent to execute a task. The sub-agent runs independently and returns a JSON result with status, summary, and cost. Set run_in_background=true to fire-and-forget. Use thread to assign the child to a context thread, and constraints to restrict file/tool access or set cost caps.",
             json!({ "type": "object", "properties": {
                 "task":              { "type": "string", "description": "Natural language task for the sub-agent" },
                 "model":             { "type": "string", "description": "Model to use (optional, defaults to parent model)" },
                 "cost_cap":          { "type": "number", "description": "Max cost in USD (optional)" },
                 "timeout_secs":      { "type": "integer", "description": "Timeout in seconds (default 300)" },
-                "run_in_background": { "type": "boolean", "description": "If true, run in background and return immediately. You'll be notified when it completes." }
+                "run_in_background": { "type": "boolean", "description": "If true, run in background and return immediately. You'll be notified when it completes." },
+                "thread":            { "type": "string", "description": "Thread name to assign the child agent to" },
+                "constraints":       { "type": "object", "description": "Handoff constraints: {cost_cap, timeout_secs, allowed_tools, allowed_files}",
+                    "properties": {
+                        "cost_cap":      { "type": "number" },
+                        "timeout_secs":  { "type": "integer" },
+                        "allowed_tools": { "type": "array", "items": { "type": "string" } },
+                        "allowed_files": { "type": "array", "items": { "type": "string" } }
+                    }
+                },
+                "handoff_mode":      { "type": "string", "description": "delegate_and_await (default) or delegate_and_forget" }
             }, "required": ["task"] }),
         ),
         make_tool(
@@ -482,7 +492,13 @@ async fn dispatch_inner(name: &str, args: &serde_json::Value, session_cwd: Optio
             let url = args["url"].as_str().unwrap_or("");
             ToolResult::Text(web::web_fetch(url).await)
         }
-        Some(BuiltinTool::SaveMemory | BuiltinTool::SpawnAgent | BuiltinTool::Recall | BuiltinTool::Skill | BuiltinTool::CheckBackgroundTasks) => {
+        Some(
+            BuiltinTool::SaveMemory
+            | BuiltinTool::SpawnAgent
+            | BuiltinTool::Recall
+            | BuiltinTool::Skill
+            | BuiltinTool::CheckBackgroundTasks,
+        ) => {
             // Intercepted before dispatch() in the agent loop; reaching here means
             // the caller invoked dispatch() directly without agent context.
             ToolResult::Text(format!("{{\"error\": \"tool '{name}' requires agent loop context\"}}"))

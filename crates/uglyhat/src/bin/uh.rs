@@ -5,7 +5,8 @@ use clap::{Parser, Subcommand};
 use serde::Serialize;
 use uuid::Uuid;
 
-use uglyhat::config::{self, Config, CONFIG_FILE};
+use uglyhat::config::{self, CONFIG_FILE, Config};
+use uglyhat::model::*;
 use uglyhat::store::sqlite::SqliteStore;
 use uglyhat::store::{ActivityFilters, MemoryFilters, Store};
 use uglyhat::util::parse_duration;
@@ -74,6 +75,15 @@ enum Commands {
         thread: Option<String>,
         #[arg(long, value_delimiter = ',')]
         tags: Option<Vec<String>>,
+        /// Decision scope: 'thread' or 'workspace' (workspace notifies all agents)
+        #[arg(long, default_value = "thread")]
+        scope: String,
+        /// Supersede an existing decision by ID
+        #[arg(long)]
+        supersede: Option<String>,
+        /// Revoke a decision by ID (ignores title)
+        #[arg(long)]
+        revoke: Option<String>,
     },
     /// List decisions
     Decisions {
@@ -119,6 +129,24 @@ enum Commands {
     /// List agents
     Agents,
 
+    /// Send a heartbeat
+    Heartbeat {
+        #[arg(long)]
+        name: Option<String>,
+    },
+
+    /// Agent state and management
+    Agent {
+        #[command(subcommand)]
+        action: AgentAction,
+    },
+
+    /// Handoff management
+    Handoff {
+        #[command(subcommand)]
+        action: HandoffAction,
+    },
+
     /// Activity log
     Activity {
         #[arg(long)]
@@ -153,6 +181,87 @@ enum ThreadAction {
     },
     Archive {
         name: String,
+    },
+    /// Manage thread guardrails
+    Guard {
+        name: String,
+        /// Show current guardrails
+        #[arg(long)]
+        show: bool,
+        /// Remove lock
+        #[arg(long)]
+        unlock: bool,
+        /// Set owner agent
+        #[arg(long)]
+        owner: Option<String>,
+        /// Lock the thread
+        #[arg(long)]
+        lock: bool,
+        /// Allowed file patterns (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        allowed_files: Option<Vec<String>>,
+        /// Allowed tool names (comma-separated)
+        #[arg(long, value_delimiter = ',')]
+        allowed_tools: Option<Vec<String>>,
+        /// Cost budget in USD
+        #[arg(long)]
+        cost_budget: Option<f64>,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentAction {
+    /// Set agent state
+    State {
+        /// State: idle, working, blocked
+        state: String,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Reap dead agents with stale heartbeats
+    Reap {
+        /// Timeout duration (e.g. '10m', '1h')
+        #[arg(long, default_value = "10m")]
+        timeout: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum HandoffAction {
+    /// Create a handoff task
+    Create {
+        task: String,
+        #[arg(long)]
+        thread: Option<String>,
+        #[arg(long)]
+        cost_cap: Option<f64>,
+        #[arg(long)]
+        timeout: Option<u64>,
+        #[arg(long, default_value = "delegate-and-await")]
+        mode: String,
+        #[arg(long, value_delimiter = ',')]
+        allowed_tools: Option<Vec<String>>,
+        #[arg(long, value_delimiter = ',')]
+        allowed_files: Option<Vec<String>>,
+    },
+    /// Accept a pending handoff
+    Accept {
+        id: String,
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Complete a handoff with a result
+    Complete {
+        id: String,
+        #[arg(long)]
+        result: String,
+    },
+    /// List handoffs
+    List {
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long)]
+        status: Option<String>,
     },
 }
 
@@ -234,9 +343,9 @@ async fn run(cli: Cli) -> Result<(), String> {
             }
             ThreadAction::List { active, archived } => {
                 let status = if active {
-                    Some(uglyhat::model::ThreadStatus::Active)
+                    Some(ThreadStatus::Active)
                 } else if archived {
-                    Some(uglyhat::model::ThreadStatus::Archived)
+                    Some(ThreadStatus::Archived)
                 } else {
                     None
                 };
@@ -252,6 +361,79 @@ async fn run(cli: Cli) -> Result<(), String> {
                     .await
                     .map_err(|e| e.to_string())?;
                 print_json(&t);
+            }
+            ThreadAction::Guard {
+                name,
+                show,
+                unlock,
+                owner,
+                lock,
+                allowed_files,
+                allowed_tools,
+                cost_budget,
+            } => {
+                if show {
+                    let g = store
+                        .get_guardrails(workspace_id, &name)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    match g {
+                        Some(guardrails) => print_json(&guardrails),
+                        None => println!("{{\"guardrails\": null}}"),
+                    }
+                } else if unlock {
+                    // Get existing guardrails, set locked=false
+                    let existing = store
+                        .get_guardrails(workspace_id, &name)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if let Some(mut g) = existing {
+                        g.locked = false;
+                        let updated = store
+                            .set_guardrails(workspace_id, &name, g)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        print_json(&updated);
+                    } else {
+                        println!("{{\"guardrails\": null}}");
+                    }
+                } else {
+                    // Look up owner agent ID if provided
+                    let owner_agent_id = if let Some(ref owner_name) = owner {
+                        // Resolve agent name to ID via checkin (upsert)
+                        let ctx = store
+                            .checkin(workspace_id, owner_name, vec![], None)
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        Some(ctx.agent.id)
+                    } else {
+                        None
+                    };
+
+                    let thread = store
+                        .get_thread(workspace_id, &name)
+                        .await
+                        .map_err(|e| e.to_string())?;
+
+                    let g = ThreadGuardrails {
+                        id: Uuid::new_v4(),
+                        thread_id: thread.id,
+                        workspace_id,
+                        owner_agent_id,
+                        locked: lock,
+                        allowed_files: allowed_files.unwrap_or_default(),
+                        allowed_tools: allowed_tools.unwrap_or_default(),
+                        cost_budget_usd: cost_budget,
+                        cost_spent_usd: 0.0,
+                        created_at: Utc::now(),
+                        updated_at: Utc::now(),
+                    };
+                    let result = store
+                        .set_guardrails(workspace_id, &name, g)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    print_json(&result);
+                }
             }
         },
         Commands::Remember {
@@ -310,23 +492,62 @@ async fn run(cli: Cli) -> Result<(), String> {
             content,
             thread,
             tags,
+            scope,
+            supersede,
+            revoke,
         } => {
-            let thread_id = if let Some(ref tname) = thread {
-                resolve_thread_id(&store, workspace_id, tname).await
+            if let Some(revoke_id) = revoke {
+                let id: Uuid = revoke_id
+                    .parse()
+                    .map_err(|e| format!("invalid decision id: {e}"))?;
+                let d = store
+                    .revoke_decision(workspace_id, id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&d);
+            } else if let Some(old_id_str) = supersede {
+                let old_id: Uuid = old_id_str
+                    .parse()
+                    .map_err(|e| format!("invalid decision id: {e}"))?;
+                let thread_id = if let Some(ref tname) = thread {
+                    resolve_thread_id(&store, workspace_id, tname).await
+                } else {
+                    None
+                };
+                let d = store
+                    .supersede_decision(
+                        workspace_id,
+                        old_id,
+                        &title,
+                        &content,
+                        thread_id,
+                        tags.unwrap_or_default(),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&d);
             } else {
-                None
-            };
-            let d = store
-                .save_decision(
-                    workspace_id,
-                    &title,
-                    &content,
-                    thread_id,
-                    tags.unwrap_or_default(),
-                )
-                .await
-                .map_err(|e| e.to_string())?;
-            print_json(&d);
+                let thread_id = if let Some(ref tname) = thread {
+                    resolve_thread_id(&store, workspace_id, tname).await
+                } else {
+                    None
+                };
+                let decision_scope = DecisionScope::from_str(&scope).ok_or_else(|| {
+                    format!("invalid scope: {scope} (use 'thread' or 'workspace')")
+                })?;
+                let d = store
+                    .save_decision(
+                        workspace_id,
+                        &title,
+                        &content,
+                        thread_id,
+                        tags.unwrap_or_default(),
+                        decision_scope,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&d);
+            }
         }
         Commands::Decisions { thread, tags } => {
             let thread_id = if let Some(ref tname) = thread {
@@ -417,6 +638,110 @@ async fn run(cli: Cli) -> Result<(), String> {
                 .map_err(|e| e.to_string())?;
             print_json(&agents);
         }
+        Commands::Heartbeat { name } => {
+            let agent = name.unwrap_or_else(agent_name);
+            store
+                .heartbeat(workspace_id, &agent)
+                .await
+                .map_err(|e| e.to_string())?;
+            println!("{{\"heartbeat\":\"{agent}\"}}");
+        }
+        Commands::Agent { action } => match action {
+            AgentAction::State { state, name } => {
+                let agent = name.unwrap_or_else(agent_name);
+                let agent_state = AgentState::from_str(&state).ok_or_else(|| {
+                    format!("invalid state: {state} (use idle, working, or blocked)")
+                })?;
+                store
+                    .set_agent_state(workspace_id, &agent, agent_state)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                println!("{{\"agent\":\"{agent}\",\"state\":\"{state}\"}}");
+            }
+            AgentAction::Reap { timeout } => {
+                let dur = parse_duration(&timeout)?;
+                let timeout_secs = dur.num_seconds();
+                let reaped = store
+                    .reap_dead_agents(workspace_id, timeout_secs)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&serde_json::json!({"reaped": reaped}));
+            }
+        },
+        Commands::Handoff { action } => match action {
+            HandoffAction::Create {
+                task,
+                thread,
+                cost_cap,
+                timeout,
+                mode,
+                allowed_tools,
+                allowed_files,
+            } => {
+                let from_agent = agent_name();
+                let thread_id = if let Some(ref tname) = thread {
+                    resolve_thread_id(&store, workspace_id, tname).await
+                } else {
+                    None
+                };
+                let handoff_mode = match mode.as_str() {
+                    "delegate-and-forget" | "delegate_and_forget" => HandoffMode::DelegateAndForget,
+                    _ => HandoffMode::DelegateAndAwait,
+                };
+                let constraints = HandoffConstraints {
+                    cost_cap,
+                    timeout_secs: timeout,
+                    allowed_tools: allowed_tools.unwrap_or_default(),
+                    allowed_files: allowed_files.unwrap_or_default(),
+                };
+                let h = store
+                    .create_handoff(
+                        workspace_id,
+                        &from_agent,
+                        &task,
+                        thread_id,
+                        constraints,
+                        handoff_mode,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&h);
+            }
+            HandoffAction::Accept { id, name } => {
+                let agent = name.unwrap_or_else(agent_name);
+                let handoff_id: Uuid =
+                    id.parse().map_err(|e| format!("invalid handoff id: {e}"))?;
+                let h = store
+                    .accept_handoff(workspace_id, handoff_id, &agent)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&h);
+            }
+            HandoffAction::Complete { id, result } => {
+                let handoff_id: Uuid =
+                    id.parse().map_err(|e| format!("invalid handoff id: {e}"))?;
+                let result_json: serde_json::Value = serde_json::from_str(&result)
+                    .map_err(|e| format!("invalid result JSON: {e}"))?;
+                let h = store
+                    .complete_handoff(workspace_id, handoff_id, result_json)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&h);
+            }
+            HandoffAction::List { agent, status } => {
+                let handoff_status = status
+                    .as_deref()
+                    .map(|s| {
+                        HandoffStatus::from_str(s).ok_or_else(|| format!("invalid status: {s}"))
+                    })
+                    .transpose()?;
+                let handoffs = store
+                    .list_handoffs(workspace_id, agent.as_deref(), handoff_status)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&handoffs);
+            }
+        },
         Commands::Activity {
             since,
             actor,

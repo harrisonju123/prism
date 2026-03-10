@@ -56,10 +56,7 @@ impl Renderer {
             if self.colored {
                 let _ = write!(out, "{}", SetForegroundColor(Color::Cyan));
             }
-            let _ = writeln!(
-                out,
-                "@@ -{old_start},{old_len} +{new_start},{new_len} @@"
-            );
+            let _ = writeln!(out, "@@ -{old_start},{old_len} +{new_start},{new_len} @@");
             if self.colored {
                 let _ = write!(out, "{}", ResetColor);
             }
