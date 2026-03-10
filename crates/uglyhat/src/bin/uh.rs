@@ -1,16 +1,14 @@
 use std::path::{Path, PathBuf};
 use std::process;
 
+use chrono::Utc;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use uglyhat::client::HttpClient;
-use uglyhat::github::GithubSync;
-use uglyhat::middleware::auth::hash_key;
-use uglyhat::model::*;
 use uglyhat::store::sqlite::SqliteStore;
-use uglyhat::store::{ActivityFilters, Store, TaskFilters};
+use uglyhat::store::{ActivityFilters, MemoryFilters, Store};
+use uglyhat::util::parse_duration;
 
 // ---------------------------------------------------------------------------
 // Config
@@ -23,19 +21,7 @@ const DB_FILE: &str = ".uglyhat.db";
 struct Config {
     workspace_id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    api_key: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    base_url: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    mode: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
     db_path: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    github_pat: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    github_repo: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    webhook_url: String,
 }
 
 fn find_config() -> Result<PathBuf, String> {
@@ -51,43 +37,29 @@ fn find_config() -> Result<PathBuf, String> {
     }
 }
 
-fn load_config() -> Result<(Config, PathBuf), String> {
-    let path = find_config()?;
-    let data = std::fs::read_to_string(&path).map_err(|e| format!("reading config: {e}"))?;
-    let cfg: Config = serde_json::from_str(&data).map_err(|e| format!("parsing config: {e}"))?;
-    if cfg.workspace_id.is_empty() {
-        return Err("config missing workspace_id".to_string());
-    }
-    let config_dir = path.parent().unwrap().to_path_buf();
-    Ok((cfg, config_dir))
+fn load_config(path: &Path) -> Result<Config, String> {
+    let data = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    serde_json::from_str(&data).map_err(|e| e.to_string())
 }
 
-fn save_config(dir: &Path, cfg: &Config) -> Result<(), String> {
-    let data = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join(CONFIG_FILE), format!("{data}\n"))
-        .map_err(|e| format!("writing config: {e}"))
+fn db_path_from_config(config_path: &Path, config: &Config) -> String {
+    if !config.db_path.is_empty() {
+        return config.db_path.clone();
+    }
+    let dir = config_path.parent().unwrap_or(config_path);
+    dir.join(DB_FILE).to_string_lossy().to_string()
 }
 
-fn resolve_db_path(cfg: &Config, config_dir: &Path) -> PathBuf {
-    let db = if cfg.db_path.is_empty() {
-        DB_FILE.to_string()
-    } else {
-        cfg.db_path.clone()
-    };
-    let p = Path::new(&db);
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        config_dir.join(p)
-    }
+fn agent_name() -> String {
+    std::env::var("UH_AGENT_NAME").unwrap_or_else(|_| "claude".to_string())
 }
 
 // ---------------------------------------------------------------------------
-// CLI definition
+// CLI
 // ---------------------------------------------------------------------------
 
 #[derive(Parser)]
-#[command(name = "uh", about = "uglyhat CLI — AI-agent-first project management")]
+#[command(name = "uh", about = "Context management for AI agents")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -97,1447 +69,452 @@ struct Cli {
 enum Commands {
     /// Bootstrap a new workspace
     Init {
-        /// Workspace name
         name: String,
+        #[arg(long, default_value = "")]
+        desc: String,
     },
-    /// Workspace overview
+    /// Show workspace overview
     Context,
-    /// Prioritized unassigned tasks
-    Next {
-        /// Max tasks to return
-        #[arg(long, default_value = "5")]
-        limit: i64,
+
+    /// Thread management
+    Thread {
+        #[command(subcommand)]
+        action: ThreadAction,
     },
-    /// Report an issue
-    Report {
-        /// Issue title
-        title: String,
-        /// Issue description
+
+    /// Save a memory (upsert by key)
+    Remember {
+        key: String,
+        value: String,
         #[arg(long)]
-        desc: Option<String>,
-        /// Severity (critical/high/medium/low)
-        #[arg(long)]
-        severity: Option<String>,
-        /// Reporting source
+        thread: Option<String>,
         #[arg(long)]
         source: Option<String>,
-        /// Comma-separated domain tags
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+    },
+    /// Delete a memory
+    Forget { key: String },
+    /// List memories
+    Memories {
         #[arg(long)]
-        tags: Option<String>,
-    },
-    /// Initiative commands
-    Initiative {
-        #[command(subcommand)]
-        action: InitiativeAction,
-    },
-    /// Epic commands
-    Epic {
-        #[command(subcommand)]
-        action: EpicAction,
-    },
-    /// Task commands
-    Task {
-        #[command(subcommand)]
-        action: TaskAction,
-    },
-    /// List tasks with filters
-    Tasks {
-        /// Filter by status
+        thread: Option<String>,
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
         #[arg(long)]
-        status: Option<String>,
-        /// Filter by domain tag
-        #[arg(long)]
-        domain: Option<String>,
-        /// Filter by assignee
-        #[arg(long)]
-        assignee: Option<String>,
-        /// Show only unassigned tasks
-        #[arg(long)]
-        unassigned: bool,
+        global: bool,
     },
-    /// Decision commands
-    Decision {
-        #[command(subcommand)]
-        action: DecisionAction,
-    },
-    /// Create a note
-    Note {
-        /// Note title
+
+    /// Record a decision
+    Decide {
         title: String,
-        /// Note content
+        #[arg(long, default_value = "")]
+        content: String,
         #[arg(long)]
-        content: Option<String>,
-        /// Attach to task ID
-        #[arg(long)]
-        task_id: Option<String>,
+        thread: Option<String>,
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
     },
-    /// View activity log
-    Activity {
-        /// Filter by RFC3339 timestamp
+    /// List decisions
+    Decisions {
+        #[arg(long)]
+        thread: Option<String>,
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+    },
+
+    /// Recall context (thread, tags, or time-based)
+    Recall {
+        /// Thread name to recall
+        thread: Option<String>,
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+        /// Duration like "2h", "30m", "1d"
         #[arg(long)]
         since: Option<String>,
-        /// Filter by actor name
+    },
+
+    /// Agent checkin
+    Checkin {
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, value_delimiter = ',')]
+        capabilities: Option<Vec<String>>,
+        #[arg(long)]
+        thread: Option<String>,
+    },
+    /// Agent checkout
+    Checkout {
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, default_value = "")]
+        summary: String,
+        #[arg(long, value_delimiter = ',')]
+        findings: Option<Vec<String>>,
+        #[arg(long, value_delimiter = ',')]
+        files: Option<Vec<String>>,
+        #[arg(long, value_delimiter = ',')]
+        next_steps: Option<Vec<String>>,
+    },
+    /// List agents
+    Agents,
+
+    /// Activity log
+    Activity {
+        #[arg(long)]
+        since: Option<String>,
         #[arg(long)]
         actor: Option<String>,
-        /// Max entries to return
         #[arg(long, default_value = "50")]
         limit: i64,
     },
-    /// Agent check-in
-    Checkin {
-        /// Agent name (required)
-        #[arg(long)]
-        name: String,
-        /// Comma-separated capabilities
-        #[arg(long)]
-        capabilities: Option<String>,
-    },
-    /// Agent check-out
-    Checkout {
-        /// Agent name (required)
-        #[arg(long)]
-        name: String,
-        /// Session summary
+
+    /// Create a point-in-time snapshot
+    Snapshot {
         #[arg(long, default_value = "")]
-        summary: String,
-        /// Auto-complete the agent's current task on checkout
-        #[arg(long)]
-        complete_tasks: bool,
+        label: String,
     },
-    /// List agents and their current tasks
-    Agents {
-        /// Show performance metrics aggregated from activity log
-        #[arg(long)]
-        metrics: bool,
-    },
-    /// Show stale tasks (in_progress with no active agent session)
-    Stale,
-    /// Create a structured handoff
-    Handoff {
-        /// Task ID
-        task_id: String,
-        /// Handoff summary
+}
+
+#[derive(Subcommand)]
+enum ThreadAction {
+    Create {
+        name: String,
         #[arg(long, default_value = "")]
-        summary: String,
-        /// Comma-separated findings
-        #[arg(long)]
-        findings: Option<String>,
-        /// Comma-separated blockers
-        #[arg(long)]
-        blockers: Option<String>,
-        /// Comma-separated next steps
-        #[arg(long)]
-        next_steps: Option<String>,
+        desc: String,
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
     },
-    /// Sprint planning and tracking
-    Sprint {
-        #[command(subcommand)]
-        cmd: SprintCmd,
-    },
-    /// GitHub Issues sync
-    Github {
-        #[command(subcommand)]
-        cmd: GithubCmd,
-    },
-    /// Manage connection to a remote uglyhat server.
-    #[command(subcommand)]
-    Remote(RemoteCommand),
-    /// Manage webhook notifications
-    Webhook {
-        #[command(subcommand)]
-        cmd: WebhookCmd,
-    },
-}
-
-#[derive(Subcommand)]
-enum RemoteCommand {
-    /// Configure this workspace to use a remote server.
-    Set {
-        /// Base URL of the uglyhat server (e.g. http://my-server:3001)
-        url: String,
-        /// API key for authentication
-        api_key: String,
-    },
-    /// Revert to local SQLite mode (clears base_url in .uglyhat.json).
-    Unset,
-    /// Show current connection mode and settings.
-    Status,
-}
-
-#[derive(Subcommand)]
-enum WebhookCmd {
-    /// Send a test webhook to the configured URL
-    Test,
-}
-
-#[derive(Subcommand)]
-enum InitiativeAction {
-    /// Create an initiative
-    Create {
-        /// Initiative name
-        name: String,
-        /// Description
-        #[arg(long)]
-        desc: Option<String>,
-    },
-    /// List initiatives
-    List,
-}
-
-#[derive(Subcommand)]
-enum EpicAction {
-    /// Create an epic
-    Create {
-        /// Epic name
-        name: String,
-        /// Initiative ID (required)
-        #[arg(long)]
-        initiative: String,
-        /// Description
-        #[arg(long)]
-        desc: Option<String>,
-    },
-    /// List epics for an initiative
     List {
-        /// Initiative ID (required)
         #[arg(long)]
-        initiative: String,
+        active: bool,
+        #[arg(long)]
+        archived: bool,
     },
-}
-
-#[derive(Subcommand)]
-enum TaskAction {
-    /// Get a task by ID
-    Get {
-        /// Task ID
-        id: String,
-    },
-    /// Update a task
-    Update {
-        /// Task ID
-        id: String,
-        /// Task status
-        #[arg(long)]
-        status: Option<String>,
-        /// Assignee
-        #[arg(long)]
-        assignee: Option<String>,
-        /// Priority
-        #[arg(long)]
-        priority: Option<String>,
-        /// Task name
-        #[arg(long)]
-        name: Option<String>,
-        /// Task description
-        #[arg(long)]
-        desc: Option<String>,
-    },
-    /// Create a task
-    Create {
-        /// Task name
-        name: String,
-        /// Epic ID (required)
-        #[arg(long)]
-        epic: String,
-        /// Description
-        #[arg(long)]
-        desc: Option<String>,
-        /// Priority
-        #[arg(long, default_value = "medium")]
-        priority: String,
-        /// Assignee
-        #[arg(long)]
-        assignee: Option<String>,
-        /// Comma-separated domain tags
-        #[arg(long)]
-        tags: Option<String>,
-        /// Initial status
-        #[arg(long, default_value = "backlog")]
-        status: String,
-    },
-    /// Claim a task
-    Claim {
-        /// Task ID
-        id: String,
-        /// Agent name (required)
-        #[arg(long)]
+    Archive {
         name: String,
     },
-    /// Show dependencies for a task
-    Deps {
-        /// Task ID
-        id: String,
-    },
-    /// Add a blocking dependency
-    Block {
-        /// Blocking task ID
-        blocking_id: String,
-        /// Blocked task ID
-        blocked_id: String,
-    },
-    /// Get rich context for a task
-    Context {
-        /// Task ID
-        id: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum DecisionAction {
-    /// Create a decision
-    Create {
-        /// Decision title
-        title: String,
-        /// Decision content
-        #[arg(long)]
-        content: Option<String>,
-        /// Initiative ID
-        #[arg(long)]
-        initiative: Option<String>,
-        /// Epic ID
-        #[arg(long)]
-        epic: Option<String>,
-    },
-    /// List decisions
-    List,
-}
-
-#[derive(Subcommand)]
-enum SprintCmd {
-    /// Create a new sprint
-    Create {
-        name: String,
-        #[arg(long)]
-        goal: Option<String>,
-        #[arg(long, help = "Start date (YYYY-MM-DD)")]
-        start: Option<String>,
-        #[arg(long, help = "End date (YYYY-MM-DD)")]
-        end: Option<String>,
-    },
-    /// List sprints in the workspace
-    List,
-    /// Close a sprint
-    Close {
-        /// Sprint ID
-        id: String,
-    },
-    /// Show sprint burndown/velocity
-    Burndown {
-        /// Sprint ID
-        id: String,
-    },
-    /// Assign a task to a sprint
-    Assign {
-        /// Task ID
-        task_id: String,
-        /// Sprint ID
-        sprint_id: String,
-    },
-}
-
-#[derive(Subcommand)]
-enum GithubCmd {
-    /// Sync open GitHub issues as tasks
-    Sync {
-        #[arg(long, help = "GitHub repo (owner/repo)")]
-        repo: Option<String>,
-        #[arg(
-            long,
-            help = "Only sync issues updated since date (YYYY-MM-DD or RFC3339)"
-        )]
-        since: Option<String>,
-        #[arg(long, help = "Epic ID to create tasks under")]
-        epic: Option<String>,
-    },
-}
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
-
-fn main() {
-    let cli = Cli::parse();
-
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    if let Err(e) = rt.block_on(run(cli)) {
-        let err_json = serde_json::json!({"error": e});
-        eprintln!("{}", serde_json::to_string(&err_json).unwrap());
-        process::exit(1);
-    }
-}
-
-async fn run(cli: Cli) -> Result<(), String> {
-    match cli.command {
-        Commands::Init { name } => cmd_init(&name).await,
-        Commands::Remote(remote_cmd) => cmd_remote(remote_cmd).await,
-        other => {
-            let (mut cfg, config_dir) = load_config()?;
-            // Env var overrides win over config file
-            if let Ok(url) = std::env::var("UGLYHAT_SERVER_URL") {
-                if !url.is_empty() {
-                    cfg.base_url = url;
-                }
-            }
-            if let Ok(key) = std::env::var("UGLYHAT_API_KEY") {
-                if !key.is_empty() {
-                    cfg.api_key = key;
-                }
-            }
-            let ws_id: Uuid = cfg
-                .workspace_id
-                .parse()
-                .map_err(|e| format!("invalid workspace_id: {e}"))?;
-            if !cfg.base_url.is_empty() {
-                let client = HttpClient::new(cfg.base_url.clone(), cfg.api_key.clone(), ws_id);
-                run_command_remote(other, &client).await
-            } else {
-                let db_path = resolve_db_path(&cfg, &config_dir);
-                let store = SqliteStore::open(db_path.to_str().unwrap())
-                    .await
-                    .map_err(|e| format!("opening database: {e}"))?;
-                run_command_local(other, &store, ws_id, &cfg).await
-            }
-        }
-    }
-}
-
-async fn run_command_local(
-    cmd: Commands,
-    store: &SqliteStore,
-    ws_id: Uuid,
-    cfg: &Config,
-) -> Result<(), String> {
-    match cmd {
-        Commands::Init { .. } | Commands::Remote(_) => unreachable!(),
-        Commands::Context => {
-            let result = store
-                .get_workspace_context(ws_id)
-                .await
-                .map_err(|e| e.to_string())?;
-            print_json(&result);
-        }
-        Commands::Next { limit } => {
-            let result = store
-                .get_next_tasks(ws_id, limit)
-                .await
-                .map_err(|e| e.to_string())?;
-            print_json(&result);
-        }
-        Commands::Report {
-            title,
-            desc,
-            severity,
-            source,
-            tags,
-        } => {
-            let priority = match severity.as_deref() {
-                Some("critical") => TaskPriority::Critical,
-                Some("high") => TaskPriority::High,
-                Some("low") => TaskPriority::Low,
-                _ => TaskPriority::Medium,
-            };
-
-            let epic_id = store
-                .get_system_epic_id(ws_id)
-                .await
-                .map_err(|e| e.to_string())?;
-
-            let mut domain_tags = split_csv(tags);
-            domain_tags.push("agent-reported".to_string());
-
-            let mut meta = serde_json::Map::new();
-            if let Some(ref src) = source {
-                meta.insert(
-                    "reported_by".to_string(),
-                    serde_json::Value::String(src.clone()),
-                );
-            }
-            meta.insert(
-                "issue_type".to_string(),
-                serde_json::Value::String("agent-reported".to_string()),
-            );
-
-            let task = store
-                .create_task(
-                    epic_id,
-                    &title,
-                    desc.as_deref().unwrap_or(""),
-                    TaskStatus::Backlog,
-                    priority,
-                    source.as_deref().unwrap_or(""),
-                    domain_tags,
-                    Some(serde_json::Value::Object(meta)),
-                )
-                .await
-                .map_err(|e| e.to_string())?;
-            print_json(&task);
-        }
-        Commands::Initiative { action } => match action {
-            InitiativeAction::Create { name, desc } => {
-                let result = store
-                    .create_initiative(ws_id, &name, desc.as_deref().unwrap_or(""), None)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-            InitiativeAction::List => {
-                let result = store
-                    .list_initiatives_by_workspace(ws_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-        },
-        Commands::Epic { action } => match action {
-            EpicAction::Create {
-                name,
-                initiative,
-                desc,
-            } => {
-                let init_id: Uuid = initiative
-                    .parse()
-                    .map_err(|e| format!("invalid initiative ID: {e}"))?;
-                let result = store
-                    .create_epic(init_id, &name, desc.as_deref().unwrap_or(""), None)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-            EpicAction::List { initiative } => {
-                let init_id: Uuid = initiative
-                    .parse()
-                    .map_err(|e| format!("invalid initiative ID: {e}"))?;
-                let result = store
-                    .list_epics_by_initiative(init_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-        },
-        Commands::Task { action } => match action {
-            TaskAction::Get { id } => {
-                let task_id: Uuid = id.parse().map_err(|e| format!("invalid task ID: {e}"))?;
-                let result = store.get_task(task_id).await.map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-            TaskAction::Update {
-                id,
-                status,
-                assignee,
-                priority,
-                name,
-                desc,
-            } => {
-                let task_id: Uuid = id.parse().map_err(|e| format!("invalid task ID: {e}"))?;
-
-                // GET current task
-                let current = store.get_task(task_id).await.map_err(|e| e.to_string())?;
-
-                let new_name = name.as_deref().unwrap_or(&current.name);
-                let new_desc = desc.as_deref().unwrap_or(&current.description);
-                let new_assignee = assignee.as_deref().unwrap_or(&current.assignee);
-
-                let new_status = if let Some(ref s) = status {
-                    parse_status(s)?
-                } else {
-                    current.status.clone()
-                };
-                let new_priority = if let Some(ref p) = priority {
-                    parse_priority(p)?
-                } else {
-                    current.priority.clone()
-                };
-
-                let result = store
-                    .update_task(
-                        task_id,
-                        new_name,
-                        new_desc,
-                        new_status,
-                        new_priority,
-                        new_assignee,
-                        current.domain_tags.clone(),
-                        current.metadata.clone(),
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-            TaskAction::Create {
-                name,
-                epic,
-                desc,
-                priority,
-                assignee,
-                tags,
-                status,
-            } => {
-                let epic_id: Uuid = epic.parse().map_err(|e| format!("invalid epic ID: {e}"))?;
-                let task_status = parse_status(&status)?;
-                let task_priority = parse_priority(&priority)?;
-                let domain_tags = split_csv(tags);
-
-                let result = store
-                    .create_task(
-                        epic_id,
-                        &name,
-                        desc.as_deref().unwrap_or(""),
-                        task_status,
-                        task_priority,
-                        assignee.as_deref().unwrap_or(""),
-                        domain_tags,
-                        None,
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-            TaskAction::Claim { id, name } => {
-                let task_id: Uuid = id.parse().map_err(|e| format!("invalid task ID: {e}"))?;
-                let result = store
-                    .claim_task(ws_id, task_id, &name)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-            TaskAction::Deps { id } => {
-                let task_id: Uuid = id.parse().map_err(|e| format!("invalid task ID: {e}"))?;
-                let (blocks, blocked_by) = store
-                    .get_dependencies(task_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&serde_json::json!({
-                    "task_id": task_id,
-                    "blocks": blocks,
-                    "blocked_by": blocked_by,
-                }));
-            }
-            TaskAction::Block {
-                blocking_id,
-                blocked_id,
-            } => {
-                let blocking: Uuid = blocking_id
-                    .parse()
-                    .map_err(|e| format!("invalid blocking task ID: {e}"))?;
-                let blocked: Uuid = blocked_id
-                    .parse()
-                    .map_err(|e| format!("invalid blocked task ID: {e}"))?;
-                let result = store
-                    .add_dependency(blocking, blocked)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-            TaskAction::Context { id } => {
-                let task_id: Uuid = id.parse().map_err(|e| format!("invalid task ID: {e}"))?;
-                let result = store
-                    .get_task_context(task_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-        },
-        Commands::Tasks {
-            status,
-            domain,
-            assignee,
-            unassigned,
-        } => {
-            let filters = TaskFilters {
-                status: status.as_deref().map(parse_status).transpose()?,
-                priority: None,
-                domain,
-                assignee,
-                unassigned: if unassigned { Some(true) } else { None },
-            };
-            let result = store
-                .list_tasks_by_workspace(ws_id, filters)
-                .await
-                .map_err(|e| e.to_string())?;
-            print_json(&result);
-        }
-        Commands::Decision { action } => match action {
-            DecisionAction::Create {
-                title,
-                content,
-                initiative,
-                epic,
-            } => {
-                let init_id: Option<Uuid> = initiative
-                    .map(|s| s.parse().map_err(|e| format!("invalid initiative ID: {e}")))
-                    .transpose()?;
-                let epic_id: Option<Uuid> = epic
-                    .map(|s| s.parse().map_err(|e| format!("invalid epic ID: {e}")))
-                    .transpose()?;
-                let result = store
-                    .create_decision(
-                        Some(ws_id),
-                        init_id,
-                        epic_id,
-                        &title,
-                        content.as_deref().unwrap_or(""),
-                        None,
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-            DecisionAction::List => {
-                let result = store
-                    .list_decisions_by_workspace(ws_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-        },
-        Commands::Note {
-            title,
-            content,
-            task_id,
-        } => {
-            let tid: Option<Uuid> = task_id
-                .map(|s| s.parse().map_err(|e| format!("invalid task ID: {e}")))
-                .transpose()?;
-            // If no parent specified, attach to workspace
-            let (ws, init, ep, tk, dec) = if tid.is_some() {
-                (None, None, None, tid, None)
-            } else {
-                (Some(ws_id), None, None, None, None)
-            };
-            let result = store
-                .create_note(
-                    ws,
-                    init,
-                    ep,
-                    tk,
-                    dec,
-                    &title,
-                    content.as_deref().unwrap_or(""),
-                    None,
-                )
-                .await
-                .map_err(|e| e.to_string())?;
-            print_json(&result);
-        }
-        Commands::Activity {
-            since,
-            actor,
-            limit,
-        } => {
-            let since_dt = since
-                .map(|s| {
-                    chrono::DateTime::parse_from_rfc3339(&s)
-                        .map(|dt| dt.with_timezone(&chrono::Utc))
-                        .map_err(|e| format!("invalid timestamp: {e}"))
-                })
-                .transpose()?;
-            let filters = ActivityFilters {
-                since: since_dt,
-                actor,
-                entity_type: None,
-                limit,
-            };
-            let result = store
-                .list_activity(ws_id, filters)
-                .await
-                .map_err(|e| e.to_string())?;
-            print_json(&result);
-        }
-        Commands::Agents { metrics } => {
-            if metrics {
-                let m = store
-                    .agent_metrics(ws_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&m);
-            } else {
-                let statuses = store
-                    .list_agent_statuses(ws_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&statuses);
-            }
-        }
-        Commands::Checkin { name, capabilities } => {
-            let caps = split_csv(capabilities);
-            let result = store
-                .checkin_agent(ws_id, &name, caps)
-                .await
-                .map_err(|e| e.to_string())?;
-            print_json(&result);
-        }
-        Commands::Checkout {
-            name,
-            summary,
-            complete_tasks,
-        } => {
-            let result = store
-                .checkout_agent(ws_id, &name, &summary, complete_tasks)
-                .await
-                .map_err(|e| e.to_string())?;
-            print_json(&result);
-        }
-        Commands::Stale => {
-            let result = store
-                .get_stale_tasks(ws_id)
-                .await
-                .map_err(|e| e.to_string())?;
-            print_json(&result);
-        }
-        Commands::Handoff {
-            task_id,
-            summary,
-            findings,
-            blockers,
-            next_steps,
-        } => {
-            let tid: Uuid = task_id
-                .parse()
-                .map_err(|e| format!("invalid task ID: {e}"))?;
-            let agent = std::env::var("UH_AGENT_NAME").unwrap_or_default();
-            let f = split_csv(findings);
-            let b = split_csv(blockers);
-            let n = split_csv(next_steps);
-            let result = store
-                .create_handoff(tid, &agent, &summary, f, b, n, None)
-                .await
-                .map_err(|e| e.to_string())?;
-            print_json(&result);
-        }
-        Commands::Sprint { cmd } => match cmd {
-            SprintCmd::Create {
-                name,
-                goal,
-                start,
-                end,
-            } => {
-                let start_date = start
-                    .as_deref()
-                    .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
-                let end_date = end
-                    .as_deref()
-                    .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
-                let sprint = store
-                    .create_sprint(
-                        ws_id,
-                        &name,
-                        goal.as_deref().unwrap_or(""),
-                        start_date,
-                        end_date,
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&sprint);
-            }
-            SprintCmd::List => {
-                let sprints = store.list_sprints(ws_id).await.map_err(|e| e.to_string())?;
-                print_json(&sprints);
-            }
-            SprintCmd::Close { id } => {
-                let sprint_id: Uuid = id.parse().map_err(|e| format!("invalid sprint ID: {e}"))?;
-                let sprint = store
-                    .close_sprint(sprint_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&sprint);
-            }
-            SprintCmd::Burndown { id } => {
-                let sprint_id: Uuid = id.parse().map_err(|e| format!("invalid sprint ID: {e}"))?;
-                let velocity = store
-                    .sprint_velocity(sprint_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&velocity);
-            }
-            SprintCmd::Assign { task_id, sprint_id } => {
-                let tid: Uuid = task_id
-                    .parse()
-                    .map_err(|e| format!("invalid task ID: {e}"))?;
-                let sid: Uuid = sprint_id
-                    .parse()
-                    .map_err(|e| format!("invalid sprint ID: {e}"))?;
-                store
-                    .assign_task_to_sprint(tid, sid)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&serde_json::json!({"ok": true, "task_id": tid, "sprint_id": sid}));
-            }
-        },
-        Commands::Github { cmd } => match cmd {
-            GithubCmd::Sync { repo, since, epic } => {
-                let pat = cfg.github_pat.clone();
-                if pat.is_empty() {
-                    eprintln!("error: github_pat not set in .uglyhat.json");
-                    process::exit(1);
-                }
-                let repo_name = repo
-                    .as_deref()
-                    .or_else(|| {
-                        if cfg.github_repo.is_empty() {
-                            None
-                        } else {
-                            Some(cfg.github_repo.as_str())
-                        }
-                    })
-                    .ok_or_else(|| "repo required (--repo or github_repo in config)".to_string())?
-                    .to_string();
-
-                let epic_id = if let Some(e) = epic {
-                    e.parse::<Uuid>()
-                        .map_err(|e| format!("invalid epic ID: {e}"))?
-                } else {
-                    store
-                        .get_system_epic_id(ws_id)
-                        .await
-                        .map_err(|e| e.to_string())?
-                };
-
-                let syncer = GithubSync::new(&pat, &repo_name);
-                let issues = syncer
-                    .pull_issues(since.as_deref())
-                    .await
-                    .map_err(|e| e.to_string())?;
-
-                let mut synced = 0usize;
-                for issue in &issues {
-                    let body = issue.body.as_deref().unwrap_or("");
-                    store
-                        .upsert_task_by_github_id(ws_id, epic_id, issue.number, &issue.title, body)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    synced += 1;
-                }
-
-                print_json(&serde_json::json!({"synced": synced, "repo": repo_name}));
-            }
-        },
-        Commands::Webhook { cmd } => match cmd {
-            WebhookCmd::Test => {
-                if cfg.webhook_url.is_empty() {
-                    eprintln!("error: webhook_url not set in .uglyhat.json");
-                    process::exit(1);
-                }
-                let body = serde_json::json!({
-                    "event": "test",
-                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                });
-                let resp = reqwest::Client::new()
-                    .post(&cfg.webhook_url)
-                    .json(&body)
-                    .timeout(std::time::Duration::from_secs(10))
-                    .send()
-                    .await
-                    .map_err(|e| format!("webhook failed: {e}"))?;
-                if resp.status().is_success() {
-                    print_json(
-                        &serde_json::json!({"status": "ok", "code": resp.status().as_u16()}),
-                    );
-                } else {
-                    let code = resp.status().as_u16();
-                    return Err(format!("webhook returned status {code}"));
-                }
-            }
-        },
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Remote dispatch (HTTP client mode)
-// ---------------------------------------------------------------------------
-
-async fn run_command_remote(cmd: Commands, client: &HttpClient) -> Result<(), String> {
-    match cmd {
-        Commands::Init { .. } | Commands::Remote(_) => unreachable!(),
-        Commands::Context => {
-            let result = client.get_context().await.map_err(|e| e.to_string())?;
-            print_json(&result);
-        }
-        Commands::Next { limit } => {
-            let result = client
-                .get_next_tasks(limit)
-                .await
-                .map_err(|e| e.to_string())?;
-            print_json(&result);
-        }
-        Commands::Report {
-            title,
-            desc,
-            severity,
-            source,
-            tags,
-        } => {
-            let domain_tags: Vec<String> = split_csv(tags);
-            let body = serde_json::json!({
-                "title": title,
-                "description": desc.unwrap_or_default(),
-                "severity": severity.unwrap_or_default(),
-                "source": source.unwrap_or_default(),
-                "domain_tags": domain_tags,
-            });
-            let result = client
-                .report_issue(&body)
-                .await
-                .map_err(|e| e.to_string())?;
-            print_json(&result);
-        }
-        Commands::Initiative { action } => match action {
-            InitiativeAction::Create { name, desc } => {
-                let result = client
-                    .create_initiative(&name, desc.as_deref().unwrap_or(""))
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-            InitiativeAction::List => {
-                let result = client.list_initiatives().await.map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-        },
-        Commands::Epic { action } => match action {
-            EpicAction::Create {
-                name,
-                initiative,
-                desc,
-            } => {
-                let init_id: Uuid = initiative
-                    .parse()
-                    .map_err(|e| format!("invalid initiative ID: {e}"))?;
-                let result = client
-                    .create_epic(init_id, &name, desc.as_deref().unwrap_or(""))
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-            EpicAction::List { initiative } => {
-                let init_id: Uuid = initiative
-                    .parse()
-                    .map_err(|e| format!("invalid initiative ID: {e}"))?;
-                let result = client
-                    .list_epics(init_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-        },
-        Commands::Task { action } => match action {
-            TaskAction::Get { id } => {
-                let task_id: Uuid = id.parse().map_err(|e| format!("invalid task ID: {e}"))?;
-                let result = client.get_task(task_id).await.map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-            TaskAction::Update {
-                id,
-                status,
-                assignee,
-                priority,
-                name,
-                desc,
-            } => {
-                let task_id: Uuid = id.parse().map_err(|e| format!("invalid task ID: {e}"))?;
-                let current = client.get_task(task_id).await.map_err(|e| e.to_string())?;
-                let new_name = name.as_deref().unwrap_or(&current.name);
-                let new_desc = desc.as_deref().unwrap_or(&current.description);
-                let new_assignee = assignee.as_deref().unwrap_or(&current.assignee);
-                let new_status = if let Some(ref s) = status {
-                    parse_status(s)?
-                } else {
-                    current.status.clone()
-                };
-                let new_priority = if let Some(ref p) = priority {
-                    parse_priority(p)?
-                } else {
-                    current.priority.clone()
-                };
-                let body = serde_json::json!({
-                    "name": new_name,
-                    "description": new_desc,
-                    "status": new_status,
-                    "priority": new_priority,
-                    "assignee": new_assignee,
-                    "domain_tags": current.domain_tags,
-                    "metadata": current.metadata,
-                });
-                let result = client
-                    .update_task(task_id, &body)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-            TaskAction::Create {
-                name,
-                epic,
-                desc,
-                priority,
-                assignee,
-                tags,
-                status,
-            } => {
-                let epic_id: Uuid = epic.parse().map_err(|e| format!("invalid epic ID: {e}"))?;
-                let domain_tags = split_csv(tags);
-                let result = client
-                    .create_task(
-                        epic_id,
-                        &name,
-                        desc.as_deref().unwrap_or(""),
-                        &status,
-                        &priority,
-                        assignee.as_deref().unwrap_or(""),
-                        domain_tags,
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-            TaskAction::Claim { id, name } => {
-                let task_id: Uuid = id.parse().map_err(|e| format!("invalid task ID: {e}"))?;
-                let result = client
-                    .claim_task(task_id, &name)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-            TaskAction::Deps { id } => {
-                let task_id: Uuid = id.parse().map_err(|e| format!("invalid task ID: {e}"))?;
-                let result = client
-                    .get_task_deps(task_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-            TaskAction::Block {
-                blocking_id,
-                blocked_id,
-            } => {
-                let blocking: Uuid = blocking_id
-                    .parse()
-                    .map_err(|e| format!("invalid blocking task ID: {e}"))?;
-                let blocked: Uuid = blocked_id
-                    .parse()
-                    .map_err(|e| format!("invalid blocked task ID: {e}"))?;
-                let result = client
-                    .add_dependency(blocking, blocked)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-            TaskAction::Context { id } => {
-                let task_id: Uuid = id.parse().map_err(|e| format!("invalid task ID: {e}"))?;
-                let result = client
-                    .get_task_context(task_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-        },
-        Commands::Tasks {
-            status,
-            domain,
-            assignee,
-            unassigned,
-        } => {
-            let result = client
-                .list_tasks(
-                    status.as_deref(),
-                    domain.as_deref(),
-                    assignee.as_deref(),
-                    unassigned,
-                )
-                .await
-                .map_err(|e| e.to_string())?;
-            print_json(&result);
-        }
-        Commands::Decision { action } => match action {
-            DecisionAction::Create {
-                title,
-                content,
-                initiative,
-                epic,
-            } => {
-                let init_id: Option<Uuid> = initiative
-                    .map(|s| s.parse().map_err(|e| format!("invalid initiative ID: {e}")))
-                    .transpose()?;
-                let epic_id: Option<Uuid> = epic
-                    .map(|s| s.parse().map_err(|e| format!("invalid epic ID: {e}")))
-                    .transpose()?;
-                let body = serde_json::json!({
-                    "title": title,
-                    "content": content.unwrap_or_default(),
-                    "initiative_id": init_id,
-                    "epic_id": epic_id,
-                });
-                let result = client
-                    .create_decision(&body)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-            DecisionAction::List => {
-                let result = client.list_decisions().await.map_err(|e| e.to_string())?;
-                print_json(&result);
-            }
-        },
-        Commands::Note {
-            title,
-            content,
-            task_id,
-        } => {
-            let tid: Option<Uuid> = task_id
-                .map(|s| s.parse().map_err(|e| format!("invalid task ID: {e}")))
-                .transpose()?;
-            let body = serde_json::json!({
-                "title": title,
-                "content": content.unwrap_or_default(),
-                "task_id": tid,
-            });
-            let result = client.create_note(&body).await.map_err(|e| e.to_string())?;
-            print_json(&result);
-        }
-        Commands::Activity {
-            since,
-            actor,
-            limit,
-        } => {
-            let result = client
-                .list_activity(since.as_deref(), actor.as_deref(), limit)
-                .await
-                .map_err(|e| e.to_string())?;
-            print_json(&result);
-        }
-        Commands::Agents { .. } => {
-            let result = client
-                .list_agent_statuses()
-                .await
-                .map_err(|e| e.to_string())?;
-            print_json(&result);
-        }
-        Commands::Checkin { name, capabilities } => {
-            let caps = split_csv(capabilities);
-            let result = client
-                .checkin(&name, caps)
-                .await
-                .map_err(|e| e.to_string())?;
-            print_json(&result);
-        }
-        Commands::Checkout {
-            name,
-            summary,
-            complete_tasks,
-        } => {
-            let result = client
-                .checkout(&name, &summary, complete_tasks)
-                .await
-                .map_err(|e| e.to_string())?;
-            print_json(&result);
-        }
-        Commands::Stale => {
-            let result = client.get_stale_tasks().await.map_err(|e| e.to_string())?;
-            print_json(&result);
-        }
-        Commands::Handoff {
-            task_id,
-            summary,
-            findings,
-            blockers,
-            next_steps,
-        } => {
-            let tid: Uuid = task_id
-                .parse()
-                .map_err(|e| format!("invalid task ID: {e}"))?;
-            let agent = std::env::var("UH_AGENT_NAME").unwrap_or_default();
-            let body = serde_json::json!({
-                "task_id": tid,
-                "agent_name": agent,
-                "summary": summary,
-                "findings": split_csv(findings),
-                "blockers": split_csv(blockers),
-                "next_steps": split_csv(next_steps),
-            });
-            let result = client
-                .create_handoff(&body)
-                .await
-                .map_err(|e| e.to_string())?;
-            print_json(&result);
-        }
-        Commands::Sprint { .. } => {
-            return Err("sprint commands require local mode (no base_url)".to_string());
-        }
-        Commands::Github { .. } => {
-            return Err("github commands require local mode (no base_url)".to_string());
-        }
-        Commands::Webhook { .. } => {
-            return Err("webhook commands require local mode (no base_url)".to_string());
-        }
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Remote command
-// ---------------------------------------------------------------------------
-
-async fn cmd_remote(remote_cmd: RemoteCommand) -> Result<(), String> {
-    match remote_cmd {
-        RemoteCommand::Set { url, api_key } => {
-            let (mut cfg, config_dir) = load_config()?;
-            cfg.base_url = url.clone();
-            cfg.api_key = api_key.clone();
-            save_config(&config_dir, &cfg)?;
-
-            let ws_id: Uuid = cfg
-                .workspace_id
-                .parse()
-                .map_err(|e| format!("invalid workspace_id: {e}"))?;
-            let client = HttpClient::new(url.clone(), api_key, ws_id);
-            match client.get_context().await {
-                Ok(_) => {
-                    print_json(&serde_json::json!({"ok": true, "mode": "remote", "url": url}));
-                }
-                Err(e) => {
-                    eprintln!("Warning: connectivity test failed: {e}");
-                    print_json(&serde_json::json!({
-                        "ok": true,
-                        "mode": "remote",
-                        "url": url,
-                        "warning": e.to_string(),
-                    }));
-                }
-            }
-            Ok(())
-        }
-        RemoteCommand::Unset => {
-            let (mut cfg, config_dir) = load_config()?;
-            cfg.base_url = String::new();
-            save_config(&config_dir, &cfg)?;
-            print_json(&serde_json::json!({"mode": "local"}));
-            Ok(())
-        }
-        RemoteCommand::Status => {
-            let (cfg_opt, dir_opt) = load_config().ok().unzip();
-            let cfg = cfg_opt.unwrap_or_else(|| Config {
-                workspace_id: String::new(),
-                api_key: String::new(),
-                base_url: String::new(),
-                mode: String::new(),
-                db_path: String::new(),
-                github_pat: String::new(),
-                github_repo: String::new(),
-                webhook_url: String::new(),
-            });
-            let config_file = dir_opt
-                .map(|d| d.join(CONFIG_FILE).display().to_string())
-                .unwrap_or_default();
-
-            let env_url = std::env::var("UGLYHAT_SERVER_URL")
-                .ok()
-                .filter(|s| !s.is_empty());
-            let effective_url = env_url.as_deref().unwrap_or(&cfg.base_url).to_string();
-            let mode = if effective_url.is_empty() {
-                "local"
-            } else {
-                "remote"
-            };
-            let key_prefix = if cfg.api_key.len() >= 8 {
-                format!("{}…", &cfg.api_key[..8])
-            } else if cfg.api_key.is_empty() {
-                "(none)".to_string()
-            } else {
-                "***".to_string()
-            };
-            print_json(&serde_json::json!({
-                "mode": mode,
-                "url": effective_url,
-                "api_key_prefix": key_prefix,
-                "env_override": std::env::var("UGLYHAT_SERVER_URL").is_ok(),
-                "config_file": config_file,
-            }));
-            Ok(())
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Init command
-// ---------------------------------------------------------------------------
-
-async fn cmd_init(name: &str) -> Result<(), String> {
-    let dir = std::env::current_dir().map_err(|e| e.to_string())?;
-    let db_path = dir.join(DB_FILE);
-
-    let store = SqliteStore::open(db_path.to_str().unwrap())
-        .await
-        .map_err(|e| format!("creating database: {e}"))?;
-
-    // Generate random API key
-    let raw_key = generate_key();
-    let key_hash = hash_key(&raw_key);
-    let key_prefix = &raw_key[..8];
-
-    let result = store
-        .bootstrap_workspace(name, "", &key_hash, key_prefix)
-        .await
-        .map_err(|e| format!("bootstrapping workspace: {e}"))?;
-
-    let cfg = Config {
-        workspace_id: result.workspace.id.to_string(),
-        api_key: raw_key.clone(),
-        base_url: String::new(),
-        mode: "local".to_string(),
-        db_path: DB_FILE.to_string(),
-        github_pat: String::new(),
-        github_repo: String::new(),
-        webhook_url: String::new(),
-    };
-    save_config(&dir, &cfg)?;
-
-    let resp = serde_json::json!({
-        "workspace": result.workspace,
-        "system_initiative_id": result.initiative_id,
-        "system_epic_id": result.epic_id,
-        "api_key": {
-            "id": result.api_key.id,
-            "workspace_id": result.api_key.workspace_id,
-            "name": result.api_key.name,
-            "key_prefix": result.api_key.key_prefix,
-            "key": raw_key,
-            "created_at": result.api_key.created_at,
-        },
-    });
-    println!("{}", serde_json::to_string_pretty(&resp).unwrap());
-    eprintln!("\nWrote {CONFIG_FILE} (local mode)");
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn print_json<T: Serialize>(value: &T) {
+fn print_json(val: &impl Serialize) {
     println!(
         "{}",
-        serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
+        serde_json::to_string_pretty(val).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}")),
     );
 }
 
-fn split_csv(s: Option<String>) -> Vec<String> {
-    s.map(|v| v.split(',').map(|x| x.trim().to_string()).collect())
-        .unwrap_or_default()
+async fn resolve_thread_id(
+    store: &SqliteStore,
+    workspace_id: Uuid,
+    thread_name: &str,
+) -> Option<Uuid> {
+    store
+        .get_thread(workspace_id, thread_name)
+        .await
+        .ok()
+        .map(|t| t.id)
 }
 
-fn parse_status(s: &str) -> Result<TaskStatus, String> {
-    serde_json::from_value(serde_json::Value::String(s.to_string()))
-        .map_err(|_| format!("invalid status: {s}"))
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+#[tokio::main]
+async fn main() {
+    let cli = Cli::parse();
+
+    if let Err(e) = run(cli).await {
+        eprintln!("error: {e}");
+        process::exit(1);
+    }
 }
 
-fn parse_priority(s: &str) -> Result<TaskPriority, String> {
-    serde_json::from_value(serde_json::Value::String(s.to_string()))
-        .map_err(|_| format!("invalid priority: {s}"))
+async fn run(cli: Cli) -> Result<(), String> {
+    // Init is special — no config file yet
+    if let Commands::Init { ref name, ref desc } = cli.command {
+        return run_init(name, desc).await;
+    }
+
+    let config_path = find_config()?;
+    let config = load_config(&config_path)?;
+    let db = db_path_from_config(&config_path, &config);
+    let workspace_id: Uuid = config
+        .workspace_id
+        .parse()
+        .map_err(|e| format!("invalid workspace_id in config: {e}"))?;
+
+    let store = SqliteStore::open(&db)
+        .await
+        .map_err(|e| format!("open db: {e}"))?;
+
+    match cli.command {
+        Commands::Init { .. } => unreachable!(),
+        Commands::Context => {
+            let overview = store
+                .get_workspace_overview(workspace_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            print_json(&overview);
+        }
+        Commands::Thread { action } => match action {
+            ThreadAction::Create { name, desc, tags } => {
+                let t = store
+                    .create_thread(workspace_id, &name, &desc, tags.unwrap_or_default())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&t);
+            }
+            ThreadAction::List { active, archived } => {
+                let status = if active {
+                    Some(uglyhat::model::ThreadStatus::Active)
+                } else if archived {
+                    Some(uglyhat::model::ThreadStatus::Archived)
+                } else {
+                    None
+                };
+                let threads = store
+                    .list_threads(workspace_id, status)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&threads);
+            }
+            ThreadAction::Archive { name } => {
+                let t = store
+                    .archive_thread(workspace_id, &name)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&t);
+            }
+        },
+        Commands::Remember {
+            key,
+            value,
+            thread,
+            source,
+            tags,
+        } => {
+            let thread_id = if let Some(ref tname) = thread {
+                resolve_thread_id(&store, workspace_id, tname).await
+            } else {
+                None
+            };
+            let src = source.unwrap_or_else(agent_name);
+            let m = store
+                .save_memory(
+                    workspace_id,
+                    &key,
+                    &value,
+                    thread_id,
+                    &src,
+                    tags.unwrap_or_default(),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            print_json(&m);
+        }
+        Commands::Forget { key } => {
+            store
+                .delete_memory(workspace_id, &key)
+                .await
+                .map_err(|e| e.to_string())?;
+            println!("{{\"deleted\":\"{key}\"}}");
+        }
+        Commands::Memories {
+            thread,
+            tags,
+            global,
+        } => {
+            let thread_name = thread;
+            let filters = MemoryFilters {
+                thread_name,
+                tags,
+                global_only: global,
+                ..Default::default()
+            };
+            let memories = store
+                .load_memories(workspace_id, filters)
+                .await
+                .map_err(|e| e.to_string())?;
+            print_json(&memories);
+        }
+        Commands::Decide {
+            title,
+            content,
+            thread,
+            tags,
+        } => {
+            let thread_id = if let Some(ref tname) = thread {
+                resolve_thread_id(&store, workspace_id, tname).await
+            } else {
+                None
+            };
+            let d = store
+                .save_decision(
+                    workspace_id,
+                    &title,
+                    &content,
+                    thread_id,
+                    tags.unwrap_or_default(),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            print_json(&d);
+        }
+        Commands::Decisions { thread, tags } => {
+            let thread_id = if let Some(ref tname) = thread {
+                resolve_thread_id(&store, workspace_id, tname).await
+            } else {
+                None
+            };
+            let decisions = store
+                .list_decisions(workspace_id, thread_id, tags)
+                .await
+                .map_err(|e| e.to_string())?;
+            print_json(&decisions);
+        }
+        Commands::Recall {
+            thread,
+            tags,
+            since,
+        } => {
+            if let Some(ref tname) = thread {
+                let ctx = store
+                    .recall_thread(workspace_id, tname)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&ctx);
+            } else if tags.is_some() || since.is_some() {
+                let since_dt = if let Some(ref dur_str) = since {
+                    let dur = parse_duration(dur_str)?;
+                    Some(Utc::now() - dur)
+                } else {
+                    None
+                };
+                let result = store
+                    .recall_by_tags(workspace_id, tags.unwrap_or_default(), since_dt)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&result);
+            } else {
+                return Err("recall requires --thread, --tags, or --since".to_string());
+            }
+        }
+        Commands::Checkin {
+            name,
+            capabilities,
+            thread,
+        } => {
+            let agent = name.unwrap_or_else(agent_name);
+            let thread_id = if let Some(ref tname) = thread {
+                resolve_thread_id(&store, workspace_id, tname).await
+            } else {
+                None
+            };
+            let ctx = store
+                .checkin(
+                    workspace_id,
+                    &agent,
+                    capabilities.unwrap_or_default(),
+                    thread_id,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            print_json(&ctx);
+        }
+        Commands::Checkout {
+            name,
+            summary,
+            findings,
+            files,
+            next_steps,
+        } => {
+            let agent = name.unwrap_or_else(agent_name);
+            let session = store
+                .checkout(
+                    workspace_id,
+                    &agent,
+                    &summary,
+                    findings.unwrap_or_default(),
+                    files.unwrap_or_default(),
+                    next_steps.unwrap_or_default(),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            print_json(&session);
+        }
+        Commands::Agents => {
+            let agents = store
+                .list_agents(workspace_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            print_json(&agents);
+        }
+        Commands::Activity {
+            since,
+            actor,
+            limit,
+        } => {
+            let since_dt = if let Some(ref dur_str) = since {
+                let dur = parse_duration(dur_str)?;
+                Some(Utc::now() - dur)
+            } else {
+                None
+            };
+            let filters = ActivityFilters {
+                since: since_dt,
+                actor,
+                limit,
+            };
+            let activity = store
+                .list_activity(workspace_id, filters)
+                .await
+                .map_err(|e| e.to_string())?;
+            print_json(&activity);
+        }
+        Commands::Snapshot { label } => {
+            let snap = store
+                .create_snapshot(workspace_id, &label)
+                .await
+                .map_err(|e| e.to_string())?;
+            print_json(&snap);
+        }
+    }
+
+    Ok(())
 }
 
-fn generate_key() -> String {
-    use rand::Rng;
-    let mut bytes = [0u8; 32];
-    rand::rng().fill_bytes(&mut bytes);
-    use base64::Engine;
-    base64::engine::general_purpose::URL_SAFE.encode(bytes)
+async fn run_init(name: &str, desc: &str) -> Result<(), String> {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let config_path = cwd.join(CONFIG_FILE);
+    let db_path = cwd.join(DB_FILE);
+
+    if config_path.exists() {
+        return Err(format!("{CONFIG_FILE} already exists"));
+    }
+
+    let store = SqliteStore::open(&db_path.to_string_lossy())
+        .await
+        .map_err(|e| format!("open db: {e}"))?;
+
+    let workspace = store
+        .init_workspace(name, desc)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let config = Config {
+        workspace_id: workspace.id.to_string(),
+        db_path: String::new(),
+    };
+
+    let config_json =
+        serde_json::to_string_pretty(&config).map_err(|e| format!("serialize config: {e}"))?;
+    std::fs::write(&config_path, config_json).map_err(|e| format!("write config: {e}"))?;
+
+    print_json(&workspace);
+    eprintln!("workspace initialized: {}", workspace.name);
+    Ok(())
 }

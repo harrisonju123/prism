@@ -43,7 +43,7 @@ run-prism:
 	$(CARGO) run -p prism
 
 run-uh:
-	$(CARGO) run -p uglyhat --bin uglyhat
+	$(CARGO) run -p uglyhat --bin uh
 
 # Run prism-cli in ACP agent server mode (stdio JSON-RPC for Zed)
 run-acp:
@@ -100,7 +100,7 @@ models:
 	curl -s http://localhost:9100/v1/models | jq .
 
 uh-health:
-	curl -s http://localhost:3001/health | jq .
+	~/.cargo/bin/uh context
 
 # Dashboard
 dashboard-install:

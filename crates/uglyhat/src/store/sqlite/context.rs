@@ -1,264 +1,169 @@
-use sqlx::Row;
+use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use super::SqliteStore;
-use super::types::*;
 use crate::error::Result;
 use crate::model::*;
 
 impl SqliteStore {
-    pub(crate) async fn get_workspace_context_impl(
+    pub(crate) async fn recall_thread_impl(
         &self,
         workspace_id: Uuid,
-    ) -> Result<WorkspaceContext> {
-        let ws_str = workspace_id.to_string();
+        thread_name: &str,
+    ) -> Result<ThreadContext> {
+        let thread = self.get_thread_impl(workspace_id, thread_name).await?;
+        let thread_id = thread.id;
 
-        let (
-            workspace,
-            initiatives,
-            active_tasks,
-            recent_tasks,
-            decisions,
-            by_status,
-            by_priority,
-            blocked_tasks_count,
-            active_agents,
-            stale_tasks,
-        ) = tokio::try_join!(
-            self.get_workspace_impl(workspace_id),
-            self.fetch_initiatives_with_counts(&ws_str),
-            self.scan_task_summaries(
-                "SELECT t.id, t.name, t.status, t.priority, t.assignee,
-                        ep.name AS epic_name, i.name AS initiative_name, t.domain_tags, t.created_at
-                 FROM tasks t
-                 JOIN epics ep ON ep.id = t.epic_id
-                 JOIN initiatives i ON i.id = t.initiative_id
-                 WHERE t.workspace_id = $1
-                   AND t.status IN ('in_progress', 'in_review')
-                 ORDER BY t.updated_at DESC
-                 LIMIT 20",
-                vec![ws_str.clone()],
-            ),
-            self.scan_task_summaries(
-                "SELECT t.id, t.name, t.status, t.priority, t.assignee,
-                        ep.name AS epic_name, i.name AS initiative_name, t.domain_tags, t.created_at
-                 FROM tasks t
-                 JOIN epics ep ON ep.id = t.epic_id
-                 JOIN initiatives i ON i.id = t.initiative_id
-                 WHERE t.workspace_id = $1
-                 ORDER BY t.updated_at DESC
-                 LIMIT 10",
-                vec![ws_str.clone()],
-            ),
-            self.fetch_recent_decisions(&ws_str),
-            self.fetch_status_counts(&ws_str),
-            self.fetch_priority_counts(&ws_str),
-            self.fetch_blocked_count(&ws_str),
-            self.list_agent_statuses_impl(workspace_id),
-            self.get_stale_tasks_impl(workspace_id),
-        )?;
+        let memories = self
+            .load_memories_impl(
+                workspace_id,
+                crate::store::MemoryFilters {
+                    thread_id: Some(thread_id),
+                    ..Default::default()
+                },
+            )
+            .await?;
 
-        Ok(WorkspaceContext {
-            workspace,
-            initiatives,
-            active_tasks,
-            recent_tasks,
+        let decisions = self
+            .list_decisions_impl(workspace_id, Some(thread_id), None)
+            .await?;
+
+        let recent_sessions = self.fetch_thread_sessions(workspace_id, thread_id).await?;
+
+        let recent_activity = self.fetch_thread_activity(workspace_id, thread_id).await?;
+
+        Ok(ThreadContext {
+            thread,
+            memories,
             decisions,
-            tasks_by_status: by_status,
-            tasks_by_priority: by_priority,
-            blocked_tasks_count,
-            active_agents,
-            stale_tasks,
+            recent_sessions,
+            recent_activity,
         })
     }
 
-    async fn fetch_initiatives_with_counts(
-        &self,
-        ws_str: &str,
-    ) -> Result<Vec<InitiativeWithCounts>> {
-        let rows = sqlx::query(
-            "SELECT i.id, i.name, i.description, i.status,
-                    (SELECT COUNT(*) FROM epics e WHERE e.initiative_id = i.id) AS epic_count,
-                    (SELECT COUNT(*) FROM tasks t WHERE t.initiative_id = i.id) AS task_count,
-                    (SELECT COUNT(*) FROM tasks t WHERE t.initiative_id = i.id AND t.status = 'done') AS done_count,
-                    CASE WHEN (SELECT COUNT(*) FROM tasks t WHERE t.initiative_id = i.id) = 0 THEN 0.0
-                         ELSE ROUND(CAST((SELECT COUNT(*) FROM tasks t WHERE t.initiative_id = i.id AND t.status IN ('done', 'cancelled')) AS REAL) /
-                                    CAST((SELECT COUNT(*) FROM tasks t WHERE t.initiative_id = i.id) AS REAL) * 100.0, 1)
-                    END AS progress_pct,
-                    (SELECT COUNT(DISTINCT td.blocked_task_id) FROM task_dependencies td
-                     JOIN tasks bt ON bt.id = td.blocking_task_id
-                     JOIN tasks blocked ON blocked.id = td.blocked_task_id
-                     WHERE blocked.initiative_id = i.id
-                       AND blocked.status NOT IN ('done', 'cancelled')
-                       AND bt.status NOT IN ('done', 'cancelled')) AS blocked_count
-             FROM initiatives i
-             WHERE i.workspace_id = $1
-             ORDER BY i.name",
-        )
-        .bind(ws_str)
-        .fetch_all(&self.pool)
-        .await?;
-
-        rows.iter()
-            .map(|row| {
-                let id_str: String = row.try_get("id")?;
-                Ok(InitiativeWithCounts {
-                    id: parse_uuid(&id_str)?,
-                    name: row.try_get("name")?,
-                    description: row.try_get("description")?,
-                    status: row.try_get("status")?,
-                    epic_count: row.try_get("epic_count")?,
-                    task_count: row.try_get("task_count")?,
-                    done_count: row.try_get("done_count")?,
-                    progress_pct: row.try_get("progress_pct")?,
-                    blocked_count: row.try_get("blocked_count")?,
-                })
-            })
-            .collect()
-    }
-
-    async fn fetch_recent_decisions(&self, ws_str: &str) -> Result<Vec<Decision>> {
-        let rows = sqlx::query(
-            "SELECT d.id, d.workspace_id, COALESCE(w.name, '') AS workspace_name,
-                    d.initiative_id, COALESCE(i.name, '') AS initiative_name,
-                    d.epic_id, COALESCE(ep.name, '') AS epic_name,
-                    d.title, d.content, d.status, d.metadata, d.created_at, d.updated_at
-             FROM decisions d
-             LEFT JOIN workspaces w ON w.id = d.workspace_id
-             LEFT JOIN initiatives i ON i.id = d.initiative_id
-             LEFT JOIN epics ep ON ep.id = d.epic_id
-             WHERE d.workspace_id = $1 ORDER BY d.created_at DESC LIMIT 10",
-        )
-        .bind(ws_str)
-        .fetch_all(&self.pool)
-        .await?;
-
-        rows.iter().map(super::decision::row_to_decision).collect()
-    }
-
-    async fn fetch_status_counts(&self, ws_str: &str) -> Result<Vec<StatusCount>> {
-        let rows = sqlx::query(
-            "SELECT status, COUNT(*) AS count
-             FROM tasks WHERE workspace_id = $1
-             GROUP BY status ORDER BY status",
-        )
-        .bind(ws_str)
-        .fetch_all(&self.pool)
-        .await?;
-
-        rows.iter()
-            .map(|row| {
-                let status_str: String = row.try_get("status")?;
-                let status: TaskStatus =
-                    serde_json::from_value(serde_json::Value::String(status_str)).map_err(|e| {
-                        crate::error::Error::Internal(format!("invalid task status: {e}"))
-                    })?;
-                Ok(StatusCount {
-                    status,
-                    count: row.try_get("count")?,
-                })
-            })
-            .collect()
-    }
-
-    async fn fetch_priority_counts(&self, ws_str: &str) -> Result<Vec<PriorityCount>> {
-        let rows = sqlx::query(
-            "SELECT priority, COUNT(*) AS count
-             FROM tasks WHERE workspace_id = $1
-             GROUP BY priority ORDER BY priority",
-        )
-        .bind(ws_str)
-        .fetch_all(&self.pool)
-        .await?;
-
-        rows.iter()
-            .map(|row| {
-                let priority_str: String = row.try_get("priority")?;
-                let priority: TaskPriority =
-                    serde_json::from_value(serde_json::Value::String(priority_str)).map_err(
-                        |e| crate::error::Error::Internal(format!("invalid task priority: {e}")),
-                    )?;
-                Ok(PriorityCount {
-                    priority,
-                    count: row.try_get("count")?,
-                })
-            })
-            .collect()
-    }
-
-    async fn fetch_blocked_count(&self, ws_str: &str) -> Result<i64> {
-        let row = sqlx::query(
-            "SELECT COUNT(DISTINCT td.blocked_task_id) AS cnt
-             FROM task_dependencies td
-             JOIN tasks bt ON bt.id = td.blocking_task_id
-             JOIN tasks blocked ON blocked.id = td.blocked_task_id
-             WHERE blocked.workspace_id = $1
-               AND blocked.status NOT IN ('done', 'cancelled')
-               AND bt.status NOT IN ('done', 'cancelled')",
-        )
-        .bind(ws_str)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(row.try_get("cnt")?)
-    }
-
-    pub(crate) async fn get_stale_tasks_impl(
+    pub(crate) async fn recall_by_tags_impl(
         &self,
         workspace_id: Uuid,
-    ) -> Result<Vec<TaskSummary>> {
-        self.scan_task_summaries(
-            "SELECT t.id, t.name, t.status, t.priority, t.assignee,
-                    ep.name AS epic_name, i.name AS initiative_name, t.domain_tags, t.created_at
-             FROM tasks t
-             JOIN epics ep ON ep.id = t.epic_id
-             JOIN initiatives i ON i.id = t.initiative_id
-             WHERE t.workspace_id = $1
-               AND t.status = 'in_progress'
-               AND t.assignee != ''
-               AND NOT EXISTS (
-                   SELECT 1 FROM agents a
-                   JOIN agent_sessions s ON s.agent_id = a.id
-                   WHERE a.workspace_id = t.workspace_id
-                     AND a.name = t.assignee
-                     AND s.ended_at IS NULL
-               )
-             ORDER BY t.updated_at ASC",
-            vec![workspace_id.to_string()],
-        )
-        .await
+        tags: Vec<String>,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<RecallResult> {
+        let memories = self
+            .load_memories_impl(
+                workspace_id,
+                crate::store::MemoryFilters {
+                    tags: Some(tags.clone()),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        let decisions = self
+            .list_decisions_impl(workspace_id, None, Some(tags))
+            .await?;
+
+        let activity = self
+            .list_activity_impl(
+                workspace_id,
+                crate::store::ActivityFilters {
+                    since,
+                    limit: 50,
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        Ok(RecallResult {
+            memories,
+            decisions,
+            activity,
+        })
     }
 
-    pub(crate) async fn get_next_tasks_impl(
+    pub(crate) async fn get_workspace_overview_impl(
+        &self,
+        workspace_id: Uuid,
+    ) -> Result<WorkspaceOverview> {
+        let workspace = self.get_workspace_impl(workspace_id).await?;
+
+        let active_threads = self
+            .list_threads_impl(workspace_id, Some(ThreadStatus::Active))
+            .await?;
+
+        let recent_memories = self
+            .load_memories_impl(workspace_id, crate::store::MemoryFilters::default())
+            .await?;
+
+        let recent_decisions = self.list_decisions_impl(workspace_id, None, None).await?;
+
+        let active_agents = self.list_agents_impl(workspace_id).await?;
+
+        let recent_sessions = self.fetch_recent_sessions(workspace_id, 10).await?;
+
+        Ok(WorkspaceOverview {
+            workspace,
+            active_threads,
+            recent_memories,
+            recent_decisions,
+            active_agents,
+            recent_sessions,
+        })
+    }
+
+    async fn fetch_thread_sessions(
+        &self,
+        workspace_id: Uuid,
+        thread_id: Uuid,
+    ) -> Result<Vec<AgentSession>> {
+        let rows = sqlx::query(
+            "SELECT id, agent_id, workspace_id, thread_id, started_at, ended_at, summary, findings, files_touched, next_steps, created_at
+             FROM agent_sessions WHERE workspace_id = $1 AND thread_id = $2
+             ORDER BY started_at DESC LIMIT 10",
+        )
+        .bind(workspace_id.to_string())
+        .bind(thread_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(super::agent::row_to_agent_session)
+            .collect()
+    }
+
+    async fn fetch_thread_activity(
+        &self,
+        workspace_id: Uuid,
+        thread_id: Uuid,
+    ) -> Result<Vec<ActivityEntry>> {
+        let rows = sqlx::query(
+            "SELECT id, workspace_id, actor, action, entity_type, entity_id, summary, detail, created_at
+             FROM activity_log
+             WHERE workspace_id = $1 AND entity_id = $2
+             ORDER BY created_at DESC LIMIT 20",
+        )
+        .bind(workspace_id.to_string())
+        .bind(thread_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(super::activity::row_to_activity_entry)
+            .collect()
+    }
+
+    async fn fetch_recent_sessions(
         &self,
         workspace_id: Uuid,
         limit: i64,
-    ) -> Result<Vec<TaskSummary>> {
-        self.scan_task_summaries(
-            "SELECT t.id, t.name, t.status, t.priority, t.assignee,
-                    ep.name AS epic_name, i.name AS initiative_name, t.domain_tags, t.created_at
-             FROM tasks t
-             JOIN epics ep ON ep.id = t.epic_id
-             JOIN initiatives i ON i.id = t.initiative_id
-             WHERE t.workspace_id = $1
-               AND t.assignee = ''
-               AND t.status IN ('backlog', 'todo')
-               AND NOT EXISTS (
-                   SELECT 1 FROM task_dependencies td
-                   JOIN tasks bt ON bt.id = td.blocking_task_id
-                   WHERE td.blocked_task_id = t.id
-                     AND bt.status NOT IN ('done', 'cancelled')
-               )
-             ORDER BY
-               CASE t.priority
-                 WHEN 'critical' THEN 1
-                 WHEN 'high' THEN 2
-                 WHEN 'medium' THEN 3
-                 WHEN 'low' THEN 4
-               END,
-               t.created_at ASC
-             LIMIT $2",
-            vec![workspace_id.to_string(), limit.to_string()],
+    ) -> Result<Vec<AgentSession>> {
+        let rows = sqlx::query(
+            "SELECT id, agent_id, workspace_id, thread_id, started_at, ended_at, summary, findings, files_touched, next_steps, created_at
+             FROM agent_sessions WHERE workspace_id = $1 AND ended_at IS NOT NULL
+             ORDER BY ended_at DESC LIMIT $2",
         )
-        .await
+        .bind(workspace_id.to_string())
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(super::agent::row_to_agent_session)
+            .collect()
     }
 }

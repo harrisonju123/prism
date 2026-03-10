@@ -10,6 +10,60 @@ use serde_json::json;
 
 use crate::mcp::McpRegistry;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BuiltinTool {
+    ReadFile,
+    WriteFile,
+    EditFile,
+    ListDir,
+    Bash,
+    RunCommand,
+    GlobFiles,
+    GrepFiles,
+    WebFetch,
+    SaveMemory,
+    SpawnAgent,
+    Recall,
+}
+
+impl BuiltinTool {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "read_file" => Some(Self::ReadFile),
+            "write_file" => Some(Self::WriteFile),
+            "edit_file" => Some(Self::EditFile),
+            "list_dir" => Some(Self::ListDir),
+            "bash" => Some(Self::Bash),
+            "run_command" => Some(Self::RunCommand),
+            "glob_files" => Some(Self::GlobFiles),
+            "grep_files" => Some(Self::GrepFiles),
+            "web_fetch" => Some(Self::WebFetch),
+            "save_memory" => Some(Self::SaveMemory),
+            "spawn_agent" => Some(Self::SpawnAgent),
+            "recall" => Some(Self::Recall),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ReadFile => "read_file",
+            Self::WriteFile => "write_file",
+            Self::EditFile => "edit_file",
+            Self::ListDir => "list_dir",
+            Self::Bash => "bash",
+            Self::RunCommand => "run_command",
+            Self::GlobFiles => "glob_files",
+            Self::GrepFiles => "grep_files",
+            Self::WebFetch => "web_fetch",
+            Self::SaveMemory => "save_memory",
+            Self::SpawnAgent => "spawn_agent",
+            Self::Recall => "recall",
+        }
+    }
+}
+
 pub fn tool_definitions() -> Vec<Tool> {
     vec![
         make_tool(
@@ -109,6 +163,15 @@ pub fn tool_definitions() -> Vec<Tool> {
                 "timeout_secs": { "type": "integer", "description": "Timeout in seconds (default 300)" }
             }, "required": ["task"] }),
         ),
+        make_tool(
+            "recall",
+            "Load context from the uglyhat context store. Recall a thread by name or search by tags. Returns memories, decisions, and recent activity.",
+            json!({ "type": "object", "properties": {
+                "thread": { "type": "string", "description": "Thread name to recall (e.g. 'auth-refactor')" },
+                "tags":   { "type": "array", "items": { "type": "string" }, "description": "Tags to search for (returns matching memories + decisions)" },
+                "since":  { "type": "string", "description": "Duration like '2h', '30m', '1d' — returns everything since that time" }
+            } }),
+        ),
     ]
 }
 
@@ -168,8 +231,12 @@ pub async fn dispatch(
         );
     }
 
-    match name {
-        "read_file" => {
+    let Some(tool) = BuiltinTool::from_str(name) else {
+        return format!("unknown tool: {name}");
+    };
+
+    match tool {
+        BuiltinTool::ReadFile => {
             let raw = args["path"].as_str().filter(|s| !s.is_empty());
             match raw {
                 Some(_) => {
@@ -181,7 +248,7 @@ pub async fn dispatch(
                 None => "error: path is required".to_string(),
             }
         }
-        "write_file" => {
+        BuiltinTool::WriteFile => {
             let raw = args["path"].as_str().filter(|s| !s.is_empty());
             match raw {
                 Some(_) => {
@@ -191,11 +258,11 @@ pub async fn dispatch(
                 None => "error: path is required".to_string(),
             }
         }
-        "list_dir" => {
+        BuiltinTool::ListDir => {
             let path = resolve_path(args["path"].as_str(), session_cwd);
             files::list_dir(&path).await
         }
-        "run_command" => {
+        BuiltinTool::RunCommand => {
             let cmd = args["command"].as_str().unwrap_or("");
             let raw_args: Vec<String> = args["args"]
                 .as_array()
@@ -209,13 +276,13 @@ pub async fn dispatch(
             let cwd = resolve_shell_cwd(args["cwd"].as_str(), session_cwd);
             shell::run_command(cmd, &raw_args, timeout, cwd.as_deref()).await
         }
-        "bash" => {
+        BuiltinTool::Bash => {
             let cmd = args["command"].as_str().unwrap_or("");
             let timeout = args["timeout_secs"].as_u64().unwrap_or(30).min(120);
             let cwd = resolve_shell_cwd(args["cwd"].as_str(), session_cwd);
             shell::bash(cmd, timeout, cwd.as_deref()).await
         }
-        "edit_file" => {
+        BuiltinTool::EditFile => {
             let raw = args["path"].as_str().filter(|s| !s.is_empty());
             match raw {
                 Some(_) => {
@@ -227,14 +294,14 @@ pub async fn dispatch(
                 None => "error: path is required".to_string(),
             }
         }
-        "glob_files" => {
+        BuiltinTool::GlobFiles => {
             let pattern = args["pattern"].as_str().unwrap_or("");
             let dir = resolve_path(args["dir"].as_str(), session_cwd);
             let max_results = args["max_results"].as_u64().unwrap_or(100) as usize;
             let sort_by = args["sort_by"].as_str();
             search::glob_files(pattern, &dir, max_results, sort_by)
         }
-        "grep_files" => {
+        BuiltinTool::GrepFiles => {
             let pattern = args["pattern"].as_str().unwrap_or("");
             let dir = resolve_path(args["dir"].as_str(), session_cwd);
             let file_glob = args["file_glob"].as_str();
@@ -250,16 +317,18 @@ pub async fn dispatch(
                 context_lines,
             )
         }
-        "web_fetch" => {
+        BuiltinTool::WebFetch => {
             let url = args["url"].as_str().unwrap_or("");
             web::web_fetch(url).await
         }
-        "save_memory" | "spawn_agent" => {
+        BuiltinTool::SaveMemory | BuiltinTool::SpawnAgent | BuiltinTool::Recall => {
             // Intercepted before dispatch() in the agent loop; reaching here means
             // the caller invoked dispatch() directly without agent context.
-            format!("{{\"error\": \"tool '{name}' requires agent loop context\"}}")
+            format!(
+                "{{\"error\": \"tool '{}' requires agent loop context\"}}",
+                tool.as_str()
+            )
         }
-        other => format!("unknown tool: {other}"),
     }
 }
 

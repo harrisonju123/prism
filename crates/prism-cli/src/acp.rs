@@ -33,7 +33,7 @@ use agent_client_protocol as acp;
 use anyhow::Result;
 use futures::StreamExt;
 use prism_client::PrismClient;
-use prism_types::{ChatCompletionRequest, Message};
+use prism_types::{ChatCompletionRequest, Message, MessageRole};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -47,7 +47,26 @@ use crate::hooks::HookRunner;
 use crate::hooks::config::PreToolAction;
 use crate::mcp::McpRegistry;
 use crate::memory::MemoryManager;
-use crate::tools;
+use crate::tools::{self, BuiltinTool};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinishReason {
+    Stop,
+    ToolCalls,
+}
+
+impl FinishReason {
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "stop" => Some(Self::Stop),
+            "tool_calls" => Some(Self::ToolCalls),
+            _ => {
+                tracing::warn!(finish_reason = s, "unknown finish_reason");
+                None
+            }
+        }
+    }
+}
 
 struct AcpSession {
     messages: Vec<Message>,
@@ -77,8 +96,7 @@ pub struct PrismAgent {
 
 impl PrismAgent {
     pub fn new(config: Config, mcp_registry: Option<McpRegistry>) -> Self {
-        let memory_dir = crate::config::prism_home().join("memory");
-        let memory = MemoryManager::new(&memory_dir, config.memory_window_size);
+        let memory = MemoryManager::new(None, None);
         let hook_runner = config.build_hook_runner();
         let compressor = config.build_compressor();
         Self {
@@ -122,8 +140,9 @@ impl PrismAgent {
         .await;
     }
 
-    fn build_system_message(&self, cwd: Option<&Path>) -> Message {
-        let memory_content = self.memory.borrow().load();
+    #[allow(clippy::await_holding_refcell_ref)]
+    async fn build_system_message(&self, cwd: Option<&Path>) -> Message {
+        let memory_content = self.memory.borrow().load().await;
         let cwd_section = cwd
             .map(|p| {
                 format!(
@@ -142,7 +161,7 @@ impl PrismAgent {
             .unwrap_or("");
 
         let full_system = build_system_prompt(
-            self.config.system_prompt.as_deref(),
+            self.config.model.system_prompt.as_deref(),
             &memory_content,
             &cwd_section,
             mcp_section,
@@ -231,15 +250,10 @@ impl PrismAgent {
         }
     }
 
-    /// Trim old messages to stay within max_session_messages, preserving the system prompt.
-    fn trim_messages(messages: &mut Vec<Message>, max: usize) {
-        compression::trim_messages_fifo(messages, max);
-    }
-
     /// Evict oldest sessions when we exceed max_sessions.
     fn evict_sessions_if_needed(&self) {
         let mut sessions = self.sessions.borrow_mut();
-        let max = self.config.max_sessions;
+        let max = self.config.session.max_sessions;
         if max == 0 || sessions.len() <= max {
             return;
         }
@@ -252,8 +266,8 @@ impl PrismAgent {
 
     async fn run_agent_loop(&self, session_id: &str) -> acp::StopReason {
         let client =
-            PrismClient::new(&self.config.prism_url).with_api_key(&self.config.prism_api_key);
-        let model_fallback = self.config.prism_model.clone();
+            PrismClient::new(&self.config.gateway.url).with_api_key(&self.config.gateway.api_key);
+        let model_fallback = self.config.model.model.clone();
 
         // cwd is set once at session creation and never changes
         let session_cwd = {
@@ -265,32 +279,55 @@ impl PrismAgent {
         };
 
         let mut tool_call_counter: u32 = 0;
+        let tool_defs = tools::all_tool_definitions(self.mcp_registry.as_ref());
 
-        for _turn in 0..self.config.max_turns {
-            let (cancelled, messages, session_model) = {
-                let sessions = self.sessions.borrow();
-                match sessions.get(session_id) {
-                    Some(s) => (s.cancelled.clone(), s.messages.clone(), s.model.clone()),
+        for _turn in 0..self.config.model.max_turns {
+            // Take messages out of RefCell to avoid clone. We'll put them back after
+            // the stream completes. Safe: single-threaded LocalSet, no concurrent access.
+            let (cancelled, mut messages, session_model) = {
+                let mut sessions = self.sessions.borrow_mut();
+                match sessions.get_mut(session_id) {
+                    Some(s) => (
+                        s.cancelled.clone(),
+                        std::mem::take(&mut s.messages),
+                        s.model.clone(),
+                    ),
                     None => return acp::StopReason::EndTurn,
                 }
             };
 
             if cancelled.load(Ordering::Acquire) {
+                // Put messages back before returning
+                let mut sessions = self.sessions.borrow_mut();
+                if let Some(session) = sessions.get_mut(session_id) {
+                    session.messages = messages;
+                }
                 return acp::StopReason::Cancelled;
             }
 
             let req = ChatCompletionRequest {
                 model: session_model.unwrap_or_else(|| model_fallback.clone()),
-                messages,
-                tools: Some(tools::all_tool_definitions(self.mcp_registry.as_ref())),
+                messages: messages.clone(),
+                tools: Some(tool_defs.clone()),
                 tool_choice: Some(json!("auto")),
                 ..Default::default()
             };
+
+            // Helper macro: put messages back before early return
+            macro_rules! put_back {
+                ($msgs:expr) => {{
+                    let mut sessions = self.sessions.borrow_mut();
+                    if let Some(session) = sessions.get_mut(session_id) {
+                        session.messages = $msgs;
+                    }
+                }};
+            }
 
             let stream_result = client.stream_chat_completion(&req).await;
             let mut stream = match stream_result {
                 Ok(s) => s,
                 Err(e) => {
+                    put_back!(messages);
                     self.send_text_chunk(session_id, &format!("\n[error] {e}"))
                         .await;
                     return acp::StopReason::EndTurn;
@@ -299,16 +336,18 @@ impl PrismAgent {
 
             let mut content_buf = String::new();
             let mut tc_builders: HashMap<usize, ToolCallBuilder> = HashMap::new();
-            let mut finish_reason: Option<String> = None;
+            let mut finish_reason: Option<FinishReason> = None;
 
             while let Some(chunk_result) = stream.next().await {
                 if cancelled.load(Ordering::Acquire) {
+                    put_back!(messages);
                     return acp::StopReason::Cancelled;
                 }
 
                 let chunk = match chunk_result {
                     Ok(c) => c,
                     Err(e) => {
+                        put_back!(messages);
                         self.send_text_chunk(session_id, &format!("\n[stream error] {e}"))
                             .await;
                         return acp::StopReason::EndTurn;
@@ -324,56 +363,39 @@ impl PrismAgent {
                     accumulate_tool_call_deltas(tc_arr, &mut tc_builders);
                 }
 
-                if chunk.finish_reason.is_some() {
-                    finish_reason = chunk.finish_reason;
+                if let Some(ref fr) = chunk.finish_reason {
+                    finish_reason = FinishReason::from_str(fr);
                 }
             }
 
             if cancelled.load(Ordering::Acquire) {
+                put_back!(messages);
                 return acp::StopReason::Cancelled;
             }
 
             let tool_calls_vec = reconstruct_tool_calls(&tc_builders);
 
-            // Push assistant message
-            {
-                let mut sessions = self.sessions.borrow_mut();
-                if let Some(session) = sessions.get_mut(session_id) {
-                    session.messages.push(Message {
-                        role: "assistant".into(),
-                        content: if content_buf.is_empty() {
-                            None
-                        } else {
-                            Some(json!(content_buf))
-                        },
-                        name: None,
-                        tool_calls: tool_calls_vec.clone(),
-                        tool_call_id: None,
-                        extra: Default::default(),
-                    });
-                }
-            }
+            // Push assistant message to local vec (no RefCell borrow needed)
+            messages.push(Message {
+                role: MessageRole::Assistant,
+                content: if content_buf.is_empty() {
+                    None
+                } else {
+                    Some(json!(content_buf))
+                },
+                name: None,
+                tool_calls: tool_calls_vec.clone(),
+                tool_call_id: None,
+                extra: Default::default(),
+            });
 
-            // Context compression (or FIFO fallback)
+            // Context compression (or FIFO fallback) — operates on local vec directly
             if let Some(ref compressor) = self.compressor {
-                let msg_count = {
-                    let sessions = self.sessions.borrow();
-                    sessions
-                        .get(session_id)
-                        .map(|s| s.messages.len())
-                        .unwrap_or(0)
-                };
-                if compressor.should_compress(msg_count, self.config.max_session_messages) {
-                    // Clone messages out to avoid holding RefCell across await
-                    let messages = {
-                        let sessions = self.sessions.borrow();
-                        sessions
-                            .get(session_id)
-                            .map(|s| s.messages.clone())
-                            .unwrap_or_default()
-                    };
+                if compressor
+                    .should_compress(messages.len(), self.config.session.max_session_messages)
+                {
                     if let Some(compressed) = compressor
-                        .compress(&client, &messages, self.config.max_session_messages)
+                        .compress(&client, &messages, self.config.session.max_session_messages)
                         .await
                     {
                         tracing::info!(
@@ -381,36 +403,31 @@ impl PrismAgent {
                             after = compressed.len(),
                             "context compressed"
                         );
-                        let mut sessions = self.sessions.borrow_mut();
-                        if let Some(session) = sessions.get_mut(session_id) {
-                            session.messages = compressed;
-                        }
+                        messages = compressed;
                     } else {
                         tracing::info!("compression failed, falling back to FIFO trim");
-                        let mut sessions = self.sessions.borrow_mut();
-                        if let Some(session) = sessions.get_mut(session_id) {
-                            Self::trim_messages(
-                                &mut session.messages,
-                                self.config.max_session_messages,
-                            );
-                        }
+                        compression::trim_messages_fifo(
+                            &mut messages,
+                            self.config.session.max_session_messages,
+                        );
                     }
                 }
             } else {
-                // No compressor — use FIFO trim
-                let mut sessions = self.sessions.borrow_mut();
-                if let Some(session) = sessions.get_mut(session_id) {
-                    Self::trim_messages(&mut session.messages, self.config.max_session_messages);
-                }
+                compression::trim_messages_fifo(
+                    &mut messages,
+                    self.config.session.max_session_messages,
+                );
             }
 
-            match finish_reason.as_deref() {
-                Some("stop") | None => {
+            match finish_reason {
+                Some(FinishReason::Stop) | None => {
+                    put_back!(messages);
                     return acp::StopReason::EndTurn;
                 }
-                Some("tool_calls") => {
+                Some(FinishReason::ToolCalls) => {
                     for tc in tool_calls_vec.unwrap_or_default() {
                         if cancelled.load(Ordering::Acquire) {
+                            put_back!(messages);
                             return acp::StopReason::Cancelled;
                         }
 
@@ -425,17 +442,14 @@ impl PrismAgent {
                         match self.hook_runner.run_pre_hooks(name, &args).await {
                             PreToolAction::Deny { message } => {
                                 tracing::info!(tool = name, "hook denied: {message}");
-                                let mut sessions = self.sessions.borrow_mut();
-                                if let Some(session) = sessions.get_mut(session_id) {
-                                    session.messages.push(Message {
-                                        role: "tool".into(),
-                                        content: Some(json!(format!("Hook denied: {message}"))),
-                                        name: None,
-                                        tool_calls: None,
-                                        tool_call_id: Some(id),
-                                        extra: Default::default(),
-                                    });
-                                }
+                                messages.push(Message {
+                                    role: MessageRole::Tool,
+                                    content: Some(json!(format!("Hook denied: {message}"))),
+                                    name: None,
+                                    tool_calls: None,
+                                    tool_call_id: Some(id),
+                                    extra: Default::default(),
+                                });
                                 continue;
                             }
                             PreToolAction::Modify { args: new_args } => {
@@ -447,8 +461,9 @@ impl PrismAgent {
                         tool_call_counter += 1;
                         let tool_call_id = acp::ToolCallId::new(format!("tc_{tool_call_counter}"));
 
-                        let kind = tool_kind(name);
-                        let title = tool_title(name, &args);
+                        let bt = BuiltinTool::from_str(name);
+                        let kind = tool_kind(bt);
+                        let title = tool_title(bt, name, &args);
 
                         // Emit ToolCall (pending)
                         self.send_update(
@@ -491,60 +506,50 @@ impl PrismAgent {
                                 )
                                 .await;
 
-                                // Feed rejection back to LLM as tool result
-                                {
-                                    let mut sessions = self.sessions.borrow_mut();
-                                    if let Some(session) = sessions.get_mut(session_id) {
-                                        session.messages.push(Message {
-                                            role: "tool".into(),
-                                            content: Some(json!(
-                                                crate::permissions::PERMISSION_DENIED_MSG
-                                            )),
-                                            name: None,
-                                            tool_calls: None,
-                                            tool_call_id: Some(id),
-                                            extra: Default::default(),
-                                        });
-                                    }
-                                }
-                                continue;
-                            }
-                        }
-
-                        let result = if name == "save_memory" {
-                            let key = args["key"].as_str().unwrap_or("note").to_string();
-                            let value = args["value"].as_str().unwrap_or("").to_string();
-                            self.memory.borrow_mut().append(key.clone(), value);
-                            json!({"saved": true, "key": key}).to_string()
-                        } else {
-                            tools::dispatch(
-                                name,
-                                &args,
-                                Some(&session_cwd),
-                                self.mcp_registry.as_ref(),
-                            )
-                            .await
-                        };
-                        let result =
-                            truncate_tool_output(name, &result, self.config.max_tool_output);
-
-                        // Post-tool-use hooks
-                        let result = self.hook_runner.run_post_hooks(name, &args, &result).await;
-
-                        // Push tool result to messages before sending update to avoid clone
-                        {
-                            let mut sessions = self.sessions.borrow_mut();
-                            if let Some(session) = sessions.get_mut(session_id) {
-                                session.messages.push(Message {
-                                    role: "tool".into(),
-                                    content: Some(json!(&result)),
+                                messages.push(Message {
+                                    role: MessageRole::Tool,
+                                    content: Some(json!(crate::permissions::PERMISSION_DENIED_MSG)),
                                     name: None,
                                     tool_calls: None,
                                     tool_call_id: Some(id),
                                     extra: Default::default(),
                                 });
+                                continue;
                             }
                         }
+
+                        let result = match bt {
+                            Some(BuiltinTool::SaveMemory) => {
+                                let key = args["key"].as_str().unwrap_or("note").to_string();
+                                let value = args["value"].as_str().unwrap_or("").to_string();
+                                self.memory.borrow_mut().append(key.clone(), value);
+                                json!({"saved": true, "key": key}).to_string()
+                            }
+                            _ => {
+                                tools::dispatch(
+                                    name,
+                                    &args,
+                                    Some(&session_cwd),
+                                    self.mcp_registry.as_ref(),
+                                )
+                                .await
+                            }
+                        };
+                        let result =
+                            truncate_tool_output(name, &result, self.config.model.max_tool_output);
+
+                        // Post-tool-use hooks
+                        let result = self.hook_runner.run_post_hooks(name, &args, &result).await;
+
+                        // Push tool result to local messages vec
+                        messages.push(Message {
+                            role: MessageRole::Tool,
+                            content: Some(json!(&result)),
+                            name: None,
+                            tool_calls: None,
+                            tool_call_id: Some(id),
+                            extra: Default::default(),
+                        });
 
                         // Emit ToolCallUpdate (completed)
                         self.send_update(
@@ -559,10 +564,10 @@ impl PrismAgent {
                         .await;
                     }
                 }
-                _ => {
-                    return acp::StopReason::EndTurn;
-                }
             }
+
+            // Put messages back into RefCell at end of each turn
+            put_back!(messages);
         }
 
         // Exceeded max turns
@@ -570,35 +575,53 @@ impl PrismAgent {
     }
 }
 
-fn tool_kind(name: &str) -> acp::ToolKind {
-    match name {
-        "read_file" | "list_dir" => acp::ToolKind::Read,
-        "write_file" | "edit_file" => acp::ToolKind::Edit,
-        "glob_files" | "grep_files" => acp::ToolKind::Search,
-        "bash" | "run_command" => acp::ToolKind::Execute,
-        "web_fetch" => acp::ToolKind::Fetch,
-        "save_memory" => acp::ToolKind::Other,
+fn tool_kind(bt: Option<BuiltinTool>) -> acp::ToolKind {
+    match bt {
+        Some(BuiltinTool::ReadFile | BuiltinTool::ListDir) => acp::ToolKind::Read,
+        Some(BuiltinTool::WriteFile | BuiltinTool::EditFile) => acp::ToolKind::Edit,
+        Some(BuiltinTool::GlobFiles | BuiltinTool::GrepFiles) => acp::ToolKind::Search,
+        Some(BuiltinTool::Bash | BuiltinTool::RunCommand) => acp::ToolKind::Execute,
+        Some(BuiltinTool::WebFetch) => acp::ToolKind::Fetch,
         _ => acp::ToolKind::Other,
     }
 }
 
-fn tool_title(name: &str, args: &serde_json::Value) -> String {
-    match name {
-        "read_file" => format!("Read {}", args["path"].as_str().unwrap_or("file")),
-        "write_file" => format!("Write {}", args["path"].as_str().unwrap_or("file")),
-        "edit_file" => format!("Edit {}", args["path"].as_str().unwrap_or("file")),
-        "list_dir" => format!("List {}", args["path"].as_str().unwrap_or(".")),
-        "bash" => {
+fn tool_title(bt: Option<BuiltinTool>, name: &str, args: &serde_json::Value) -> String {
+    match bt {
+        Some(BuiltinTool::ReadFile) => format!("Read {}", args["path"].as_str().unwrap_or("file")),
+        Some(BuiltinTool::WriteFile) => {
+            format!("Write {}", args["path"].as_str().unwrap_or("file"))
+        }
+        Some(BuiltinTool::EditFile) => format!("Edit {}", args["path"].as_str().unwrap_or("file")),
+        Some(BuiltinTool::ListDir) => format!("List {}", args["path"].as_str().unwrap_or(".")),
+        Some(BuiltinTool::Bash) => {
             let preview =
                 common::truncate_with_ellipsis(args["command"].as_str().unwrap_or("command"), 60);
             format!("Run: {preview}")
         }
-        "run_command" => format!("Run: {}", args["command"].as_str().unwrap_or("command")),
-        "glob_files" => format!("Glob {}", args["pattern"].as_str().unwrap_or("*")),
-        "grep_files" => format!("Grep {}", args["pattern"].as_str().unwrap_or("pattern")),
-        "web_fetch" => format!("Fetch {}", args["url"].as_str().unwrap_or("url")),
-        "save_memory" => format!("Save memory: {}", args["key"].as_str().unwrap_or("note")),
-        other => other.to_string(),
+        Some(BuiltinTool::RunCommand) => {
+            format!("Run: {}", args["command"].as_str().unwrap_or("command"))
+        }
+        Some(BuiltinTool::GlobFiles) => {
+            format!("Glob {}", args["pattern"].as_str().unwrap_or("*"))
+        }
+        Some(BuiltinTool::GrepFiles) => {
+            format!("Grep {}", args["pattern"].as_str().unwrap_or("pattern"))
+        }
+        Some(BuiltinTool::WebFetch) => format!("Fetch {}", args["url"].as_str().unwrap_or("url")),
+        Some(BuiltinTool::SaveMemory) => {
+            format!("Save memory: {}", args["key"].as_str().unwrap_or("note"))
+        }
+        Some(BuiltinTool::SpawnAgent) => {
+            format!(
+                "Spawn: {}",
+                common::truncate_with_ellipsis(args["task"].as_str().unwrap_or("task"), 60)
+            )
+        }
+        Some(BuiltinTool::Recall) => {
+            format!("Recall: {}", args["query"].as_str().unwrap_or("memory"))
+        }
+        None => name.to_string(),
     }
 }
 
@@ -632,7 +655,7 @@ impl acp::Agent for PrismAgent {
 
         let session_id = Uuid::new_v4().to_string();
         let cwd = args.cwd;
-        let messages = vec![self.build_system_message(Some(&cwd))];
+        let messages = vec![self.build_system_message(Some(&cwd)).await];
 
         self.sessions.borrow_mut().insert(
             session_id.clone(),
@@ -648,6 +671,8 @@ impl acp::Agent for PrismAgent {
         Ok(acp::NewSessionResponse::new(session_id))
     }
 
+    // Safe: single-threaded LocalSet, no concurrent RefCell borrow possible
+    #[allow(clippy::await_holding_refcell_ref)]
     async fn prompt(&self, args: acp::PromptRequest) -> acp::Result<acp::PromptResponse> {
         let session_id = args.session_id.to_string();
 
@@ -670,7 +695,7 @@ impl acp::Agent for PrismAgent {
             })?;
             session.cancelled.store(false, Ordering::Release);
             session.messages.push(Message {
-                role: "user".into(),
+                role: MessageRole::User,
                 content: Some(json!(user_text)),
                 name: None,
                 tool_calls: None,
@@ -682,7 +707,7 @@ impl acp::Agent for PrismAgent {
         let stop_reason = self.run_agent_loop(&session_id).await;
 
         // Flush memory
-        if let Err(e) = self.memory.borrow().flush() {
+        if let Err(e) = self.memory.borrow_mut().flush().await {
             tracing::warn!("memory flush failed: {e}");
         }
 
@@ -713,9 +738,9 @@ impl acp::Agent for PrismAgent {
 
         // Rebuild messages: system prompt + saved conversation history
         let cwd = args.cwd;
-        let mut messages = vec![self.build_system_message(Some(&cwd))];
+        let mut messages = vec![self.build_system_message(Some(&cwd)).await];
         messages.extend(session.messages);
-        Self::trim_messages(&mut messages, self.config.max_session_messages);
+        compression::trim_messages_fifo(&mut messages, self.config.session.max_session_messages);
 
         self.sessions.borrow_mut().insert(
             session_id.clone(),
@@ -813,30 +838,34 @@ mod tests {
 
     #[test]
     fn test_trim_messages_within_limit() {
-        let mut msgs = vec![make_msg("system"), make_msg("user"), make_msg("assistant")];
-        PrismAgent::trim_messages(&mut msgs, 10);
+        let mut msgs = vec![
+            make_msg(MessageRole::System),
+            make_msg(MessageRole::User),
+            make_msg(MessageRole::Assistant),
+        ];
+        compression::trim_messages_fifo(&mut msgs, 10);
         assert_eq!(msgs.len(), 3);
     }
 
     #[test]
     fn test_trim_messages_exceeds_limit() {
-        let mut msgs: Vec<Message> = (0..20).map(|i| make_msg(&format!("msg-{i}"))).collect();
-        msgs[0].role = "system".into();
-        PrismAgent::trim_messages(&mut msgs, 5);
+        let mut msgs: Vec<Message> = (0..20).map(|_| make_msg(MessageRole::User)).collect();
+        msgs[0].role = MessageRole::System;
+        compression::trim_messages_fifo(&mut msgs, 5);
         assert_eq!(msgs.len(), 5);
-        assert_eq!(msgs[0].role, "system");
+        assert_eq!(msgs[0].role, MessageRole::System);
     }
 
     #[test]
     fn test_trim_messages_zero_limit_is_noop() {
-        let mut msgs = vec![make_msg("system"), make_msg("user")];
-        PrismAgent::trim_messages(&mut msgs, 0);
+        let mut msgs = vec![make_msg(MessageRole::System), make_msg(MessageRole::User)];
+        compression::trim_messages_fifo(&mut msgs, 0);
         assert_eq!(msgs.len(), 2);
     }
 
-    fn make_msg(role: &str) -> Message {
+    fn make_msg(role: MessageRole) -> Message {
         Message {
-            role: role.into(),
+            role,
             content: Some(json!("test")),
             name: None,
             tool_calls: None,
