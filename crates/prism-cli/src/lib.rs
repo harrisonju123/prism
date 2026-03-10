@@ -3,6 +3,7 @@ pub mod agent;
 pub mod common;
 pub mod compression;
 pub mod config;
+pub mod git;
 pub mod hooks;
 pub mod instructions;
 pub mod mcp;
