@@ -108,6 +108,8 @@ pub struct Agent {
     permission_gate: ToolPermissionGate,
     hook_runner: HookRunner,
     compressor: Option<ContextCompressor>,
+    // Shared interrupt flag — set by ctrl-c handler (owned by REPL) or per-run handler
+    pub interrupted: Arc<AtomicBool>,
 }
 
 impl Agent {
@@ -134,6 +136,7 @@ impl Agent {
             permission_gate,
             hook_runner,
             compressor,
+            interrupted: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -158,12 +161,11 @@ impl Agent {
             permission_gate,
             hook_runner,
             compressor,
+            interrupted: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    pub async fn run(&mut self, task: &str) -> Result<()> {
-        tracing::info!(episode_id = %self.session.episode_id, model = %self.config.model.model, "starting agent session");
-
+    async fn build_full_system_prompt(&mut self) -> String {
         let memory_content = self.memory.load().await;
         let mcp_section = self
             .mcp_registry
@@ -175,17 +177,65 @@ impl Agent {
         let instructions_section = crate::instructions::load_project_instructions(&cwd);
         let git_section = crate::git::gather_git_context(&cwd);
         let skills_section = self.skill_registry.system_prompt_section();
-        let full_system = build_system_prompt(
+        build_system_prompt(
             self.config.model.system_prompt.as_deref(),
             &memory_content,
             &format!("{instructions_section}{git_section}{skills_section}"),
             mcp_section,
-        );
+        )
+    }
+
+    /// Reset conversation to just the system message (rebuilds system prompt to pick up latest context).
+    pub async fn clear_conversation(&mut self) {
+        let full_system = self.build_full_system_prompt().await;
+        self.session.set_active_messages(vec![common::system_message(full_system)]);
+        self.session.updated_at = chrono::Utc::now().to_rfc3339();
+        if let Err(e) = self.session.save(&self.config.session.sessions_dir) {
+            tracing::warn!("failed to save session after clear: {e}");
+        }
+    }
+
+    /// Compress the conversation context. Falls back to FIFO trim if LLM compression unavailable.
+    pub async fn compact(&mut self) {
+        let active = self.session.active_messages();
+        let max = self.config.session.max_session_messages;
+
+        if let Some(ref compressor) = self.compressor {
+            if let Some(compressed) = compressor.compress(&self.client, &active, max).await {
+                eprintln!(
+                    "[compact] compressed {} → {} messages",
+                    active.len(),
+                    compressed.len()
+                );
+                self.session.set_active_messages(compressed);
+            } else {
+                eprintln!("[compact] LLM compression failed, falling back to FIFO trim");
+                let mut msgs = active;
+                compression::trim_messages_fifo(&mut msgs, max);
+                eprintln!("[compact] trimmed to {} messages", msgs.len());
+                self.session.set_active_messages(msgs);
+            }
+        } else {
+            let mut msgs = active;
+            compression::trim_messages_fifo(&mut msgs, max);
+            eprintln!("[compact] trimmed to {} messages (no compression model configured)", msgs.len());
+            self.session.set_active_messages(msgs);
+        }
+
+        self.session.updated_at = chrono::Utc::now().to_rfc3339();
+        if let Err(e) = self.session.save(&self.config.session.sessions_dir) {
+            tracing::warn!("failed to save session after compact: {e}");
+        }
+    }
+
+    pub async fn run(&mut self, task: &str) -> Result<()> {
+        tracing::info!(episode_id = %self.session.episode_id, model = %self.config.model.model, "starting agent session");
+
+        let full_system = self.build_full_system_prompt().await;
 
         self.session
-            .messages
-            .push(common::system_message(full_system));
-        self.session.messages.push(Message {
+            .push_message(common::system_message(full_system));
+        self.session.push_message(Message {
             role: MessageRole::User,
             content: Some(json!(task)),
             name: None,
@@ -206,7 +256,7 @@ impl Agent {
         );
 
         if !task.is_empty() {
-            self.session.messages.push(Message {
+            self.session.push_message(Message {
                 role: MessageRole::User,
                 content: Some(json!(task)),
                 name: None,
@@ -220,31 +270,35 @@ impl Agent {
     }
 
     async fn inner_run(&mut self) -> Result<()> {
-        let interrupted = Arc::new(AtomicBool::new(false));
-        let flag = interrupted.clone();
+        // Reset interrupt flag for this run. If no external handler is registered (single-shot
+        // mode), install a one-shot ctrl-c listener that sets our shared flag.
+        self.interrupted.store(false, Ordering::SeqCst);
+        let flag = self.interrupted.clone();
+        // Try to install ctrl-c handler; it may fail if one is already installed (REPL mode).
         tokio::spawn(async move {
             let _ = tokio::signal::ctrl_c().await;
             flag.store(true, Ordering::SeqCst);
         });
 
-        let mut total_prompt: u32 = 0;
-        let mut total_completion: u32 = 0;
-        let mut total_cost_usd: f64 = 0.0;
-        let mut turns: u32 = 0;
+        // Accumulate on top of values already recorded (supports multi-resume)
+        let mut total_prompt: u32 = self.session.total_prompt_tokens;
+        let mut total_completion: u32 = self.session.total_completion_tokens;
+        let mut total_cost_usd: f64 = self.session.total_cost_usd;
+        let mut turns: u32 = self.session.turns;
         let model_name = self.config.model.model.clone();
         let mut stop_reason: Option<AgentStopReason> = None;
         let tool_defs = tools::all_tool_definitions(self.mcp_registry.as_deref());
 
         for _turn in 0..self.config.model.max_turns {
-            if interrupted.load(Ordering::Relaxed) {
-                eprintln!("\n[interrupt] Ctrl+C — stopping");
+            if self.interrupted.load(Ordering::Relaxed) {
+                self.permission_gate.renderer().interrupt_notice();
                 stop_reason = Some(AgentStopReason::Interrupt);
                 break;
             }
 
             let req = ChatCompletionRequest {
                 model: self.config.model.model.clone(),
-                messages: self.session.messages.clone(),
+                messages: self.session.active_messages(),
                 tools: Some(tool_defs.clone()),
                 tool_choice: Some(json!("auto")),
                 ..Default::default()
@@ -263,8 +317,8 @@ impl Agent {
             let mut finish_reason: Option<FinishReason> = None;
 
             while let Some(chunk_result) = stream.next().await {
-                if interrupted.load(Ordering::Relaxed) {
-                    eprintln!("\n[interrupt] Ctrl+C — stopping");
+                if self.interrupted.load(Ordering::Relaxed) {
+                    self.permission_gate.renderer().interrupt_notice();
                     stop_reason = Some(AgentStopReason::Interrupt);
                     break;
                 }
@@ -326,7 +380,7 @@ impl Agent {
             let tool_calls_vec = reconstruct_tool_calls(&tc_builders);
 
             // Push assistant message
-            self.session.messages.push(Message {
+            self.session.push_message(Message {
                 role: MessageRole::Assistant,
                 content: if content_buf.is_empty() {
                     None
@@ -347,32 +401,35 @@ impl Agent {
             }
 
             // Context compression (or FIFO fallback)
+            let active = self.session.active_messages();
             if let Some(ref compressor) = self.compressor
                 && compressor.should_compress(
-                    self.session.messages.len(),
+                    active.len(),
                     self.config.session.max_session_messages,
                 )
             {
                 if let Some(compressed) = compressor
                     .compress(
                         &self.client,
-                        &self.session.messages,
+                        &active,
                         self.config.session.max_session_messages,
                     )
                     .await
                 {
                     tracing::info!(
-                        before = self.session.messages.len(),
+                        before = active.len(),
                         after = compressed.len(),
                         "context compressed"
                     );
-                    self.session.messages = compressed;
+                    self.session.set_active_messages(compressed);
                 } else {
                     tracing::info!("compression failed, falling back to FIFO trim");
+                    let mut msgs = active;
                     compression::trim_messages_fifo(
-                        &mut self.session.messages,
+                        &mut msgs,
                         self.config.session.max_session_messages,
                     );
+                    self.session.set_active_messages(msgs);
                 }
             }
 
@@ -380,10 +437,7 @@ impl Agent {
             if let Some(cap) = self.config.model.max_cost_usd
                 && total_cost_usd >= cap
             {
-                eprintln!(
-                    "\n[cost-cap] ${:.4} >= cap ${:.4} — stopping",
-                    total_cost_usd, cap
-                );
+                self.permission_gate.renderer().cost_cap_notice(total_cost_usd, cap);
                 stop_reason = Some(AgentStopReason::CostCap);
                 break;
             }
@@ -413,7 +467,7 @@ impl Agent {
 
                         match self.hook_runner.run_pre_hooks(&name, &args).await {
                             PreToolAction::Deny { message } => {
-                                eprintln!("[hook] {name}  denied: {message}");
+                                self.permission_gate.renderer().hook_denied(&name, &message);
                                 outcomes.push(ToolOutcome::Denied {
                                     index,
                                     id,
@@ -429,14 +483,14 @@ impl Agent {
 
                         let args_preview =
                             common::truncate_with_ellipsis(&args.to_string(), 120);
-                        eprintln!("[tool] {name}  args={args_preview}");
+                        self.permission_gate.renderer().tool_start(&name, &args_preview);
 
                         // Permission check — blocks on TTY read when prompting,
                         // which is intentional (we're waiting for user input)
                         let decision = self.permission_gate.check_permission(&name, &args);
 
                         if decision == PermissionDecision::Deny {
-                            eprintln!("[tool] {name}  permission denied");
+                            self.permission_gate.renderer().tool_denied(&name);
                             outcomes.push(ToolOutcome::Denied {
                                 index,
                                 id,
@@ -602,7 +656,7 @@ impl Agent {
                     for outcome in outcomes {
                         match outcome {
                             ToolOutcome::Denied { id, message, .. } => {
-                                self.session.messages.push(Message {
+                                self.session.push_message(Message {
                                     role: MessageRole::Tool,
                                     content: Some(json!(message)),
                                     name: None,
@@ -627,11 +681,13 @@ impl Agent {
                                     .await;
                                 let result_preview =
                                     common::truncate_with_ellipsis(result.trim_start(), 80);
-                                eprintln!(
-                                    "[tool] {name}  {elapsed_ms}ms  {} bytes  {result_preview}",
-                                    result.len()
+                                self.permission_gate.renderer().tool_result(
+                                    &name,
+                                    elapsed_ms,
+                                    result.len(),
+                                    &result_preview,
                                 );
-                                self.session.messages.push(Message {
+                                self.session.push_message(Message {
                                     role: MessageRole::Tool,
                                     content: Some(json!(result)),
                                     name: None,
@@ -645,7 +701,7 @@ impl Agent {
 
                     // Inject skill content as user messages after tool results
                     for skill_content in pending_skill_messages {
-                        self.session.messages.push(common::user_message(skill_content));
+                        self.session.push_message(common::user_message(skill_content));
                     }
                 }
             }
@@ -656,18 +712,13 @@ impl Agent {
             tracing::warn!("memory flush failed: {e}");
         }
 
-        let cost_str = if total_cost_usd > 0.0 {
-            format!("  ~${:.4}", total_cost_usd)
-        } else {
-            String::new()
-        };
-        eprintln!(
-            "[session] {}  {} turns  {} in / {} out tokens{}",
-            model_name, turns, total_prompt, total_completion, cost_str
-        );
-        eprintln!(
-            "[session] episode {}",
-            &self.session.episode_id.to_string()[..8]
+        self.permission_gate.renderer().session_summary(
+            &model_name,
+            turns,
+            total_prompt,
+            total_completion,
+            total_cost_usd,
+            &self.session.episode_id.to_string()[..8],
         );
 
         // Final session update
