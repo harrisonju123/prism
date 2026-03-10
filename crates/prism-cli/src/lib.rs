@@ -1,4 +1,5 @@
 pub mod acp;
+pub mod approval_bridge;
 pub mod agent;
 pub mod common;
 pub mod compression;
