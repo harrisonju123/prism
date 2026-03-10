@@ -12,6 +12,8 @@ pub struct Config {
     pub system_prompt: Option<String>,
     pub sessions_dir: PathBuf,
     pub memory_window_size: usize,
+    pub max_session_messages: usize,
+    pub max_sessions: usize,
 }
 
 impl Config {
@@ -54,6 +56,16 @@ impl Config {
             .and_then(|s| s.parse().ok())
             .unwrap_or(4096);
 
+        let max_session_messages = std::env::var("PRISM_MAX_SESSION_MESSAGES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(200);
+
+        let max_sessions = std::env::var("PRISM_MAX_SESSIONS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(64);
+
         Ok(Self {
             prism_url,
             prism_api_key,
@@ -64,6 +76,8 @@ impl Config {
             system_prompt,
             sessions_dir,
             memory_window_size,
+            max_session_messages,
+            max_sessions,
         })
     }
 }

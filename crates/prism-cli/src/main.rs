@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use prism_cli::{agent::Agent, config::Config, session::Session};
+use prism_cli::{acp, agent::Agent, config::Config, session::Session};
 use prism_client::PrismClient;
 
 #[derive(Parser)]
@@ -42,6 +42,11 @@ enum Commands {
         #[command(subcommand)]
         cmd: SessionsCmd,
     },
+    /// Run as an ACP agent server (stdio protocol mode for Zed)
+    Acp {
+        #[arg(long, help = "Model to use (overrides PRISM_MODEL)")]
+        model: Option<String>,
+    },
     /// Spawn a sub-agent to execute a task and wait for result
     Spawn {
         /// Task description for the sub-agent
@@ -66,9 +71,25 @@ enum SessionsCmd {
 fn main() {
     let cli = Cli::parse();
 
+    // Logs go to stderr — stdout is the JSON-RPC protocol channel in ACP mode
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
         .init();
+
+    // ACP mode needs a current_thread runtime because Agent trait is !Send
+    if matches!(&cli.command, Commands::Acp { .. }) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local_set = tokio::task::LocalSet::new();
+        if let Err(e) = rt.block_on(local_set.run_until(run(cli))) {
+            eprintln!("error: {e:#}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     if let Err(e) = rt.block_on(run(cli)) {
@@ -79,6 +100,13 @@ fn main() {
 
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
+        Commands::Acp { model } => {
+            let mut config = Config::from_env()?;
+            if let Some(m) = model {
+                config.prism_model = m;
+            }
+            acp::run_acp_server(config).await?;
+        }
         Commands::Run {
             task,
             model,
