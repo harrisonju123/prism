@@ -239,7 +239,7 @@ async fn test_decisions() {
         .await
         .expect("save decision");
     assert_eq!(d.title, "Use JWT");
-    assert_eq!(d.status, "active");
+    assert_eq!(d.status, DecisionStatus::Active);
 
     store
         .save_decision(ws.id, "Global decision", "something", None, vec![])
@@ -370,6 +370,67 @@ async fn test_recall_by_tags() {
         .expect("recall by tags");
     assert_eq!(result.memories.len(), 1);
     assert_eq!(result.memories[0].key, "auth_secret");
+}
+
+#[tokio::test]
+async fn test_tag_exact_match() {
+    let (store, ws) = setup().await;
+
+    store
+        .save_memory(
+            ws.id,
+            "auth_key",
+            "use JWT",
+            None,
+            "agent",
+            vec!["auth".into()],
+        )
+        .await
+        .expect("save auth memory");
+
+    store
+        .save_memory(
+            ws.id,
+            "auth_ext_key",
+            "use OAuth",
+            None,
+            "agent",
+            vec!["authentication".into()],
+        )
+        .await
+        .expect("save authentication memory");
+
+    // Filtering by "auth" should only return the exact match, not "authentication"
+    let results = store
+        .load_memories(
+            ws.id,
+            MemoryFilters {
+                tags: Some(vec!["auth".into()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("load by tag");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].key, "auth_key");
+
+    // Same for decisions
+    store
+        .save_decision(ws.id, "D1", "", None, vec!["auth".into()])
+        .await
+        .expect("save decision with auth tag");
+
+    store
+        .save_decision(ws.id, "D2", "", None, vec!["authentication".into()])
+        .await
+        .expect("save decision with authentication tag");
+
+    let decisions = store
+        .list_decisions(ws.id, None, Some(vec!["auth".into()]))
+        .await
+        .expect("list decisions by tag");
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions[0].title, "D1");
 }
 
 #[tokio::test]

@@ -1,4 +1,3 @@
-use sqlx::Row;
 use uuid::Uuid;
 
 use super::SqliteStore;
@@ -41,15 +40,15 @@ impl SqliteStore {
         let thread = row_to_thread(&row)?;
 
         self.log_activity_fire_and_forget(
-                workspace_id,
-                "",
-                "created",
-                "thread",
-                thread.id,
-                &format!("Created thread: {name}"),
-                None,
-            )
-            .await;
+            workspace_id,
+            "",
+            "created",
+            "thread",
+            thread.id,
+            &format!("Created thread: {name}"),
+            None,
+        )
+        .await;
 
         Ok(thread)
     }
@@ -115,44 +114,36 @@ impl SqliteStore {
         let thread = row_to_thread(&row)?;
 
         self.log_activity_fire_and_forget(
-                workspace_id,
-                "",
-                "archived",
-                "thread",
-                thread.id,
-                &format!("Archived thread: {name}"),
-                None,
-            )
-            .await;
+            workspace_id,
+            "",
+            "archived",
+            "thread",
+            thread.id,
+            &format!("Archived thread: {name}"),
+            None,
+        )
+        .await;
 
         Ok(thread)
     }
 }
 
-pub(super) fn row_to_thread(row: &sqlx::sqlite::SqliteRow) -> Result<Thread> {
-    let id_str: String = row.try_get("id")?;
-    let ws_str: String = row.try_get("workspace_id")?;
-    let status_str: String = row.try_get("status")?;
-    let tags_str: String = row.try_get("tags")?;
-    let created_str: String = row.try_get("created_at")?;
-    let updated_str: String = row.try_get("updated_at")?;
-
-    let status = match status_str.as_str() {
-        "active" => ThreadStatus::Active,
-        "archived" => ThreadStatus::Archived,
-        other => {
-            return Err(Error::Internal(format!("invalid thread status: {other}")));
-        }
-    };
-
-    Ok(Thread {
-        id: parse_uuid(&id_str)?,
-        workspace_id: parse_uuid(&ws_str)?,
-        name: row.try_get("name")?,
-        description: row.try_get("description")?,
-        status,
-        tags: parse_json_array(&tags_str),
-        created_at: parse_time(&created_str)?,
-        updated_at: parse_time(&updated_str)?,
-    })
+row_to_struct! {
+    pub(super) fn row_to_thread(row) -> Thread {
+        id: uuid "id",
+        workspace_id: uuid "workspace_id",
+        name: str "name",
+        description: str "description",
+        status: custom "status" => {
+            let s: String = row.try_get::<String, _>("status")?;
+            match s.as_str() {
+                "active" => ThreadStatus::Active,
+                "archived" => ThreadStatus::Archived,
+                other => return Err(Error::Internal(format!("invalid thread status: {other}")))
+            }
+        },
+        tags: json_array "tags",
+        created_at: time "created_at",
+        updated_at: time "updated_at",
+    }
 }

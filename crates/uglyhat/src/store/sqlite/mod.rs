@@ -1,3 +1,5 @@
+#[macro_use]
+pub mod types;
 mod activity;
 mod agent;
 mod context;
@@ -8,7 +10,6 @@ mod snapshot;
 #[cfg(test)]
 mod tests;
 mod thread;
-pub mod types;
 mod workspace;
 
 use async_trait::async_trait;

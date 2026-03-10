@@ -23,6 +23,24 @@ impl std::fmt::Display for ThreadStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Decision status
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DecisionStatus {
+    Active,
+}
+
+impl std::fmt::Display for DecisionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DecisionStatus::Active => write!(f, "active"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Core entities
 // ---------------------------------------------------------------------------
 
@@ -75,7 +93,7 @@ pub struct Decision {
     pub title: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub content: String,
-    pub status: String,
+    pub status: DecisionStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     pub created_at: DateTime<Utc>,

@@ -1,4 +1,3 @@
-use sqlx::Row;
 use uuid::Uuid;
 
 use super::SqliteStore;
@@ -47,15 +46,15 @@ impl SqliteStore {
         let memory = row_to_memory(&row)?;
 
         self.log_activity_fire_and_forget(
-                workspace_id,
-                source,
-                "saved",
-                "memory",
-                memory.id,
-                &format!("Saved memory: {key}"),
-                None,
-            )
-            .await;
+            workspace_id,
+            source,
+            "saved",
+            "memory",
+            memory.id,
+            &format!("Saved memory: {key}"),
+            None,
+        )
+        .await;
 
         Ok(memory)
     }
@@ -84,10 +83,7 @@ impl SqliteStore {
         }
 
         if let Some(ref tags) = filters.tags {
-            for tag in tags {
-                args.push(tag.clone());
-                clauses.push(format!("tags LIKE '%' || ${} || '%'", args.len()));
-            }
+            push_tag_clauses(tags, &mut clauses, &mut args);
         }
 
         let query = format!(
@@ -122,23 +118,16 @@ impl SqliteStore {
     }
 }
 
-pub(super) fn row_to_memory(row: &sqlx::sqlite::SqliteRow) -> Result<Memory> {
-    let id_str: String = row.try_get("id")?;
-    let ws_str: String = row.try_get("workspace_id")?;
-    let thread_str: Option<String> = row.try_get("thread_id")?;
-    let tags_str: String = row.try_get("tags")?;
-    let created_str: String = row.try_get("created_at")?;
-    let updated_str: String = row.try_get("updated_at")?;
-
-    Ok(Memory {
-        id: parse_uuid(&id_str)?,
-        workspace_id: parse_uuid(&ws_str)?,
-        thread_id: parse_opt_uuid(thread_str)?,
-        key: row.try_get("key")?,
-        value: row.try_get("value")?,
-        source: row.try_get("source")?,
-        tags: parse_json_array(&tags_str),
-        created_at: parse_time(&created_str)?,
-        updated_at: parse_time(&updated_str)?,
-    })
+row_to_struct! {
+    pub(super) fn row_to_memory(row) -> Memory {
+        id: uuid "id",
+        workspace_id: uuid "workspace_id",
+        thread_id: opt_uuid "thread_id",
+        key: str "key",
+        value: str "value",
+        source: str "source",
+        tags: json_array "tags",
+        created_at: time "created_at",
+        updated_at: time "updated_at",
+    }
 }

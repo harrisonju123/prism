@@ -1,4 +1,3 @@
-use sqlx::Row;
 use uuid::Uuid;
 
 use super::SqliteStore;
@@ -38,16 +37,12 @@ impl SqliteStore {
     }
 }
 
-pub(super) fn row_to_workspace(row: &sqlx::sqlite::SqliteRow) -> Result<Workspace> {
-    let id_str: String = row.try_get("id")?;
-    let created_str: String = row.try_get("created_at")?;
-    let updated_str: String = row.try_get("updated_at")?;
-
-    Ok(Workspace {
-        id: parse_uuid(&id_str)?,
-        name: row.try_get("name")?,
-        description: row.try_get("description")?,
-        created_at: parse_time(&created_str)?,
-        updated_at: parse_time(&updated_str)?,
-    })
+row_to_struct! {
+    pub(super) fn row_to_workspace(row) -> Workspace {
+        id: uuid "id",
+        name: str "name",
+        description: str "description",
+        created_at: time "created_at",
+        updated_at: time "updated_at",
+    }
 }
