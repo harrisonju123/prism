@@ -215,66 +215,43 @@ impl SqliteStore {
     }
 }
 
-fn row_to_agent(row: &sqlx::sqlite::SqliteRow) -> Result<Agent> {
-    let id_str: String = row.try_get("id")?;
-    let ws_str: String = row.try_get("workspace_id")?;
-    let caps_str: String = row.try_get("capabilities")?;
-    let thread_str: Option<String> = row.try_get("current_thread_id")?;
-    let checkin_str: Option<String> = row.try_get("last_checkin")?;
-    let created_str: String = row.try_get("created_at")?;
-    let updated_str: String = row.try_get("updated_at")?;
-
-    Ok(Agent {
-        id: parse_uuid(&id_str)?,
-        workspace_id: parse_uuid(&ws_str)?,
-        name: row.try_get("name")?,
-        capabilities: parse_json_array(&caps_str),
-        current_thread_id: parse_opt_uuid(thread_str)?,
-        last_checkin: parse_opt_time(checkin_str)?,
-        created_at: parse_time(&created_str)?,
-        updated_at: parse_time(&updated_str)?,
-    })
+row_to_struct! {
+    fn row_to_agent(row) -> Agent {
+        id: uuid "id",
+        workspace_id: uuid "workspace_id",
+        name: str "name",
+        capabilities: json_array "capabilities",
+        current_thread_id: opt_uuid "current_thread_id",
+        last_checkin: opt_time "last_checkin",
+        created_at: time "created_at",
+        updated_at: time "updated_at",
+    }
 }
 
-pub(super) fn row_to_agent_session(row: &sqlx::sqlite::SqliteRow) -> Result<AgentSession> {
-    let id_str: String = row.try_get("id")?;
-    let agent_id_str: String = row.try_get("agent_id")?;
-    let ws_str: String = row.try_get("workspace_id")?;
-    let thread_str: Option<String> = row.try_get("thread_id")?;
-    let started_str: String = row.try_get("started_at")?;
-    let ended_str: Option<String> = row.try_get("ended_at")?;
-    let findings_str: String = row.try_get("findings")?;
-    let files_str: String = row.try_get("files_touched")?;
-    let next_str: String = row.try_get("next_steps")?;
-    let created_str: String = row.try_get("created_at")?;
-
-    Ok(AgentSession {
-        id: parse_uuid(&id_str)?,
-        agent_id: parse_uuid(&agent_id_str)?,
-        workspace_id: parse_uuid(&ws_str)?,
-        thread_id: parse_opt_uuid(thread_str)?,
-        started_at: parse_time(&started_str)?,
-        ended_at: parse_opt_time(ended_str)?,
-        summary: row.try_get("summary")?,
-        findings: parse_json_array(&findings_str),
-        files_touched: parse_json_array(&files_str),
-        next_steps: parse_json_array(&next_str),
-        created_at: parse_time(&created_str)?,
-    })
+row_to_struct! {
+    pub(super) fn row_to_agent_session(row) -> AgentSession {
+        id: uuid "id",
+        agent_id: uuid "agent_id",
+        workspace_id: uuid "workspace_id",
+        thread_id: opt_uuid "thread_id",
+        started_at: time "started_at",
+        ended_at: opt_time "ended_at",
+        summary: str "summary",
+        findings: json_array "findings",
+        files_touched: json_array "files_touched",
+        next_steps: json_array "next_steps",
+        created_at: time "created_at",
+    }
 }
 
-fn row_to_agent_status(row: &sqlx::sqlite::SqliteRow) -> Result<AgentStatus> {
-    let thread_name: String = row.try_get("current_thread_name")?;
-    let checkin_str: Option<String> = row.try_get("last_checkin")?;
-    let session_open: bool = row.try_get("session_open")?;
-    Ok(AgentStatus {
-        name: row.try_get("name")?,
-        session_open,
-        current_thread: if thread_name.is_empty() {
-            None
-        } else {
-            Some(thread_name)
+row_to_struct! {
+    fn row_to_agent_status(row) -> AgentStatus {
+        name: str "name",
+        session_open: bool "session_open",
+        current_thread: custom "current_thread_name" => {
+            let s: String = row.try_get::<String, _>("current_thread_name")?;
+            if s.is_empty() { None } else { Some(s) }
         },
-        last_checkin: parse_opt_time(checkin_str)?,
-    })
+        last_checkin: opt_time "last_checkin",
+    }
 }

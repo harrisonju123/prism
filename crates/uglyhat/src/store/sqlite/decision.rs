@@ -1,4 +1,3 @@
-use sqlx::Row;
 use uuid::Uuid;
 
 use super::SqliteStore;
@@ -19,7 +18,7 @@ impl SqliteStore {
         let id = Uuid::new_v4();
         let row = sqlx::query(
             "INSERT INTO decisions (id, workspace_id, thread_id, title, content, status, tags, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, 'active', $6, $7, $8)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              RETURNING id, workspace_id, thread_id, title, content, status, tags, created_at, updated_at",
         )
         .bind(id.to_string())
@@ -27,6 +26,7 @@ impl SqliteStore {
         .bind(thread_id.map(|u| u.to_string()))
         .bind(title)
         .bind(content)
+        .bind(DecisionStatus::Active.to_string())
         .bind(json_array_to_str(&tags))
         .bind(&now)
         .bind(&now)
@@ -36,15 +36,15 @@ impl SqliteStore {
         let decision = row_to_decision(&row)?;
 
         self.log_activity_fire_and_forget(
-                workspace_id,
-                "",
-                "decided",
-                "decision",
-                decision.id,
-                &format!("Decision: {title}"),
-                None,
-            )
-            .await;
+            workspace_id,
+            "",
+            "decided",
+            "decision",
+            decision.id,
+            &format!("Decision: {title}"),
+            None,
+        )
+        .await;
 
         Ok(decision)
     }
@@ -64,10 +64,7 @@ impl SqliteStore {
         }
 
         if let Some(ref tag_list) = tags {
-            for tag in tag_list {
-                args.push(tag.clone());
-                clauses.push(format!("tags LIKE '%' || ${} || '%'", args.len()));
-            }
+            push_tag_clauses(tag_list, &mut clauses, &mut args);
         }
 
         let query = format!(
@@ -89,23 +86,22 @@ impl SqliteStore {
     }
 }
 
-pub(super) fn row_to_decision(row: &sqlx::sqlite::SqliteRow) -> Result<Decision> {
-    let id_str: String = row.try_get("id")?;
-    let ws_str: String = row.try_get("workspace_id")?;
-    let thread_str: Option<String> = row.try_get("thread_id")?;
-    let tags_str: String = row.try_get("tags")?;
-    let created_str: String = row.try_get("created_at")?;
-    let updated_str: String = row.try_get("updated_at")?;
-
-    Ok(Decision {
-        id: parse_uuid(&id_str)?,
-        workspace_id: parse_uuid(&ws_str)?,
-        thread_id: parse_opt_uuid(thread_str)?,
-        title: row.try_get("title")?,
-        content: row.try_get("content")?,
-        status: row.try_get("status")?,
-        tags: parse_json_array(&tags_str),
-        created_at: parse_time(&created_str)?,
-        updated_at: parse_time(&updated_str)?,
-    })
+row_to_struct! {
+    pub(super) fn row_to_decision(row) -> Decision {
+        id: uuid "id",
+        workspace_id: uuid "workspace_id",
+        thread_id: opt_uuid "thread_id",
+        title: str "title",
+        content: str "content",
+        status: custom "status" => {
+            let s: String = row.try_get::<String, _>("status")?;
+            match s.as_str() {
+                "active" => DecisionStatus::Active,
+                other => return Err(crate::error::Error::Internal(format!("invalid decision status: {other}")))
+            }
+        },
+        tags: json_array "tags",
+        created_at: time "created_at",
+        updated_at: time "updated_at",
+    }
 }

@@ -14,23 +14,18 @@ impl SqliteStore {
         let thread = self.get_thread_impl(workspace_id, thread_name).await?;
         let thread_id = thread.id;
 
-        let memories = self
-            .load_memories_impl(
+        let (memories, decisions, recent_sessions, recent_activity) = tokio::try_join!(
+            self.load_memories_impl(
                 workspace_id,
                 crate::store::MemoryFilters {
                     thread_id: Some(thread_id),
                     ..Default::default()
                 },
-            )
-            .await?;
-
-        let decisions = self
-            .list_decisions_impl(workspace_id, Some(thread_id), None)
-            .await?;
-
-        let recent_sessions = self.fetch_thread_sessions(workspace_id, thread_id).await?;
-
-        let recent_activity = self.fetch_thread_activity(workspace_id, thread_id).await?;
+            ),
+            self.list_decisions_impl(workspace_id, Some(thread_id), None),
+            self.fetch_thread_sessions(workspace_id, thread_id),
+            self.fetch_thread_activity(workspace_id, thread_id),
+        )?;
 
         Ok(ThreadContext {
             thread,
@@ -47,30 +42,24 @@ impl SqliteStore {
         tags: Vec<String>,
         since: Option<DateTime<Utc>>,
     ) -> Result<RecallResult> {
-        let memories = self
-            .load_memories_impl(
+        let (memories, decisions, activity) = tokio::try_join!(
+            self.load_memories_impl(
                 workspace_id,
                 crate::store::MemoryFilters {
                     tags: Some(tags.clone()),
                     ..Default::default()
                 },
-            )
-            .await?;
-
-        let decisions = self
-            .list_decisions_impl(workspace_id, None, Some(tags))
-            .await?;
-
-        let activity = self
-            .list_activity_impl(
+            ),
+            self.list_decisions_impl(workspace_id, None, Some(tags)),
+            self.list_activity_impl(
                 workspace_id,
                 crate::store::ActivityFilters {
                     since,
                     limit: 50,
                     ..Default::default()
                 },
-            )
-            .await?;
+            ),
+        )?;
 
         Ok(RecallResult {
             memories,
@@ -85,19 +74,13 @@ impl SqliteStore {
     ) -> Result<WorkspaceOverview> {
         let workspace = self.get_workspace_impl(workspace_id).await?;
 
-        let active_threads = self
-            .list_threads_impl(workspace_id, Some(ThreadStatus::Active))
-            .await?;
-
-        let recent_memories = self
-            .load_memories_impl(workspace_id, crate::store::MemoryFilters::default())
-            .await?;
-
-        let recent_decisions = self.list_decisions_impl(workspace_id, None, None).await?;
-
-        let active_agents = self.list_agents_impl(workspace_id).await?;
-
-        let recent_sessions = self.fetch_recent_sessions(workspace_id, 10).await?;
+        let (active_threads, recent_memories, recent_decisions, active_agents, recent_sessions) = tokio::try_join!(
+            self.list_threads_impl(workspace_id, Some(ThreadStatus::Active)),
+            self.load_memories_impl(workspace_id, crate::store::MemoryFilters::default()),
+            self.list_decisions_impl(workspace_id, None, None),
+            self.list_agents_impl(workspace_id),
+            self.fetch_recent_sessions(workspace_id, 10),
+        )?;
 
         Ok(WorkspaceOverview {
             workspace,
