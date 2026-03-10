@@ -3,6 +3,7 @@ use std::io::Write;
 
 use crate::common::truncate_with_ellipsis;
 use crate::mcp::McpRegistry;
+use crate::render::Renderer;
 use crate::tools::BuiltinTool;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -42,6 +43,7 @@ pub struct ToolPermissionGate {
     mode: PermissionMode,
     session_allowed: HashSet<String>,
     interactive: bool,
+    renderer: Renderer,
 }
 
 impl ToolPermissionGate {
@@ -50,7 +52,12 @@ impl ToolPermissionGate {
             mode,
             session_allowed: HashSet::new(),
             interactive,
+            renderer: Renderer::new(),
         }
+    }
+
+    pub fn renderer(&self) -> &Renderer {
+        &self.renderer
     }
 
     /// Resolve the effective permission mode: explicit > heuristic (tty check).
@@ -100,6 +107,7 @@ impl ToolPermissionGate {
 
     fn prompt_user(&mut self, tool_name: &str, args: &serde_json::Value) -> PermissionDecision {
         let preview = tool_preview(tool_name, args);
+        let diff_section = compute_preview_diff(tool_name, args);
 
         let border_len = 40.max(tool_name.len() + 4);
         let top = format!(
@@ -109,9 +117,14 @@ impl ToolPermissionGate {
         );
         let bottom = format!("└{}", "─".repeat(border_len - 1));
 
-        eprint!(
-            "\n{top}\n│ {preview}\n{bottom}\n  [y] Allow once  [a] Allow for session  [n] Deny: "
-        );
+        eprint!("\n{top}\n│ {preview}");
+        if let Some((path, old, new)) = diff_section {
+            let diff = self.renderer.render_diff(&path, &old, &new);
+            for line in diff.lines() {
+                eprint!("\n│ {line}");
+            }
+        }
+        eprint!("\n{bottom}\n  [y] Allow once  [a] Allow for session  [n] Deny: ");
         let _ = std::io::stderr().flush();
 
         let response = read_tty_char();
@@ -147,6 +160,34 @@ fn tool_preview(tool_name: &str, args: &serde_json::Value) -> String {
             truncate_with_ellipsis(args["task"].as_str().unwrap_or("(unknown)"), 100)
         }
         _ => truncate_with_ellipsis(&args.to_string(), 120),
+    }
+}
+
+/// Compute a preview diff for edit/write tools by reading the current file content.
+/// Returns (path, old_content, new_content) if applicable.
+fn compute_preview_diff(
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> Option<(String, String, String)> {
+    match BuiltinTool::from_str(tool_name) {
+        Some(BuiltinTool::EditFile) => {
+            let path = args["path"].as_str()?;
+            let old_string = args["old_string"].as_str()?;
+            let new_string = args["new_string"].as_str()?;
+            let contents = std::fs::read_to_string(path).ok()?;
+            if contents.matches(old_string).count() != 1 {
+                return None;
+            }
+            let new_contents = contents.replacen(old_string, new_string, 1);
+            Some((path.to_string(), contents, new_contents))
+        }
+        Some(BuiltinTool::WriteFile) => {
+            let path = args["path"].as_str()?;
+            let new_content = args["content"].as_str().unwrap_or("");
+            let old_content = std::fs::read_to_string(path).unwrap_or_default();
+            Some((path.to_string(), old_content, new_content.to_string()))
+        }
+        _ => None,
     }
 }
 
@@ -283,5 +324,44 @@ mod tests {
             Ok(PermissionMode::Auto)
         );
         assert!(PermissionMode::from_str("invalid", true).is_err());
+    }
+
+    #[test]
+    fn compute_preview_diff_edit() {
+        use std::io::Write as _;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        write!(f, "fn main() {{\n    println!(\"hello\");\n}}\n").unwrap();
+        let path = f.path().to_str().unwrap();
+
+        let args = json!({
+            "path": path,
+            "old_string": "println!(\"hello\")",
+            "new_string": "println!(\"world\")"
+        });
+        let result = compute_preview_diff("edit_file", &args);
+        assert!(result.is_some());
+        let (p, old, new) = result.unwrap();
+        assert_eq!(p, path);
+        assert!(old.contains("hello"));
+        assert!(new.contains("world"));
+    }
+
+    #[test]
+    fn compute_preview_diff_write_new_file() {
+        let args = json!({
+            "path": "/tmp/nonexistent_prism_test_file_xyz.rs",
+            "content": "fn main() {}"
+        });
+        let result = compute_preview_diff("write_file", &args);
+        assert!(result.is_some());
+        let (_, old, new) = result.unwrap();
+        assert!(old.is_empty());
+        assert_eq!(new, "fn main() {}");
+    }
+
+    #[test]
+    fn compute_preview_diff_unrelated_tool() {
+        let args = json!({"command": "ls"});
+        assert!(compute_preview_diff("bash", &args).is_none());
     }
 }

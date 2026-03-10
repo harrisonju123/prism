@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
-use gpui::{App, Global};
+use gpui::{App, Global, WeakEntity};
 use uglyhat::model::{ActivityEntry, AgentSession, AgentStatus, CheckinContext, Memory, Thread, WorkspaceOverview};
 use uglyhat::store::sqlite::SqliteStore;
 use uglyhat::store::{ActivityFilters, Store};
@@ -84,28 +84,23 @@ impl UglyhatHandle {
         self.workspace_id
     }
 
+    fn run<F, T>(&self, f: F) -> Result<T>
+    where
+        F: std::future::Future<Output = std::result::Result<T, uglyhat::error::Error>>,
+    {
+        self.runtime.block_on(f).map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
     pub fn get_workspace_overview(&self) -> Result<WorkspaceOverview> {
-        let store = self.store.clone();
-        let wid = self.workspace_id;
-        self.runtime.block_on(async move {
-            store.get_workspace_overview(wid).await.map_err(|e| anyhow::anyhow!("{e}"))
-        })
+        self.run(self.store.get_workspace_overview(self.workspace_id))
     }
 
     pub fn list_activity(&self, filters: ActivityFilters) -> Result<Vec<ActivityEntry>> {
-        let store = self.store.clone();
-        let wid = self.workspace_id;
-        self.runtime.block_on(async move {
-            store.list_activity(wid, filters).await.map_err(|e| anyhow::anyhow!("{e}"))
-        })
+        self.run(self.store.list_activity(self.workspace_id, filters))
     }
 
     pub fn list_agents(&self) -> Result<Vec<AgentStatus>> {
-        let store = self.store.clone();
-        let wid = self.workspace_id;
-        self.runtime.block_on(async move {
-            store.list_agents(wid).await.map_err(|e| anyhow::anyhow!("{e}"))
-        })
+        self.run(self.store.list_agents(self.workspace_id))
     }
 
     pub fn checkin(
@@ -114,9 +109,9 @@ impl UglyhatHandle {
         capabilities: Vec<String>,
         thread_id: Option<Uuid>,
     ) -> Result<CheckinContext> {
+        let name = name.to_string();
         let store = self.store.clone();
         let wid = self.workspace_id;
-        let name = name.to_string();
         self.runtime.block_on(async move {
             store
                 .checkin(wid, &name, capabilities, thread_id)
@@ -133,10 +128,10 @@ impl UglyhatHandle {
         files_touched: Vec<String>,
         next_steps: Vec<String>,
     ) -> Result<AgentSession> {
-        let store = self.store.clone();
-        let wid = self.workspace_id;
         let name = name.to_string();
         let summary = summary.to_string();
+        let store = self.store.clone();
+        let wid = self.workspace_id;
         self.runtime.block_on(async move {
             store
                 .checkout(wid, &name, &summary, findings, files_touched, next_steps)
@@ -152,12 +147,12 @@ impl UglyhatHandle {
         thread_name: Option<&str>,
         tags: Vec<String>,
     ) -> Result<Memory> {
-        let store = self.store.clone();
-        let wid = self.workspace_id;
         let key = key.to_string();
         let value = value.to_string();
         let source = "zed-panel".to_string();
         let thread_name = thread_name.map(|s| s.to_string());
+        let store = self.store.clone();
+        let wid = self.workspace_id;
         self.runtime.block_on(async move {
             let thread_id = if let Some(ref tn) = thread_name {
                 store.get_thread(wid, tn).await.ok().map(|t| t.id)
@@ -177,10 +172,10 @@ impl UglyhatHandle {
         description: &str,
         tags: Vec<String>,
     ) -> Result<Thread> {
-        let store = self.store.clone();
-        let wid = self.workspace_id;
         let name = name.to_string();
         let description = description.to_string();
+        let store = self.store.clone();
+        let wid = self.workspace_id;
         self.runtime.block_on(async move {
             store
                 .create_thread(wid, &name, &description, tags)
@@ -188,6 +183,19 @@ impl UglyhatHandle {
                 .map_err(|e| anyhow::anyhow!("{e}"))
         })
     }
+}
+
+/// Helper to extract an `UglyhatHandle` from a `WeakEntity` context.
+/// Use from within `cx.spawn(async move |this, cx| { ... })` closures.
+pub fn get_uglyhat_handle<T: 'static>(
+    this: &WeakEntity<T>,
+    cx: &mut gpui::AsyncApp,
+) -> Option<UglyhatHandle> {
+    this.update(cx, |_, cx| {
+        cx.try_global::<UglyhatService>().map(|svc| svc.handle())
+    })
+    .ok()
+    .flatten()
 }
 
 fn find_config(workspace_root: &Path) -> Option<PathBuf> {

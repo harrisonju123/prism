@@ -42,6 +42,18 @@ pub struct AgentStatus {
     pub last_checkin: Option<String>,
 }
 
+impl From<uglyhat::model::AgentStatus> for AgentStatus {
+    fn from(a: uglyhat::model::AgentStatus) -> Self {
+        Self {
+            name: a.name,
+            session_open: a.session_open,
+            current_task_name: a.current_thread,
+            current_task_id: None,
+            last_checkin: a.last_checkin.map(|t| t.to_rfc3339()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SessionEntry {
     pub id: String,

@@ -1,4 +1,4 @@
-use crate::service::UglyhatService;
+use crate::service::get_uglyhat_handle;
 use crate::types::{
     uh_binary, AgentStatus, DependencyInfo, StatusCount, TaskContext, TaskSummary, WorkspaceContext,
 };
@@ -180,9 +180,7 @@ impl TaskBoardPanel {
         cx.notify();
 
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
-            let handle = this.update(cx, |_, cx| {
-                cx.try_global::<UglyhatService>().map(|svc| svc.handle())
-            }).ok().flatten();
+            let handle = get_uglyhat_handle(&this, cx);
 
             let context_result = cx
                 .background_spawn({
@@ -192,7 +190,6 @@ impl TaskBoardPanel {
                             anyhow::bail!("uglyhat service not available");
                         };
                         let overview = handle.get_workspace_overview()?;
-                        // Map WorkspaceOverview → WorkspaceContext for panel compatibility
                         let ctx = WorkspaceContext {
                             workspace: crate::types::WorkspaceInfo {
                                 name: overview.workspace.name.clone(),
@@ -202,13 +199,7 @@ impl TaskBoardPanel {
                             active_agents: overview
                                 .active_agents
                                 .into_iter()
-                                .map(|a| AgentStatus {
-                                    name: a.name,
-                                    session_open: a.session_open,
-                                    current_task_name: a.current_thread.clone(),
-                                    current_task_id: None,
-                                    last_checkin: a.last_checkin.map(|t| t.to_rfc3339()),
-                                })
+                                .map(AgentStatus::from)
                                 .collect(),
                             stale_tasks: Vec::new(),
                         };
@@ -294,9 +285,7 @@ impl TaskBoardPanel {
             return;
         };
         self.checkin_task = Some(cx.spawn(async move |this, cx| {
-            let handle = this.update(cx, |_, cx| {
-                cx.try_global::<UglyhatService>().map(|svc| svc.handle())
-            }).ok().flatten();
+            let handle = get_uglyhat_handle(&this, cx);
             let result = cx
                 .background_spawn(async move {
                     let Some(handle) = handle else {
@@ -324,9 +313,7 @@ impl TaskBoardPanel {
             return;
         };
         self.checkin_task = Some(cx.spawn(async move |this, cx| {
-            let handle = this.update(cx, |_, cx| {
-                cx.try_global::<UglyhatService>().map(|svc| svc.handle())
-            }).ok().flatten();
+            let handle = get_uglyhat_handle(&this, cx);
             let result = cx
                 .background_spawn(async move {
                     let Some(handle) = handle else {
