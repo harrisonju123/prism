@@ -84,6 +84,11 @@ pub async fn run_interactive(
             break;
         }
 
+        // Show any background task completions before the prompt (non-consuming)
+        for note in agent.poll_background_notifications() {
+            eprintln!("{note}");
+        }
+
         eprint!("> ");
         let _ = std::io::Write::flush(&mut std::io::stderr());
 

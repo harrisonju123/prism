@@ -158,6 +158,32 @@ impl Renderer {
         }
     }
 
+    // ── Background tasks ─────────────────────────────────────────────
+
+    pub fn background_task_spawned(&self, task_id: &str, description: &str) {
+        if self.colored {
+            eprintln!(
+                "{}[bg]{} spawned {task_id}: {description}",
+                SetForegroundColor(Color::Cyan),
+                ResetColor,
+            );
+        } else {
+            eprintln!("[bg] spawned {task_id}: {description}");
+        }
+    }
+
+    pub fn background_task_complete(&self, task_id: &str, description: &str, elapsed_secs: f64) {
+        if self.colored {
+            eprintln!(
+                "{}[bg]{} completed {task_id}: {description} ({elapsed_secs:.1}s)\x07",
+                SetForegroundColor(Color::Green),
+                ResetColor,
+            );
+        } else {
+            eprintln!("[bg] completed {task_id}: {description} ({elapsed_secs:.1}s)\x07");
+        }
+    }
+
     // ── Session summary ─────────────────────────────────────────────
 
     pub fn session_summary(
