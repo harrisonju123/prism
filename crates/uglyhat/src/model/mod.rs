@@ -1,15 +1,30 @@
-mod enums;
-pub use enums::*;
-
-mod metrics;
-pub use metrics::AgentMetrics;
-
-mod sprint;
-pub use sprint::{Sprint, SprintVelocity};
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+// ---------------------------------------------------------------------------
+// Thread status
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThreadStatus {
+    Active,
+    Archived,
+}
+
+impl std::fmt::Display for ThreadStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ThreadStatus::Active => write!(f, "active"),
+            ThreadStatus::Archived => write!(f, "archived"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Core entities
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workspace {
@@ -17,206 +32,90 @@ pub struct Workspace {
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Initiative {
+pub struct Thread {
     pub id: Uuid,
     pub workspace_id: Uuid,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub workspace_name: String,
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
-    pub status: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<serde_json::Value>,
+    pub status: ThreadStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Epic {
+pub struct Memory {
     pub id: Uuid,
-    pub initiative_id: Uuid,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub initiative_name: String,
     pub workspace_id: Uuid,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub workspace_name: String,
-    pub name: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub description: String,
-    pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<serde_json::Value>,
+    pub thread_id: Option<Uuid>,
+    pub key: String,
+    pub value: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Task {
-    pub id: Uuid,
-    pub epic_id: Uuid,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub epic_name: String,
-    pub initiative_id: Uuid,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub initiative_name: String,
-    pub workspace_id: Uuid,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub workspace_name: String,
-    pub name: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub description: String,
-    pub status: TaskStatus,
-    pub priority: TaskPriority,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub assignee: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub domain_tags: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<serde_json::Value>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blocks: Vec<DependencyInfo>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blocked_by: Vec<DependencyInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Decision {
     pub id: Uuid,
+    pub workspace_id: Uuid,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_id: Option<Uuid>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub workspace_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub initiative_id: Option<Uuid>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub initiative_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub epic_id: Option<Uuid>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub epic_name: String,
+    pub thread_id: Option<Uuid>,
     pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub content: String,
     pub status: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Note {
-    pub id: Uuid,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_id: Option<Uuid>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub initiative_id: Option<Uuid>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub epic_id: Option<Uuid>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<Uuid>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub decision_id: Option<Uuid>,
-    pub title: String,
-    pub content: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<serde_json::Value>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct APIKey {
+pub struct Agent {
     pub id: Uuid,
     pub workspace_id: Uuid,
     pub name: String,
-    #[serde(skip_serializing)]
-    pub key_hash: String,
-    pub key_prefix: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_thread_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_checkin: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct InitiativeWithCounts {
+pub struct AgentSession {
     pub id: Uuid,
-    pub name: String,
+    pub agent_id: Uuid,
+    pub workspace_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<Uuid>,
+    pub started_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub description: String,
-    pub status: String,
-    pub epic_count: i64,
-    pub task_count: i64,
-    pub done_count: i64,
-    pub progress_pct: f64,
-    pub blocked_count: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskSummary {
-    pub id: Uuid,
-    pub name: String,
-    pub status: TaskStatus,
-    pub priority: TaskPriority,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub assignee: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub epic_name: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub initiative_name: String,
+    pub summary: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub domain_tags: Vec<String>,
+    pub findings: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files_touched: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub next_steps: Vec<String>,
     pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StatusCount {
-    pub status: TaskStatus,
-    pub count: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PriorityCount {
-    pub priority: TaskPriority,
-    pub count: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WorkspaceContext {
-    pub workspace: Workspace,
-    pub initiatives: Vec<InitiativeWithCounts>,
-    pub active_tasks: Vec<TaskSummary>,
-    pub recent_tasks: Vec<TaskSummary>,
-    pub decisions: Vec<Decision>,
-    pub tasks_by_status: Vec<StatusCount>,
-    pub tasks_by_priority: Vec<PriorityCount>,
-    pub blocked_tasks_count: i64,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub active_agents: Vec<AgentStatus>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub stale_tasks: Vec<TaskSummary>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct APIKeyWithRaw {
-    #[serde(flatten)]
-    pub api_key: APIKey,
-    pub key: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BootstrapResponse {
-    pub workspace: Workspace,
-    pub system_initiative_id: Uuid,
-    pub system_epic_id: Uuid,
-    pub api_key: APIKeyWithRaw,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -236,128 +135,79 @@ pub struct ActivityEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskDependency {
+pub struct Snapshot {
     pub id: Uuid,
-    pub blocking_task_id: Uuid,
-    pub blocked_task_id: Uuid,
     pub workspace_id: Uuid,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    pub content: serde_json::Value,
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DependencyInfo {
-    pub task_id: Uuid,
-    pub task_name: String,
-    pub status: TaskStatus,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Agent {
-    pub id: Uuid,
-    pub workspace_id: Uuid,
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub capabilities: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_checkin: Option<DateTime<Utc>>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
-}
+// ---------------------------------------------------------------------------
+// Composite read types
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentStatus {
     pub name: String,
     pub session_open: bool,
-    pub current_task_id: Option<Uuid>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub current_task_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_thread: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_checkin: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentSession {
-    pub id: Uuid,
-    pub agent_id: Uuid,
-    pub workspace_id: Uuid,
-    pub started_at: DateTime<Utc>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ended_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub summary: String,
-    pub created_at: DateTime<Utc>,
+pub struct ThreadContext {
+    pub thread: Thread,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub memories: Vec<Memory>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<Decision>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_sessions: Vec<AgentSession>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_activity: Vec<ActivityEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CheckinResponse {
+pub struct CheckinContext {
     pub agent: Agent,
     pub session: AgentSession,
-    pub assigned_tasks: Vec<TaskSummary>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub recent_activity: Vec<ActivityEntry>,
+    pub active_threads: Vec<Thread>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub global_memories: Vec<Memory>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_sessions: Vec<AgentSession>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub other_agents: Vec<AgentStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CheckoutRequest {
-    pub summary: String,
+pub struct RecallResult {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub memories: Vec<Memory>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<Decision>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub activity: Vec<ActivityEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CheckoutResponse {
-    pub session: AgentSession,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub completed_task: Option<TaskSummary>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskContext {
-    pub task: Task,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub initiative: Option<Initiative>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub epic: Option<Epic>,
+pub struct WorkspaceOverview {
+    pub workspace: Workspace,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sibling_tasks: Vec<TaskSummary>,
+    pub active_threads: Vec<Thread>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blocks: Vec<DependencyInfo>,
+    pub recent_memories: Vec<Memory>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blocked_by: Vec<DependencyInfo>,
+    pub recent_decisions: Vec<Decision>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub notes: Vec<Note>,
+    pub active_agents: Vec<AgentStatus>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub epic_decisions: Vec<Decision>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub initiative_decisions: Vec<Decision>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub recent_activity: Vec<ActivityEntry>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub handoffs: Vec<Handoff>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProgressInfo {
-    pub total_tasks: i64,
-    pub done_tasks: i64,
-    pub progress_pct: f64,
-    pub blocked_count: i64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Handoff {
-    pub id: Uuid,
-    pub task_id: Uuid,
-    pub workspace_id: Uuid,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub agent_name: String,
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub summary: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub findings: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub blockers: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub next_steps: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub artifacts: Option<serde_json::Value>,
-    pub created_at: DateTime<Utc>,
+    pub recent_sessions: Vec<AgentSession>,
 }

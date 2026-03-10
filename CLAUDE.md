@@ -1,6 +1,6 @@
 # PrisM — LLM Gateway + uglyhat Monorepo
 
-## Agent Workflow (multi-agent parallel execution)
+## Agent Workflow (multi-agent coordination)
 
 Each Claude Code session is an agent. Sessions auto checkin/checkout via hooks — no manual action needed at startup/shutdown.
 
@@ -10,12 +10,10 @@ Each Claude Code session is an agent. Sessions auto checkin/checkout via hooks �
 > Either prepend PATH or use the full path:
 > ```bash
 > export PATH="$HOME/.cargo/bin:$PATH"
-> # or alias for the session:
-> alias uh="$HOME/.cargo/bin/uh"
 > ```
-> The Claude Code hooks already do this automatically. If you see 401 / "invalid api key" errors, your shell PATH is wrong.
+> The Claude Code hooks already do this automatically.
 
-**Set your agent name for the worktree you're in (once per shell):**
+**Set your agent name (once per shell):**
 ```bash
 export UH_AGENT_NAME=claude-zed-surface   # matches your track/worktree branch
 ```
@@ -24,39 +22,44 @@ Default name if unset: `claude`.
 **Checkin happens automatically on first prompt. To do it manually:**
 ```bash
 ~/.cargo/bin/uh checkin --name $UH_AGENT_NAME --capabilities rust,api,zed
-# → shows your assigned tasks, other agents' current work, activity since last session
+# → returns active threads, global memories, recent sessions, other agents
 ```
 
-**Before starting any task:**
+**Organize work into threads (named context buckets):**
 ```bash
-~/.cargo/bin/uh next                                    # unblocked, unclaimed tasks (excludes in_progress)
-~/.cargo/bin/uh task claim <id> --name $UH_AGENT_NAME  # claim it — sets assignee + marks your current task
+~/.cargo/bin/uh thread create auth-refactor --desc "JWT auth migration" --tags auth,security
+~/.cargo/bin/uh thread list                         # active threads
+~/.cargo/bin/uh thread archive auth-refactor        # mark thread done
 ```
-`uh next` filters out `in_progress` tasks. Claim before you start so other agents see it taken.
 
-**When done with a task:**
+**Save knowledge that persists across sessions:**
 ```bash
-~/.cargo/bin/uh task update <id> --status done
-# checkout fires automatically on session end, or manually:
+~/.cargo/bin/uh remember "auth_approach" "Using JWT with refresh tokens" --thread auth-refactor
+~/.cargo/bin/uh forget "auth_approach"              # delete a memory
+~/.cargo/bin/uh memories --thread auth-refactor     # list memories for a thread
+```
+
+**Record decisions with rationale:**
+```bash
+~/.cargo/bin/uh decide "Use JWT" --content "Chose JWT over sessions because..." --thread auth-refactor
+```
+
+**Recall context mid-session:**
+```bash
+~/.cargo/bin/uh recall auth-refactor               # full thread context (memories, decisions, sessions)
+~/.cargo/bin/uh recall --tags auth,security        # memories + decisions by tag
+~/.cargo/bin/uh recall --since 2h                  # everything from last 2 hours
+```
+
+**Checkout when done:**
+```bash
 ~/.cargo/bin/uh checkout --name $UH_AGENT_NAME --summary "what was done"
-```
-
-**When blocked:**
-```bash
-~/.cargo/bin/uh task block <blocking-id> <blocked-id>
-~/.cargo/bin/uh report "<issue title>" --desc "..."
-~/.cargo/bin/uh handoff <task-id> --summary "..." --findings "..." --next-steps "..."
-```
-
-**Discovering new work:**
-```bash
-~/.cargo/bin/uh task create "<title>" --epic <epic-id> --priority high
 ```
 
 **See what all agents are doing:**
 ```bash
-~/.cargo/bin/uh agents          # roster: name, session open/idle, current task
-~/.cargo/bin/uh context         # full workspace overview including active agents
+~/.cargo/bin/uh agents          # roster: name, session open/idle, current thread
+~/.cargo/bin/uh context         # full workspace overview
 ```
 
 ---
@@ -83,7 +86,7 @@ make lint           # cargo clippy -- -W clippy::all
 make fmt            # cargo fmt
 make ci             # fmt + lint + test (full quality gate)
 make run-prism      # cargo run -p prism
-make run-uh         # cargo run -p uglyhat --bin uglyhat
+make run-uh         # cargo run -p uglyhat --bin uh
 make install-uh     # install uh CLI to ~/.cargo/bin
 make install-prism-cli  # install prism CLI to ~/.cargo/bin
 make docker-up      # docker compose up -d
@@ -125,18 +128,14 @@ crates/
 │       ├── proxy/               # Request forwarding, cost computation, SSE streaming
 │       ├── routing/             # Smart model routing (fitness scoring, policies)
 │       └── server/              # Axum router, CORS middleware
-└── uglyhat/             # AI-agent PM — HTTP API + CLI
+└── uglyhat/             # Context management system for AI agents
     ├── Cargo.toml
     └── src/
-        ├── main.rs              # Server binary (port 3001, UGLYHAT_ADDR/UGLYHAT_DB_PATH env)
-        ├── lib.rs               # Library root
-        ├── error.rs             # Error enum → HTTP status codes
-        ├── model/               # Domain types (Workspace, Initiative, Epic, Task, …)
-        ├── store/               # Store trait + SQLite implementation (45 async methods)
+        ├── lib.rs               # Library root (error, model, store)
+        ├── error.rs             # Error enum (NotFound, BadRequest, Conflict, Internal, Sqlx)
+        ├── model/mod.rs         # Domain types (Workspace, Thread, Memory, Decision, Agent, Session, Activity)
+        ├── store/               # Store trait (~19 async methods) + SQLite implementation
         │   └── sqlite/          # sqlx SQLite, WAL mode, schema.sql embedded via include_str!
-        ├── api/                 # Axum handlers (one file per entity)
-        ├── middleware/auth.rs   # X-API-Key / Bearer → workspace_id injection
-        ├── server/router.rs     # Public + protected route table
         └── bin/uh.rs            # CLI binary (clap derive, direct SQLite, JSON stdout)
 ```
 
@@ -196,7 +195,7 @@ tx.commit().await?;
 fetch_optional(...).await?.ok_or_else(|| Error::NotFound(id))
 ```
 
-Store trait has ~45 async methods — requires `#[async_trait]`. `RETURNING` clauses work with SQLite 3.35+.
+Store trait has ~19 async methods — requires `#[async_trait]`. `RETURNING` clauses work with SQLite 3.35+.
 
 ## Conventions
 
@@ -210,36 +209,55 @@ Store trait has ~45 async methods — requires `#[async_trait]`. `RETURNING` cla
 
 ## uglyhat CLI (uh)
 
-The `uh` binary (`~/.cargo/bin/uh`) operates in **local mode** (direct SQLite, no server) by default.
+The `uh` binary (`~/.cargo/bin/uh`) operates in **local mode** (direct SQLite, no server).
 **Always use `~/.cargo/bin/uh`** — the Homebrew `uh` at `/opt/homebrew/bin/uh` is an unrelated Go binary.
 
 ```bash
-uh init "Project Name"                    # bootstrap workspace → .uglyhat.json + .uglyhat.db
-uh context                                # workspace overview JSON
-uh next [--limit 5]                       # prioritized unblocked tasks
-uh report <title> [--desc --severity --source --tags]
-uh initiative create <name> [--desc]
-uh initiative list
-uh epic create <name> --initiative <id> [--desc]
-uh epic list --initiative <id>
-uh task create <name> --epic <id> [--desc --priority --assignee --tags --status]
-uh task get <id>
-uh task update <id> [--status --assignee --priority --name --desc]
-uh task claim <id> --name <agent>
-uh task deps <id>
-uh task block <blocking-id> <blocked-id>
-uh task context <id>                      # rich briefing with decisions, deps, activity
-uh tasks [--status --domain --assignee --unassigned]
-uh decision create <title> [--content --initiative --epic]
-uh decision list
-uh note <title> [--content --task-id]
+# Setup
+uh init <name>                                    # bootstrap workspace → .uglyhat.json + .uglyhat.db
+uh context                                        # workspace overview JSON
+
+# Threads (named context buckets — the core organizing primitive)
+uh thread create <name> [--desc --tags]           # start a new context thread
+uh thread list [--active --archived]              # list threads
+uh thread archive <name>                          # mark thread done
+
+# Memory (persistent facts + knowledge)
+uh remember <key> <value> [--thread --tags]       # save/upsert a memory (UNIQUE on workspace+key)
+uh forget <key>                                   # delete a memory
+uh memories [--thread --tags]                     # list memories
+
+# Decisions
+uh decide <title> [--content --thread --tags]     # record a decision with rationale
+uh decisions [--thread --tags]                    # list decisions
+
+# Context retrieval (the main agent interface)
+uh recall <thread-name>                           # full thread context (memories, decisions, sessions)
+uh recall --tags <tag1,tag2>                      # memories + decisions by tag
+uh recall --since 2h                              # everything recent (supports m/h/d)
+
+# Agent coordination
+uh checkin --name <agent> [--capabilities --thread]
+uh checkout --name <agent> [--summary --findings --files --next-steps]
+uh agents                                         # who's doing what
+
+# History
 uh activity [--since --actor --limit]
-uh checkin --name <agent> [--capabilities rust,api]
-uh checkout --name <agent> [--summary "..."]
-uh handoff <task-id> --summary "..." [--findings --blockers --next-steps]
+uh snapshot [--label]                             # capture point-in-time state
 ```
 
-Config: `.uglyhat.json` discovered by walking up from `$CWD`. `UH_AGENT_NAME` env sets agent name for handoffs.
+Config: `.uglyhat.json` discovered by walking up from `$CWD`. `UH_AGENT_NAME` env sets agent name.
+
+### Core entities (6)
+
+| Entity | Purpose |
+|---|---|
+| **Workspace** | Project-level scope. One per repo. |
+| **Thread** | Named context bucket. Groups related memories, decisions, sessions. |
+| **Memory** | Atomic fact/knowledge unit. Key-value with upsert on (workspace_id, key). |
+| **Decision** | Why a choice was made. Optionally attached to a thread. |
+| **Agent + Session** | Agent identity + session records (summary, findings, files_touched, next_steps). |
+| **Activity** | Event log. Mutations auto-log activity. |
 
 ## Syncing Zed Upstream
 

@@ -7,309 +7,114 @@ use uuid::Uuid;
 use crate::error::Result;
 use crate::model::*;
 
-pub struct BootstrapResult {
-    pub workspace: Workspace,
-    pub initiative_id: Uuid,
-    pub epic_id: Uuid,
-    pub api_key: APIKey,
-}
-
 #[derive(Debug, Default)]
-pub struct TaskFilters {
-    pub status: Option<TaskStatus>,
-    pub priority: Option<TaskPriority>,
-    pub domain: Option<String>,
-    pub assignee: Option<String>,
-    pub unassigned: Option<bool>,
+pub struct MemoryFilters {
+    pub thread_id: Option<Uuid>,
+    pub thread_name: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub global_only: bool,
 }
 
 #[derive(Debug, Default)]
 pub struct ActivityFilters {
     pub since: Option<DateTime<Utc>>,
     pub actor: Option<String>,
-    pub entity_type: Option<String>,
     pub limit: i64,
-}
-
-#[derive(Debug, Default)]
-pub struct HandoffFilters {
-    pub since: Option<DateTime<Utc>>,
-    pub agent: Option<String>,
 }
 
 #[async_trait]
 pub trait Store: Send + Sync {
-    // --- Workspace ---
-    async fn bootstrap_workspace(
-        &self,
-        name: &str,
-        description: &str,
-        key_hash: &str,
-        key_prefix: &str,
-    ) -> Result<BootstrapResult>;
-    async fn get_system_epic_id(&self, workspace_id: Uuid) -> Result<Uuid>;
-    async fn create_workspace(
-        &self,
-        name: &str,
-        description: &str,
-        metadata: Option<serde_json::Value>,
-    ) -> Result<Workspace>;
+    // --- Workspace (2) ---
+    async fn init_workspace(&self, name: &str, desc: &str) -> Result<Workspace>;
     async fn get_workspace(&self, id: Uuid) -> Result<Workspace>;
-    async fn list_workspaces(&self) -> Result<Vec<Workspace>>;
-    async fn update_workspace(
-        &self,
-        id: Uuid,
-        name: &str,
-        description: &str,
-        metadata: Option<serde_json::Value>,
-    ) -> Result<Workspace>;
-    async fn delete_workspace(&self, id: Uuid) -> Result<()>;
 
-    // --- Initiative ---
-    async fn create_initiative(
+    // --- Thread (4) ---
+    async fn create_thread(
         &self,
         workspace_id: Uuid,
         name: &str,
-        description: &str,
-        metadata: Option<serde_json::Value>,
-    ) -> Result<Initiative>;
-    async fn get_initiative(&self, id: Uuid) -> Result<Initiative>;
-    async fn list_initiatives_by_workspace(&self, workspace_id: Uuid) -> Result<Vec<Initiative>>;
-    async fn update_initiative(
-        &self,
-        id: Uuid,
-        name: &str,
-        description: &str,
-        status: &str,
-        metadata: Option<serde_json::Value>,
-    ) -> Result<Initiative>;
-    async fn delete_initiative(&self, id: Uuid) -> Result<()>;
-
-    // --- Epic ---
-    async fn create_epic(
-        &self,
-        initiative_id: Uuid,
-        name: &str,
-        description: &str,
-        metadata: Option<serde_json::Value>,
-    ) -> Result<Epic>;
-    async fn get_epic(&self, id: Uuid) -> Result<Epic>;
-    async fn list_epics_by_initiative(&self, initiative_id: Uuid) -> Result<Vec<Epic>>;
-    async fn update_epic(
-        &self,
-        id: Uuid,
-        name: &str,
-        description: &str,
-        status: &str,
-        metadata: Option<serde_json::Value>,
-    ) -> Result<Epic>;
-    async fn delete_epic(&self, id: Uuid) -> Result<()>;
-
-    // --- Task ---
-    async fn create_task(
-        &self,
-        epic_id: Uuid,
-        name: &str,
-        description: &str,
-        status: TaskStatus,
-        priority: TaskPriority,
-        assignee: &str,
-        domain_tags: Vec<String>,
-        metadata: Option<serde_json::Value>,
-    ) -> Result<Task>;
-    async fn get_task(&self, id: Uuid) -> Result<Task>;
-    async fn update_task(
-        &self,
-        id: Uuid,
-        name: &str,
-        description: &str,
-        status: TaskStatus,
-        priority: TaskPriority,
-        assignee: &str,
-        domain_tags: Vec<String>,
-        metadata: Option<serde_json::Value>,
-    ) -> Result<Task>;
-    async fn delete_task(&self, id: Uuid) -> Result<()>;
-    async fn list_tasks_by_epic(&self, epic_id: Uuid) -> Result<Vec<Task>>;
-    async fn list_tasks_by_workspace(
+        desc: &str,
+        tags: Vec<String>,
+    ) -> Result<Thread>;
+    async fn get_thread(&self, workspace_id: Uuid, name: &str) -> Result<Thread>;
+    async fn list_threads(
         &self,
         workspace_id: Uuid,
-        filters: TaskFilters,
-    ) -> Result<Vec<Task>>;
+        status: Option<ThreadStatus>,
+    ) -> Result<Vec<Thread>>;
+    async fn archive_thread(&self, workspace_id: Uuid, name: &str) -> Result<Thread>;
 
-    // --- Task Context ---
-    async fn get_task_context(&self, task_id: Uuid) -> Result<TaskContext>;
-
-    // --- Dependencies ---
-    async fn add_dependency(
-        &self,
-        blocking_task_id: Uuid,
-        blocked_task_id: Uuid,
-    ) -> Result<TaskDependency>;
-    async fn remove_dependency(&self, dep_id: Uuid) -> Result<()>;
-    async fn get_dependencies(
-        &self,
-        task_id: Uuid,
-    ) -> Result<(Vec<DependencyInfo>, Vec<DependencyInfo>)>;
-
-    // --- Activity ---
-    async fn log_activity(
+    // --- Memory (3) ---
+    async fn save_memory(
         &self,
         workspace_id: Uuid,
-        actor: &str,
-        action: &str,
-        entity_type: &str,
-        entity_id: Uuid,
+        key: &str,
+        value: &str,
+        thread_id: Option<Uuid>,
+        source: &str,
+        tags: Vec<String>,
+    ) -> Result<Memory>;
+    async fn load_memories(
+        &self,
+        workspace_id: Uuid,
+        filters: MemoryFilters,
+    ) -> Result<Vec<Memory>>;
+    async fn delete_memory(&self, workspace_id: Uuid, key: &str) -> Result<()>;
+
+    // --- Decision (2) ---
+    async fn save_decision(
+        &self,
+        workspace_id: Uuid,
+        title: &str,
+        content: &str,
+        thread_id: Option<Uuid>,
+        tags: Vec<String>,
+    ) -> Result<Decision>;
+    async fn list_decisions(
+        &self,
+        workspace_id: Uuid,
+        thread_id: Option<Uuid>,
+        tags: Option<Vec<String>>,
+    ) -> Result<Vec<Decision>>;
+
+    // --- Agent (3) ---
+    async fn checkin(
+        &self,
+        workspace_id: Uuid,
+        name: &str,
+        capabilities: Vec<String>,
+        thread_id: Option<Uuid>,
+    ) -> Result<CheckinContext>;
+    async fn checkout(
+        &self,
+        workspace_id: Uuid,
+        name: &str,
         summary: &str,
-        detail: Option<serde_json::Value>,
-    ) -> Result<()>;
-    async fn create_activity(
+        findings: Vec<String>,
+        files_touched: Vec<String>,
+        next_steps: Vec<String>,
+    ) -> Result<AgentSession>;
+    async fn list_agents(&self, workspace_id: Uuid) -> Result<Vec<AgentStatus>>;
+
+    // --- Context (2) ---
+    async fn recall_thread(&self, workspace_id: Uuid, thread_name: &str) -> Result<ThreadContext>;
+    async fn recall_by_tags(
         &self,
         workspace_id: Uuid,
-        actor: &str,
-        action: &str,
-        entity_type: &str,
-        entity_id: Uuid,
-        summary: &str,
-        detail: Option<serde_json::Value>,
-    ) -> Result<ActivityEntry>;
+        tags: Vec<String>,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<RecallResult>;
+
+    // --- Activity (1) ---
     async fn list_activity(
         &self,
         workspace_id: Uuid,
         filters: ActivityFilters,
     ) -> Result<Vec<ActivityEntry>>;
-    async fn list_activity_since(
-        &self,
-        workspace_id: Uuid,
-        since: DateTime<Utc>,
-        limit: i64,
-    ) -> Result<Vec<ActivityEntry>>;
 
-    // --- Decision ---
-    async fn create_decision(
-        &self,
-        workspace_id: Option<Uuid>,
-        initiative_id: Option<Uuid>,
-        epic_id: Option<Uuid>,
-        title: &str,
-        content: &str,
-        metadata: Option<serde_json::Value>,
-    ) -> Result<Decision>;
-    async fn get_decision(&self, id: Uuid) -> Result<Decision>;
-    async fn list_decisions_by_workspace(&self, workspace_id: Uuid) -> Result<Vec<Decision>>;
-    async fn update_decision(
-        &self,
-        id: Uuid,
-        title: &str,
-        content: &str,
-        status: &str,
-        metadata: Option<serde_json::Value>,
-    ) -> Result<Decision>;
-    async fn delete_decision(&self, id: Uuid) -> Result<()>;
+    // --- Snapshot (1) ---
+    async fn create_snapshot(&self, workspace_id: Uuid, label: &str) -> Result<Snapshot>;
 
-    // --- Note ---
-    async fn create_note(
-        &self,
-        workspace_id: Option<Uuid>,
-        initiative_id: Option<Uuid>,
-        epic_id: Option<Uuid>,
-        task_id: Option<Uuid>,
-        decision_id: Option<Uuid>,
-        title: &str,
-        content: &str,
-        metadata: Option<serde_json::Value>,
-    ) -> Result<Note>;
-    async fn get_note(&self, id: Uuid) -> Result<Note>;
-    async fn list_notes_by_parent(&self, parent_type: &str, parent_id: Uuid) -> Result<Vec<Note>>;
-    async fn update_note(
-        &self,
-        id: Uuid,
-        title: &str,
-        content: &str,
-        metadata: Option<serde_json::Value>,
-    ) -> Result<Note>;
-    async fn delete_note(&self, id: Uuid) -> Result<()>;
-
-    // --- Agent ---
-    async fn checkin_agent(
-        &self,
-        workspace_id: Uuid,
-        name: &str,
-        capabilities: Vec<String>,
-    ) -> Result<CheckinResponse>;
-    async fn checkout_agent(
-        &self,
-        workspace_id: Uuid,
-        agent_name: &str,
-        summary: &str,
-        complete_tasks: bool,
-    ) -> Result<CheckoutResponse>;
-    async fn list_agents(&self, workspace_id: Uuid) -> Result<Vec<Agent>>;
-    async fn list_agent_statuses(&self, workspace_id: Uuid) -> Result<Vec<AgentStatus>>;
-    async fn claim_task(&self, workspace_id: Uuid, task_id: Uuid, agent_name: &str)
-    -> Result<Task>;
-
-    // --- Handoff ---
-    async fn create_handoff(
-        &self,
-        task_id: Uuid,
-        agent_name: &str,
-        summary: &str,
-        findings: Vec<String>,
-        blockers: Vec<String>,
-        next_steps: Vec<String>,
-        artifacts: Option<serde_json::Value>,
-    ) -> Result<Handoff>;
-    async fn get_handoffs_by_task(&self, task_id: Uuid) -> Result<Vec<Handoff>>;
-    async fn list_handoffs_by_workspace(
-        &self,
-        workspace_id: Uuid,
-        filters: HandoffFilters,
-    ) -> Result<Vec<Handoff>>;
-    async fn list_handoffs_by_epic(&self, epic_id: Uuid) -> Result<Vec<Handoff>>;
-
-    // --- API Key ---
-    async fn create_api_key(
-        &self,
-        workspace_id: Uuid,
-        name: &str,
-        key_hash: &str,
-        key_prefix: &str,
-    ) -> Result<APIKey>;
-    async fn get_api_key_by_hash(&self, key_hash: &str) -> Result<APIKey>;
-    async fn list_api_keys_by_workspace(&self, workspace_id: Uuid) -> Result<Vec<APIKey>>;
-    async fn delete_api_key(&self, id: Uuid) -> Result<()>;
-
-    // --- Context ---
-    async fn get_workspace_context(&self, workspace_id: Uuid) -> Result<WorkspaceContext>;
-    async fn get_next_tasks(&self, workspace_id: Uuid, limit: i64) -> Result<Vec<TaskSummary>>;
-    async fn get_stale_tasks(&self, workspace_id: Uuid) -> Result<Vec<TaskSummary>>;
-
-    // --- Sprint ---
-    async fn create_sprint(
-        &self,
-        workspace_id: Uuid,
-        name: &str,
-        goal: &str,
-        start_date: Option<chrono::NaiveDate>,
-        end_date: Option<chrono::NaiveDate>,
-    ) -> Result<Sprint>;
-    async fn list_sprints(&self, workspace_id: Uuid) -> Result<Vec<Sprint>>;
-    async fn get_sprint(&self, id: Uuid) -> Result<Sprint>;
-    async fn close_sprint(&self, id: Uuid) -> Result<Sprint>;
-    async fn assign_task_to_sprint(&self, task_id: Uuid, sprint_id: Uuid) -> Result<()>;
-    async fn sprint_velocity(&self, sprint_id: Uuid) -> Result<SprintVelocity>;
-
-    // --- GitHub Sync ---
-    async fn upsert_task_by_github_id(
-        &self,
-        workspace_id: Uuid,
-        epic_id: Uuid,
-        github_issue_id: i64,
-        name: &str,
-        description: &str,
-    ) -> Result<Task>;
-
-    // --- Agent Metrics ---
-    async fn agent_metrics(&self, workspace_id: Uuid) -> Result<Vec<AgentMetrics>>;
+    // --- Overview (1) ---
+    async fn get_workspace_overview(&self, workspace_id: Uuid) -> Result<WorkspaceOverview>;
 }

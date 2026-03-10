@@ -30,6 +30,60 @@ impl ToolResult {
 /// Write-capable tool names (blocked in ReadOnly mode).
 const WRITE_TOOLS: &[&str] = &["write_file", "edit_file", "bash", "run_command"];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BuiltinTool {
+    ReadFile,
+    WriteFile,
+    EditFile,
+    ListDir,
+    Bash,
+    RunCommand,
+    GlobFiles,
+    GrepFiles,
+    WebFetch,
+    SaveMemory,
+    SpawnAgent,
+    Recall,
+}
+
+impl BuiltinTool {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "read_file" => Some(Self::ReadFile),
+            "write_file" => Some(Self::WriteFile),
+            "edit_file" => Some(Self::EditFile),
+            "list_dir" => Some(Self::ListDir),
+            "bash" => Some(Self::Bash),
+            "run_command" => Some(Self::RunCommand),
+            "glob_files" => Some(Self::GlobFiles),
+            "grep_files" => Some(Self::GrepFiles),
+            "web_fetch" => Some(Self::WebFetch),
+            "save_memory" => Some(Self::SaveMemory),
+            "spawn_agent" => Some(Self::SpawnAgent),
+            "recall" => Some(Self::Recall),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ReadFile => "read_file",
+            Self::WriteFile => "write_file",
+            Self::EditFile => "edit_file",
+            Self::ListDir => "list_dir",
+            Self::Bash => "bash",
+            Self::RunCommand => "run_command",
+            Self::GlobFiles => "glob_files",
+            Self::GrepFiles => "grep_files",
+            Self::WebFetch => "web_fetch",
+            Self::SaveMemory => "save_memory",
+            Self::SpawnAgent => "spawn_agent",
+            Self::Recall => "recall",
+        }
+    }
+}
+
 pub fn tool_definitions() -> Vec<Tool> {
     vec![
         make_tool(
@@ -128,6 +182,15 @@ pub fn tool_definitions() -> Vec<Tool> {
                 "cost_cap":     { "type": "number", "description": "Max cost in USD (optional)" },
                 "timeout_secs": { "type": "integer", "description": "Timeout in seconds (default 300)" }
             }, "required": ["task"] }),
+        ),
+        make_tool(
+            "recall",
+            "Load context from the uglyhat context store. Recall a thread by name or search by tags. Returns memories, decisions, and recent activity.",
+            json!({ "type": "object", "properties": {
+                "thread": { "type": "string", "description": "Thread name to recall (e.g. 'auth-refactor')" },
+                "tags":   { "type": "array", "items": { "type": "string" }, "description": "Tags to search for (returns matching memories + decisions)" },
+                "since":  { "type": "string", "description": "Duration like '2h', '30m', '1d' — returns everything since that time" }
+            } }),
         ),
     ]
 }
@@ -287,8 +350,34 @@ pub async fn dispatch(
 }
 
 async fn dispatch_inner(name: &str, args: &serde_json::Value, session_cwd: Option<&Path>) -> ToolResult {
+    // Computer tools are not in BuiltinTool — handle them first
     match name {
-        "read_file" => {
+        "screenshot" => {
+            let region = args.get("region");
+            return computer::screenshot(region).await;
+        }
+        "click" => {
+            let x = args["x"].as_i64().unwrap_or(0) as i32;
+            let y = args["y"].as_i64().unwrap_or(0) as i32;
+            return ToolResult::Text(computer::click(x, y).await);
+        }
+        "type_text" => {
+            let text = args["text"].as_str().unwrap_or("");
+            return ToolResult::Text(computer::type_text(text).await);
+        }
+        "key_press" => {
+            let key = args["key"].as_str().unwrap_or("");
+            let modifiers: Vec<String> = args["modifiers"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            return ToolResult::Text(computer::key_press(key, &modifiers).await);
+        }
+        _ => {}
+    }
+
+    match BuiltinTool::from_str(name) {
+        Some(BuiltinTool::ReadFile) => {
             let raw = args["path"].as_str().filter(|s| !s.is_empty());
             match raw {
                 Some(_) => {
@@ -300,7 +389,7 @@ async fn dispatch_inner(name: &str, args: &serde_json::Value, session_cwd: Optio
                 None => ToolResult::Text("error: path is required".to_string()),
             }
         }
-        "write_file" => {
+        Some(BuiltinTool::WriteFile) => {
             let raw = args["path"].as_str().filter(|s| !s.is_empty());
             match raw {
                 Some(_) => {
@@ -310,11 +399,11 @@ async fn dispatch_inner(name: &str, args: &serde_json::Value, session_cwd: Optio
                 None => ToolResult::Text("error: path is required".to_string()),
             }
         }
-        "list_dir" => {
+        Some(BuiltinTool::ListDir) => {
             let path = resolve_path(args["path"].as_str(), session_cwd);
             ToolResult::Text(files::list_dir(&path).await)
         }
-        "run_command" => {
+        Some(BuiltinTool::RunCommand) => {
             let cmd = args["command"].as_str().unwrap_or("");
             let raw_args: Vec<String> = args["args"]
                 .as_array()
@@ -328,13 +417,13 @@ async fn dispatch_inner(name: &str, args: &serde_json::Value, session_cwd: Optio
             let cwd = resolve_shell_cwd(args["cwd"].as_str(), session_cwd);
             ToolResult::Text(shell::run_command(cmd, &raw_args, timeout, cwd.as_deref()).await)
         }
-        "bash" => {
+        Some(BuiltinTool::Bash) => {
             let cmd = args["command"].as_str().unwrap_or("");
             let timeout = args["timeout_secs"].as_u64().unwrap_or(30).min(120);
             let cwd = resolve_shell_cwd(args["cwd"].as_str(), session_cwd);
             ToolResult::Text(shell::bash(cmd, timeout, cwd.as_deref()).await)
         }
-        "edit_file" => {
+        Some(BuiltinTool::EditFile) => {
             let raw = args["path"].as_str().filter(|s| !s.is_empty());
             match raw {
                 Some(_) => {
@@ -346,14 +435,14 @@ async fn dispatch_inner(name: &str, args: &serde_json::Value, session_cwd: Optio
                 None => ToolResult::Text("error: path is required".to_string()),
             }
         }
-        "glob_files" => {
+        Some(BuiltinTool::GlobFiles) => {
             let pattern = args["pattern"].as_str().unwrap_or("");
             let dir = resolve_path(args["dir"].as_str(), session_cwd);
             let max_results = args["max_results"].as_u64().unwrap_or(100) as usize;
             let sort_by = args["sort_by"].as_str();
             ToolResult::Text(search::glob_files(pattern, &dir, max_results, sort_by))
         }
-        "grep_files" => {
+        Some(BuiltinTool::GrepFiles) => {
             let pattern = args["pattern"].as_str().unwrap_or("");
             let dir = resolve_path(args["dir"].as_str(), session_cwd);
             let file_glob = args["file_glob"].as_str();
@@ -369,37 +458,16 @@ async fn dispatch_inner(name: &str, args: &serde_json::Value, session_cwd: Optio
                 context_lines,
             ))
         }
-        "web_fetch" => {
+        Some(BuiltinTool::WebFetch) => {
             let url = args["url"].as_str().unwrap_or("");
             ToolResult::Text(web::web_fetch(url).await)
         }
-        "screenshot" => {
-            let region = args.get("region");
-            computer::screenshot(region).await
-        }
-        "click" => {
-            let x = args["x"].as_i64().unwrap_or(0) as i32;
-            let y = args["y"].as_i64().unwrap_or(0) as i32;
-            ToolResult::Text(computer::click(x, y).await)
-        }
-        "type_text" => {
-            let text = args["text"].as_str().unwrap_or("");
-            ToolResult::Text(computer::type_text(text).await)
-        }
-        "key_press" => {
-            let key = args["key"].as_str().unwrap_or("");
-            let modifiers: Vec<String> = args["modifiers"]
-                .as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
-                .unwrap_or_default();
-            ToolResult::Text(computer::key_press(key, &modifiers).await)
-        }
-        "save_memory" | "spawn_agent" => {
+        Some(BuiltinTool::SaveMemory | BuiltinTool::SpawnAgent | BuiltinTool::Recall) => {
             // Intercepted before dispatch() in the agent loop; reaching here means
             // the caller invoked dispatch() directly without agent context.
             ToolResult::Text(format!("{{\"error\": \"tool '{name}' requires agent loop context\"}}"))
         }
-        other => ToolResult::Text(format!("unknown tool: {other}")),
+        None => ToolResult::Text(format!("unknown tool: {name}")),
     }
 }
 

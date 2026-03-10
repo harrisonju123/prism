@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use prism_cli::{
-    acp, agent::Agent, config::Config, mcp, permissions::PermissionMode, persona, session::Session,
+    acp, agent::Agent, config::Config, mcp, memory, permissions::PermissionMode, persona, session::Session,
 };
 use prism_client::PrismClient;
 
@@ -122,7 +122,7 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Acp { model } => {
             let mut config = Config::from_env()?;
             if let Some(m) = model {
-                config.prism_model = m;
+                config.model.model = m;
             }
             let mcp_registry = load_mcp_registry(&config).await;
             acp::run_acp_server(config, mcp_registry).await?;
@@ -149,40 +149,42 @@ async fn run(cli: Cli) -> Result<()> {
             }
 
             if let Some(m) = model {
-                config.prism_model = m;
+                config.model.model = m;
             }
             if let Some(t) = max_turns {
-                config.max_turns = t;
+                config.model.max_turns = t;
             }
             if let Some(c) = cost_cap {
-                config.max_cost_usd = Some(c);
+                config.model.max_cost_usd = Some(c);
             }
             if let Some(s) = system {
-                config.system_prompt = Some(s);
+                config.model.system_prompt = Some(s);
             }
             if let Some(pm) = permission_mode {
-                config.permission_mode = Some(pm);
+                config.extensions.permission_mode = Some(pm);
             }
-            let client = PrismClient::new(&config.prism_url).with_api_key(&config.prism_api_key);
+            let client =
+                PrismClient::new(&config.gateway.url).with_api_key(&config.gateway.api_key);
             let mcp_registry = load_mcp_registry(&config).await;
+            let memory = load_memory().await;
 
             if let Some(resume_flag) = resume {
                 // Resume a previous session
                 let id_prefix = resume_flag.unwrap_or_else(|| "last".to_string());
-                let session = Session::load_by_id_prefix(&config.sessions_dir, &id_prefix)?;
+                let session = Session::load_by_id_prefix(&config.session.sessions_dir, &id_prefix)?;
                 eprintln!(
                     "[resume] episode {}  {} turns so far",
                     session.episode_id.to_string()[..8].to_string(),
                     session.turns
                 );
-                let mut agent = Agent::from_session(client, config, session, mcp_registry);
+                let mut agent = Agent::from_session(client, config, session, mcp_registry, memory);
                 let task_str = task.as_deref().unwrap_or("");
                 agent.resume(task_str).await?;
             } else {
                 // New session
                 let task_str =
                     task.ok_or_else(|| anyhow::anyhow!("task is required for new sessions"))?;
-                let mut agent = Agent::new(client, config, &task_str, mcp_registry);
+                let mut agent = Agent::new(client, config, &task_str, mcp_registry, memory);
                 agent.run(&task_str).await?;
             }
         }
@@ -207,13 +209,15 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Commands::Models => {
             let config = Config::from_env()?;
-            let client = PrismClient::new(&config.prism_url).with_api_key(&config.prism_api_key);
+            let client =
+                PrismClient::new(&config.gateway.url).with_api_key(&config.gateway.api_key);
             let models = client.list_models().await?;
             println!("{}", serde_json::to_string_pretty(&models.data)?);
         }
         Commands::Health => {
             let config = Config::from_env()?;
-            let client = PrismClient::new(&config.prism_url).with_api_key(&config.prism_api_key);
+            let client =
+                PrismClient::new(&config.gateway.url).with_api_key(&config.gateway.api_key);
             let ok = client.health_check().await?;
             if ok {
                 println!("gateway healthy");
@@ -238,8 +242,8 @@ async fn run(cli: Cli) -> Result<()> {
             };
             let result = prism_cli::agent::spawn::spawn_agent(
                 spawn_config,
-                &config.prism_url,
-                &config.prism_api_key,
+                &config.gateway.url,
+                &config.gateway.api_key,
             )
             .await?;
             println!("{}", serde_json::to_string_pretty(&result)?);
@@ -290,8 +294,13 @@ async fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
+async fn load_memory() -> memory::MemoryManager {
+    let (store, workspace_id) = memory::open_context_store(None).await;
+    memory::MemoryManager::new(store, workspace_id)
+}
+
 async fn load_mcp_registry(config: &Config) -> Option<mcp::McpRegistry> {
-    match mcp::config::load_mcp_config(&config.mcp_config_path) {
+    match mcp::config::load_mcp_config(&config.extensions.mcp_config_path) {
         Ok(mcp_config) if !mcp_config.mcp_servers.is_empty() => {
             let registry = mcp::McpRegistry::connect_all(&mcp_config).await;
             if registry.is_empty() {

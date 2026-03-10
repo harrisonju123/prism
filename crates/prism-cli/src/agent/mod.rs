@@ -1,10 +1,10 @@
 pub mod spawn;
 
 use anyhow::{Result, anyhow};
-use dirs;
+use chrono::Utc;
 use futures::StreamExt;
 use prism_client::PrismClient;
-use prism_types::{ChatCompletionRequest, Message};
+use prism_types::{ChatCompletionRequest, Message, MessageRole};
 use serde_json::json;
 use std::collections::HashMap;
 use std::io::Write as _;
@@ -24,13 +24,50 @@ use crate::mcp::McpRegistry;
 use crate::memory::MemoryManager;
 use crate::permissions::{self, PermissionDecision, ToolPermissionGate};
 use crate::session::Session;
-use crate::tools;
+use crate::tools::{self, BuiltinTool};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinishReason {
+    Stop,
+    ToolCalls,
+}
+
+impl FinishReason {
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "stop" => Some(Self::Stop),
+            "tool_calls" => Some(Self::ToolCalls),
+            _ => {
+                tracing::warn!(finish_reason = s, "unknown finish_reason");
+                None
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentStopReason {
+    Stop,
+    CostCap,
+    Interrupt,
+    MaxTurns,
+}
+
+impl AgentStopReason {
+    fn to_session_str(self) -> &'static str {
+        match self {
+            Self::Stop => "stop",
+            Self::CostCap => "cost_cap",
+            Self::Interrupt => "interrupt",
+            Self::MaxTurns => "max_turns",
+        }
+    }
+}
 
 pub struct Agent {
     client: PrismClient,
     config: Config,
     session: Session,
-    messages: Vec<Message>,
     memory: MemoryManager,
     mcp_registry: Option<McpRegistry>,
     permission_gate: ToolPermissionGate,
@@ -44,19 +81,17 @@ impl Agent {
         config: Config,
         task: &str,
         mcp_registry: Option<McpRegistry>,
+        memory: MemoryManager,
     ) -> Self {
         let episode_id = Uuid::new_v4();
-        let session = Session::new(episode_id, task, &config.prism_model);
-        let memory_dir = crate::config::prism_home().join("memory");
-        let memory = MemoryManager::new(&memory_dir, config.memory_window_size);
-        let permission_gate = ToolPermissionGate::resolve(config.permission_mode);
+        let session = Session::new(episode_id, task, &config.model.model);
+        let permission_gate = ToolPermissionGate::resolve(config.extensions.permission_mode);
         let hook_runner = config.build_hook_runner();
         let compressor = config.build_compressor();
         Self {
             client,
             config,
             session,
-            messages: Vec::new(),
             memory,
             mcp_registry,
             permission_gate,
@@ -70,18 +105,15 @@ impl Agent {
         config: Config,
         session: Session,
         mcp_registry: Option<McpRegistry>,
+        memory: MemoryManager,
     ) -> Self {
-        let messages = session.messages.clone();
-        let memory_dir = crate::config::prism_home().join("memory");
-        let memory = MemoryManager::new(&memory_dir, config.memory_window_size);
-        let permission_gate = ToolPermissionGate::resolve(config.permission_mode);
+        let permission_gate = ToolPermissionGate::resolve(config.extensions.permission_mode);
         let hook_runner = config.build_hook_runner();
         let compressor = config.build_compressor();
         Self {
             client,
             config,
             session,
-            messages,
             memory,
             mcp_registry,
             permission_gate,
@@ -91,9 +123,9 @@ impl Agent {
     }
 
     pub async fn run(&mut self, task: &str) -> Result<()> {
-        tracing::info!(episode_id = %self.session.episode_id, model = %self.config.prism_model, "starting agent session");
+        tracing::info!(episode_id = %self.session.episode_id, model = %self.config.model.model, "starting agent session");
 
-        let memory_content = self.memory.load();
+        let memory_content = self.memory.load().await;
         let mcp_section = self
             .mcp_registry
             .as_ref()
@@ -101,15 +133,17 @@ impl Agent {
             .unwrap_or("");
 
         let full_system = build_system_prompt(
-            self.config.system_prompt.as_deref(),
+            self.config.model.system_prompt.as_deref(),
             &memory_content,
             "",
             mcp_section,
         );
 
-        self.messages.push(common::system_message(full_system));
-        self.messages.push(Message {
-            role: "user".into(),
+        self.session
+            .messages
+            .push(common::system_message(full_system));
+        self.session.messages.push(Message {
+            role: MessageRole::User,
             content: Some(json!(task)),
             name: None,
             tool_calls: None,
@@ -123,14 +157,14 @@ impl Agent {
     pub async fn resume(&mut self, task: &str) -> Result<()> {
         tracing::info!(
             episode_id = %self.session.episode_id,
-            model = %self.config.prism_model,
+            model = %self.config.model.model,
             turns_so_far = %self.session.turns,
             "resuming agent session"
         );
 
         if !task.is_empty() {
-            self.messages.push(Message {
-                role: "user".into(),
+            self.session.messages.push(Message {
+                role: MessageRole::User,
                 content: Some(json!(task)),
                 name: None,
                 tool_calls: None,
@@ -163,19 +197,20 @@ impl Agent {
         let mut total_completion: u32 = 0;
         let mut total_cost_usd: f64 = 0.0;
         let mut turns: u32 = 0;
-        let mut model_name = self.config.prism_model.clone();
-        let mut stop_reason: Option<String> = None;
+        let model_name = self.config.model.model.clone();
+        let mut stop_reason: Option<AgentStopReason> = None;
+        let tool_defs = tools::all_tool_definitions(self.mcp_registry.as_ref());
 
-        for _turn in 0..self.config.max_turns {
+        for _turn in 0..self.config.model.max_turns {
             if interrupt_count.load(Ordering::Relaxed) > 0 {
-                stop_reason = Some("interrupt".to_string());
+                stop_reason = Some(AgentStopReason::Interrupt);
                 break;
             }
 
             let req = ChatCompletionRequest {
-                model: self.config.prism_model.clone(),
-                messages: self.messages.clone(),
-                tools: Some(tools::all_tool_definitions_filtered(&self.config, self.mcp_registry.as_ref())),
+                model: self.config.model.model.clone(),
+                messages: self.session.messages.clone(),
+                tools: Some(tool_defs.clone()),
                 tool_choice: Some(json!("auto")),
                 ..Default::default()
             };
@@ -195,11 +230,11 @@ impl Agent {
 
             let mut content_buf = String::new();
             let mut tc_builders: HashMap<usize, ToolCallBuilder> = HashMap::new();
-            let mut finish_reason: Option<String> = None;
+            let mut finish_reason: Option<FinishReason> = None;
 
             while let Some(chunk_result) = stream.next().await {
                 if interrupt_count.load(Ordering::Relaxed) > 0 {
-                    stop_reason = Some("interrupt".to_string());
+                    stop_reason = Some(AgentStopReason::Interrupt);
                     break;
                 }
 
@@ -219,8 +254,8 @@ impl Agent {
                     accumulate_tool_call_deltas(tc_arr, &mut tc_builders);
                 }
 
-                if chunk.finish_reason.is_some() {
-                    finish_reason = chunk.finish_reason;
+                if let Some(ref fr) = chunk.finish_reason {
+                    finish_reason = FinishReason::from_str(fr);
                 }
 
                 if let Some(u) = &chunk.usage {
@@ -228,7 +263,6 @@ impl Agent {
                     turn_completion = u.completion_tokens;
                     total_prompt += u.prompt_tokens;
                     total_completion += u.completion_tokens;
-                    model_name = self.config.prism_model.clone();
 
                     let (in_rate, out_rate): (f64, f64) = match model_name.as_str() {
                         m if m.contains("claude-opus-4") => (5.50, 27.50),
@@ -264,25 +298,15 @@ impl Agent {
                 );
             }
 
-            if stop_reason.as_deref() == Some("interrupt") {
-                if !content_buf.is_empty() {
-                    self.messages.push(Message {
-                        role: "assistant".into(),
-                        content: Some(json!(content_buf)),
-                        name: None,
-                        tool_calls: None,
-                        tool_call_id: None,
-                        extra: Default::default(),
-                    });
-                }
+            if stop_reason == Some(AgentStopReason::Interrupt) {
                 break;
             }
 
             let tool_calls_vec = reconstruct_tool_calls(&tc_builders);
 
             // Push assistant message
-            self.messages.push(Message {
-                role: "assistant".into(),
+            self.session.messages.push(Message {
+                role: MessageRole::Assistant,
                 content: if content_buf.is_empty() {
                     None
                 } else {
@@ -294,63 +318,64 @@ impl Agent {
                 extra: Default::default(),
             });
 
-            // Update session and save after each turn
-            self.session.messages = self.messages.clone();
+            // Save after each turn
             self.session.turns = turns;
             self.session.updated_at = chrono::Utc::now().to_rfc3339();
-            if let Err(e) = self.session.save(&self.config.sessions_dir) {
+            if let Err(e) = self.session.save(&self.config.session.sessions_dir) {
                 tracing::warn!("failed to save session: {e}");
             }
 
             // Context compression (or FIFO fallback)
             if let Some(ref compressor) = self.compressor
-                && compressor
-                    .should_compress(self.messages.len(), self.config.max_session_messages)
+                && compressor.should_compress(
+                    self.session.messages.len(),
+                    self.config.session.max_session_messages,
+                )
             {
                 if let Some(compressed) = compressor
                     .compress(
                         &self.client,
-                        &self.messages,
-                        self.config.max_session_messages,
+                        &self.session.messages,
+                        self.config.session.max_session_messages,
                     )
                     .await
                 {
                     tracing::info!(
-                        before = self.messages.len(),
+                        before = self.session.messages.len(),
                         after = compressed.len(),
                         "context compressed"
                     );
-                    self.messages = compressed;
+                    self.session.messages = compressed;
                 } else {
                     tracing::info!("compression failed, falling back to FIFO trim");
                     compression::trim_messages_fifo(
-                        &mut self.messages,
-                        self.config.max_session_messages,
+                        &mut self.session.messages,
+                        self.config.session.max_session_messages,
                     );
                 }
             }
 
             // Check cost cap
-            if let Some(cap) = self.config.max_cost_usd
+            if let Some(cap) = self.config.model.max_cost_usd
                 && total_cost_usd >= cap
             {
                 eprintln!(
                     "\n[cost-cap] ${:.4} >= cap ${:.4} — stopping",
                     total_cost_usd, cap
                 );
-                stop_reason = Some("cost_cap".to_string());
+                stop_reason = Some(AgentStopReason::CostCap);
                 break;
             }
 
-            match finish_reason.as_deref() {
-                Some("stop") | None => {
+            match finish_reason {
+                Some(FinishReason::Stop) | None => {
                     if !content_buf.is_empty() && !content_buf.ends_with('\n') {
                         println!();
                     }
-                    stop_reason = finish_reason;
+                    stop_reason = Some(AgentStopReason::Stop);
                     break;
                 }
-                Some("tool_calls") => {
+                Some(FinishReason::ToolCalls) => {
                     for tc in tool_calls_vec.unwrap_or_default() {
                         let id = tc["id"].as_str().unwrap_or("").to_string();
                         let name = tc["function"]["name"].as_str().unwrap_or("");
@@ -363,8 +388,8 @@ impl Agent {
                         match self.hook_runner.run_pre_hooks(name, &args).await {
                             PreToolAction::Deny { message } => {
                                 eprintln!("[hook] {name}  denied: {message}");
-                                self.messages.push(Message {
-                                    role: "tool".into(),
+                                self.session.messages.push(Message {
+                                    role: MessageRole::Tool,
                                     content: Some(json!(format!("Hook denied: {message}"))),
                                     name: None,
                                     tool_calls: None,
@@ -388,8 +413,8 @@ impl Agent {
 
                         if decision == PermissionDecision::Deny {
                             eprintln!("[tool] {name}  permission denied");
-                            self.messages.push(Message {
-                                role: "tool".into(),
+                            self.session.messages.push(Message {
+                                role: MessageRole::Tool,
                                 content: Some(json!(permissions::PERMISSION_DENIED_MSG)),
                                 name: None,
                                 tool_calls: None,
@@ -400,53 +425,72 @@ impl Agent {
                         }
 
                         let t0 = std::time::Instant::now();
-                        // Execute the tool; save_memory and spawn_agent are intercepted here
-                        let (tool_content, byte_len) = if name == "save_memory" {
-                            let key = args["key"].as_str().unwrap_or("note").to_string();
-                            let value = args["value"].as_str().unwrap_or("").to_string();
-                            self.memory.append(key.clone(), value);
-                            let s = serde_json::json!({"saved": true, "key": key}).to_string();
-                            let len = s.len();
-                            (json!(s), len)
-                        } else if name == "spawn_agent" {
-                            let task = args["task"].as_str().unwrap_or("").to_string();
-                            let model = args["model"].as_str().map(str::to_string);
-                            let cost_cap = args["cost_cap"].as_f64();
-                            let timeout_secs = args["timeout_secs"].as_u64();
-                            let spawn_config = spawn::SpawnConfig {
-                                task,
-                                model,
-                                cost_cap,
-                                tools: None,
-                                timeout_secs,
-                            };
-                            let s = match spawn::spawn_agent(
-                                spawn_config,
-                                &self.config.prism_url,
-                                &self.config.prism_api_key,
-                            )
-                            .await
-                            {
-                                Ok(r) => {
-                                    serde_json::to_string(&r).unwrap_or_else(|_| r.summary.clone())
-                                }
-                                Err(e) => format!("{{\"status\":\"error\",\"summary\":\"{e}\"}}"),
-                            };
-                            let len = s.len();
-                            (json!(s), len)
-                        } else {
-                            match tools::dispatch(name, &args, &self.config, None, self.mcp_registry.as_ref()).await {
-                                tools::ToolResult::Text(s) => {
-                                    let s = truncate_tool_output(name, &s, self.config.max_tool_output);
-                                    let len = s.len();
-                                    (json!(s), len)
-                                }
-                                tools::ToolResult::Multimodal(v) => {
-                                    let len = v.to_string().len();
-                                    (v, len)
+                        // Execute the tool; save_memory, recall, and spawn_agent are intercepted here
+                        let (tool_content, byte_len) = match BuiltinTool::from_str(name) {
+                            Some(BuiltinTool::SaveMemory) => {
+                                let key = args["key"].as_str().unwrap_or("note").to_string();
+                                let value = args["value"].as_str().unwrap_or("").to_string();
+                                let s = match self.memory.save(&key, &value).await {
+                                    Ok(_) => {
+                                        serde_json::json!({"saved": true, "key": key}).to_string()
+                                    }
+                                    Err(e) => {
+                                        // Fall back to in-memory buffer
+                                        self.memory.append(key.clone(), value);
+                                        serde_json::json!({"saved": true, "key": key, "note": format!("buffered: {e}")}).to_string()
+                                    }
+                                };
+                                let len = s.len();
+                                (json!(s), len)
+                            }
+                            Some(BuiltinTool::Recall) => {
+                                let s = self.handle_recall(&args).await;
+                                let len = s.len();
+                                (json!(s), len)
+                            }
+                            Some(BuiltinTool::SpawnAgent) => {
+                                let task = args["task"].as_str().unwrap_or("").to_string();
+                                let model = args["model"].as_str().map(str::to_string);
+                                let cost_cap = args["cost_cap"].as_f64();
+                                let timeout_secs = args["timeout_secs"].as_u64();
+                                let spawn_config = spawn::SpawnConfig {
+                                    task,
+                                    model,
+                                    cost_cap,
+                                    tools: None,
+                                    timeout_secs,
+                                };
+                                let s = match spawn::spawn_agent(
+                                    spawn_config,
+                                    &self.config.gateway.url,
+                                    &self.config.gateway.api_key,
+                                )
+                                .await
+                                {
+                                    Ok(r) => serde_json::to_string(&r)
+                                        .unwrap_or_else(|_| r.summary.clone()),
+                                    Err(e) => {
+                                        format!("{{\"status\":\"error\",\"summary\":\"{e}\"}}")
+                                    }
+                                };
+                                let len = s.len();
+                                (json!(s), len)
+                            }
+                            _ => {
+                                match tools::dispatch(name, &args, &self.config, None, self.mcp_registry.as_ref()).await {
+                                    tools::ToolResult::Text(s) => {
+                                        let s = truncate_tool_output(name, &s, self.config.model.max_tool_output);
+                                        let len = s.len();
+                                        (json!(s), len)
+                                    }
+                                    tools::ToolResult::Multimodal(v) => {
+                                        let len = v.to_string().len();
+                                        (v, len)
+                                    }
                                 }
                             }
                         };
+
                         // Post-tool-use hooks
                         let tool_content = {
                             let text = tool_content.0.as_str().map(|s| s.to_string()).unwrap_or_else(|| tool_content.0.to_string());
@@ -462,7 +506,7 @@ impl Agent {
                         let elapsed_ms = t0.elapsed().as_millis();
 
                         let result_preview = {
-                            let s = tool_content.to_string();
+                            let s = tool_content.0.to_string();
                             common::truncate_with_ellipsis(s.trim_start(), 80)
                         };
                         eprintln!(
@@ -471,9 +515,9 @@ impl Agent {
                             byte_len
                         );
 
-                        self.messages.push(Message {
-                            role: "tool".into(),
-                            content: Some(tool_content),
+                        self.session.messages.push(Message {
+                            role: MessageRole::Tool,
+                            content: Some(tool_content.0),
                             name: None,
                             tool_calls: None,
                             tool_call_id: Some(id),
@@ -481,15 +525,11 @@ impl Agent {
                         });
                     }
                 }
-                Some("cost_cap") | Some("interrupt") => {
-                    break;
-                }
-                Some(other) => anyhow::bail!("unexpected finish_reason: {other}"),
             }
         }
 
-        // Flush any pending memory entries to disk
-        if let Err(e) = self.memory.flush() {
+        // Flush any pending memory entries
+        if let Err(e) = self.memory.flush().await {
             tracing::warn!("memory flush failed: {e}");
         }
 
@@ -506,7 +546,7 @@ impl Agent {
             "[session] episode {}",
             &self.session.episode_id.to_string()[..8]
         );
-        if stop_reason.as_deref() == Some("interrupt") {
+        if stop_reason == Some(AgentStopReason::Interrupt) {
             eprintln!(
                 "Resume with: prism run --resume {}",
                 &self.session.episode_id.to_string()[..8]
@@ -514,23 +554,68 @@ impl Agent {
         }
 
         // Final session update
-        self.session.messages = self.messages.clone();
         self.session.turns = turns;
         self.session.total_prompt_tokens = total_prompt;
         self.session.total_completion_tokens = total_completion;
         self.session.total_cost_usd = total_cost_usd;
-        self.session.stop_reason = stop_reason.clone();
+        self.session.stop_reason = stop_reason.map(|r| r.to_session_str().to_string());
         self.session.updated_at = chrono::Utc::now().to_rfc3339();
-        if let Err(e) = self.session.save(&self.config.sessions_dir) {
+        if let Err(e) = self.session.save(&self.config.session.sessions_dir) {
             tracing::warn!("failed to save session: {e}");
         }
 
-        match stop_reason.as_deref() {
-            Some("cost_cap") | Some("interrupt") | Some("stop") => Ok(()),
-            Some(_) => Ok(()),
-            None => anyhow::bail!("exceeded max_turns ({})", self.config.max_turns),
+        if stop_reason.is_none() {
+            self.session.stop_reason = Some(AgentStopReason::MaxTurns.to_session_str().to_string());
+            if let Err(e) = self.session.save(&self.config.session.sessions_dir) {
+                tracing::warn!("failed to save session: {e}");
+            }
+            anyhow::bail!("exceeded max_turns ({})", self.config.model.max_turns);
+        }
+        Ok(())
+    }
+
+    /// Handle the `recall` tool — loads context from uglyhat store.
+    async fn handle_recall(&self, args: &serde_json::Value) -> String {
+        use uglyhat::store::Store;
+
+        let Some(store) = self.memory.store() else {
+            return json!({"error": "no uglyhat context store available"}).to_string();
+        };
+        let Some(ws_id) = self.memory.workspace_id() else {
+            return json!({"error": "no workspace configured"}).to_string();
+        };
+
+        if let Some(thread_name) = args["thread"].as_str() {
+            match store.recall_thread(ws_id, thread_name).await {
+                Ok(ctx) => serde_json::to_string(&ctx)
+                    .unwrap_or_else(|e| json!({"error": format!("serialize: {e}")}).to_string()),
+                Err(e) => json!({"error": e.to_string()}).to_string(),
+            }
+        } else {
+            let tags: Vec<String> = args["tags"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let since = args["since"]
+                .as_str()
+                .and_then(|s| parse_duration_str(s).ok().map(|d| Utc::now() - d));
+
+            match store.recall_by_tags(ws_id, tags, since).await {
+                Ok(result) => serde_json::to_string(&result)
+                    .unwrap_or_else(|e| json!({"error": format!("serialize: {e}")}).to_string()),
+                Err(e) => json!({"error": e.to_string()}).to_string(),
+            }
         }
     }
+}
+
+fn parse_duration_str(s: &str) -> Result<chrono::Duration> {
+    uglyhat::util::parse_duration(s).map_err(|e| anyhow::anyhow!(e))
 }
 
 #[cfg(test)]
