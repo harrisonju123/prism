@@ -32,7 +32,7 @@ pub fn init(cx: &mut App) {
                 .map(|wt| wt.read(cx).abs_path().to_path_buf());
             if let Some(root) = root {
                 if let Err(e) = UglyhatService::init(&root, cx) {
-                    eprintln!("uglyhat service init failed: {e}");
+                    log::warn!("uglyhat service init failed: {e}");
                 }
             }
         }

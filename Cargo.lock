@@ -4749,6 +4749,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
+name = "crossterm"
+version = "0.28.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "829d955a0bb380ef178a640b91779e3987da38c9aea133b20614cfed8cdea9c6"
+dependencies = [
+ "bitflags 2.11.0",
+ "parking_lot",
+ "rustix 0.38.44",
+]
+
+[[package]]
 name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14011,6 +14022,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "clap",
+ "crossterm",
  "dirs 4.0.0",
  "futures 0.3.32",
  "globset",
@@ -14020,6 +14032,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "similar",
  "tempfile",
  "tokio",
  "tokio-util",
@@ -19995,6 +20008,7 @@ dependencies = [
  "anyhow",
  "db",
  "gpui",
+ "log",
  "serde",
  "serde_json",
  "settings",

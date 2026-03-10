@@ -67,6 +67,7 @@ const HEADER_ROUTED_PROVIDER: &str = "x-prism-routed-provider";
 const HEADER_WAS_OVERRIDDEN: &str = "x-prism-was-overridden";
 const HEADER_ROUTING_REASON: &str = "x-prism-routing-reason";
 const HEADER_TASK_TYPE: &str = "x-prism-task-type";
+const HEADER_THREAD_ID: &str = "x-uglyhat-thread-id";
 
 impl RoutingInfo {
     fn from_headers(headers: &http_client::http::HeaderMap) -> Option<Self> {
@@ -714,7 +715,7 @@ impl LanguageModel for PrismLanguageModel {
     > {
         let mut extra_headers = Vec::new();
         if let Some(ref thread_id) = request.thread_id {
-            extra_headers.push(("x-uglyhat-thread-id".into(), thread_id.clone()));
+            extra_headers.push((HEADER_THREAD_ID.into(), thread_id.clone()));
         }
 
         if self.model.capabilities.chat_completions {

@@ -1,4 +1,4 @@
-use crate::service::UglyhatService;
+use crate::service::get_uglyhat_handle;
 use crate::types::{prism_binary, uh_binary, AgentStatus};
 use anyhow::Result;
 use db::kvp::KEY_VALUE_STORE;
@@ -204,9 +204,7 @@ impl AgentRosterPanel {
         cx.notify();
 
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
-            let handle = this.update(cx, |_, cx| {
-                cx.try_global::<UglyhatService>().map(|svc| svc.handle())
-            }).ok().flatten();
+            let handle = get_uglyhat_handle(&this, cx);
 
             let result = cx
                 .background_spawn(async move {
@@ -214,16 +212,8 @@ impl AgentRosterPanel {
                         anyhow::bail!("uglyhat service not available");
                     };
                     let agents = handle.list_agents()?;
-                    let panel_agents: Vec<AgentStatus> = agents
-                        .into_iter()
-                        .map(|a| AgentStatus {
-                            name: a.name,
-                            session_open: a.session_open,
-                            current_task_name: a.current_thread.clone(),
-                            current_task_id: None,
-                            last_checkin: a.last_checkin.map(|t| t.to_rfc3339()),
-                        })
-                        .collect();
+                    let panel_agents: Vec<AgentStatus> =
+                        agents.into_iter().map(AgentStatus::from).collect();
                     anyhow::Ok(panel_agents)
                 })
                 .await;
@@ -287,9 +277,7 @@ impl AgentRosterPanel {
         let content = compose_text.trim().to_string();
 
         self.send_task = Some(cx.spawn(async move |this, cx| {
-            let handle = this.update(cx, |_, cx| {
-                cx.try_global::<UglyhatService>().map(|svc| svc.handle())
-            }).ok().flatten();
+            let handle = get_uglyhat_handle(&this, cx);
             let result = cx
                 .background_spawn(async move {
                     let Some(handle) = handle else {

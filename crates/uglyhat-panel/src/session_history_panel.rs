@@ -1,4 +1,4 @@
-use crate::service::UglyhatService;
+use crate::service::get_uglyhat_handle;
 use crate::types::SessionEntry;
 use anyhow::Result;
 use db::kvp::KEY_VALUE_STORE;
@@ -167,9 +167,7 @@ impl SessionHistoryPanel {
         cx.notify();
 
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
-            let handle = this.update(cx, |_, cx| {
-                cx.try_global::<UglyhatService>().map(|svc| svc.handle())
-            }).ok().flatten();
+            let handle = get_uglyhat_handle(&this, cx);
 
             let result: anyhow::Result<Vec<SessionEntry>> = cx
                 .background_spawn(async move {
