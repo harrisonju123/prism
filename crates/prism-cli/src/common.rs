@@ -65,6 +65,18 @@ pub fn system_message(prompt: String) -> Message {
     }
 }
 
+/// Build a user Message from the given content string.
+pub fn user_message(content: String) -> Message {
+    Message {
+        role: MessageRole::User,
+        content: Some(json!(content)),
+        name: None,
+        tool_calls: None,
+        tool_call_id: None,
+        extra: Default::default(),
+    }
+}
+
 // --- SSE tool call accumulation ---
 
 pub struct ToolCallBuilder {

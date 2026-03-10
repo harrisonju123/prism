@@ -488,33 +488,20 @@ impl Agent {
                     for ptc in prepared {
                         match BuiltinTool::from_str(&ptc.name) {
                             Some(BuiltinTool::Skill) => {
-                                let skill_name = ptc.args["name"].as_str().unwrap_or("").to_string();
-                                let skill_args = ptc.args["args"].as_str().unwrap_or("");
                                 let t0 = std::time::Instant::now();
-                                let result = match self.skill_registry.get(&skill_name) {
-                                    Some(skill) => {
-                                        let expanded = skill.expand(skill_args);
-                                        pending_skill_messages.push(expanded);
-                                        serde_json::json!({
-                                            "status": "ok",
-                                            "skill": skill_name,
-                                            "note": "Skill content has been injected as a follow-up message."
-                                        }).to_string()
-                                    }
-                                    None => {
-                                        let available = self.skill_registry.names();
-                                        serde_json::json!({
-                                            "error": format!("unknown skill: {skill_name}"),
-                                            "available_skills": available
-                                        }).to_string()
-                                    }
-                                };
+                                let exec = self.skill_registry.execute(
+                                    ptc.args["name"].as_str().unwrap_or(""),
+                                    ptc.args["args"].as_str().unwrap_or(""),
+                                );
+                                if let Some(content) = exec.injection {
+                                    pending_skill_messages.push(content);
+                                }
                                 outcomes.push(ToolOutcome::Result {
                                     index: ptc.index,
                                     id: ptc.id,
                                     name: ptc.name,
                                     args: ptc.args,
-                                    result,
+                                    result: exec.tool_result,
                                     elapsed_ms: t0.elapsed().as_millis(),
                                 });
                             }
@@ -687,14 +674,7 @@ impl Agent {
 
                     // Inject skill content as user messages after tool results
                     for skill_content in pending_skill_messages {
-                        self.session.messages.push(Message {
-                            role: MessageRole::User,
-                            content: Some(json!(skill_content)),
-                            name: None,
-                            tool_calls: None,
-                            tool_call_id: None,
-                            extra: Default::default(),
-                        });
+                        self.session.messages.push(common::user_message(skill_content));
                     }
                 }
             }
