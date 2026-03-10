@@ -1,6 +1,9 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
+use crate::compression::ContextCompressor;
+use crate::hooks::HookRunner;
+use crate::hooks::config::HooksConfig;
 use crate::permissions::PermissionMode;
 
 /// Returns `~/.prism`, the base directory for all prism-cli state.
@@ -60,6 +63,13 @@ pub struct Config {
     pub max_sessions: usize,
     pub mcp_config_path: PathBuf,
     pub permission_mode: Option<PermissionMode>,
+    pub hooks_config_path: PathBuf,
+    /// Model for context compression summarization. None = disabled (FIFO only).
+    pub compression_model: Option<String>,
+    /// Trigger compression at this fraction of max_session_messages (default 0.7).
+    pub compression_threshold: f64,
+    /// Number of recent messages to preserve during compression (default 20).
+    pub compression_preserve_recent: usize,
 }
 
 impl Config {
@@ -138,12 +148,26 @@ impl Config {
 
         let mcp_config_path = crate::mcp::config::mcp_config_path();
 
-        let permission_mode = std::env::var("PRISM_PERMISSION_MODE")
+        let permission_mode = std::env::var("PRISM_PERMISSION_MODE").ok().and_then(|s| {
+            use clap::ValueEnum;
+            PermissionMode::from_str(&s, true).ok()
+        });
+
+        let hooks_config_path = std::env::var("PRISM_HOOKS_CONFIG")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| prism_home().join("hooks.json"));
+
+        let compression_model = std::env::var("PRISM_COMPRESSION_MODEL").ok();
+
+        let compression_threshold = std::env::var("PRISM_COMPRESSION_THRESHOLD")
             .ok()
-            .and_then(|s| {
-                use clap::ValueEnum;
-                PermissionMode::from_str(&s, true).ok()
-            });
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.7);
+
+        let compression_preserve_recent = std::env::var("PRISM_COMPRESSION_PRESERVE_RECENT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(20);
 
         Ok(Self {
             prism_url,
@@ -166,6 +190,24 @@ impl Config {
             max_sessions,
             mcp_config_path,
             permission_mode,
+            hooks_config_path,
+            compression_model,
+            compression_threshold,
+            compression_preserve_recent,
+        })
+    }
+
+    pub fn build_hook_runner(&self) -> HookRunner {
+        HookRunner::new(HooksConfig::load(&self.hooks_config_path))
+    }
+
+    pub fn build_compressor(&self) -> Option<ContextCompressor> {
+        self.compression_model.as_ref().map(|model| {
+            ContextCompressor::new(
+                model.clone(),
+                self.compression_threshold,
+                self.compression_preserve_recent,
+            )
         })
     }
 }
