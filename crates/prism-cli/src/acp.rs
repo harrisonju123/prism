@@ -142,17 +142,6 @@ impl PrismAgent {
         common::system_message(full_system)
     }
 
-    fn is_read_only(tool_name: &str) -> bool {
-        // MCP tools are treated as read-only — the MCP server handles its own safety
-        if McpRegistry::is_mcp_tool(tool_name) {
-            return true;
-        }
-        matches!(
-            tool_name,
-            "read_file" | "list_dir" | "glob_files" | "grep_files" | "web_fetch"
-        )
-    }
-
     /// Ask the client for permission before executing a write tool.
     /// Returns true if allowed, false if rejected/cancelled.
     async fn request_tool_permission(
@@ -398,7 +387,7 @@ impl PrismAgent {
                         .await;
 
                         // Request permission for write tools
-                        if !Self::is_read_only(name) {
+                        if !crate::permissions::is_read_only(name) {
                             let allowed = self
                                 .request_tool_permission(
                                     session_id,
@@ -433,8 +422,7 @@ impl PrismAgent {
                                         session.messages.push(Message {
                                             role: "tool".into(),
                                             content: Some(json!(
-                                                "Permission denied by user. Do not retry this tool call. \
-                                                 Inform the user what you wanted to do and ask how to proceed."
+                                                crate::permissions::PERMISSION_DENIED_MSG
                                             )),
                                             name: None,
                                             tool_calls: None,
@@ -522,13 +510,8 @@ fn tool_title(name: &str, args: &serde_json::Value) -> String {
         "edit_file" => format!("Edit {}", args["path"].as_str().unwrap_or("file")),
         "list_dir" => format!("List {}", args["path"].as_str().unwrap_or(".")),
         "bash" => {
-            let cmd = args["command"].as_str().unwrap_or("command");
-            let preview = if cmd.len() > 60 {
-                let boundary = cmd.floor_char_boundary(60);
-                format!("{}…", &cmd[..boundary])
-            } else {
-                cmd.to_string()
-            };
+            let preview =
+                common::truncate_with_ellipsis(args["command"].as_str().unwrap_or("command"), 60);
             format!("Run: {preview}")
         }
         "run_command" => format!("Run: {}", args["command"].as_str().unwrap_or("command")),

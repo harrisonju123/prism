@@ -4,5 +4,6 @@ pub mod common;
 pub mod config;
 pub mod mcp;
 pub mod memory;
+pub mod permissions;
 pub mod session;
 pub mod tools;

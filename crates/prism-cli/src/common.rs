@@ -147,6 +147,17 @@ pub fn reconstruct_tool_calls(
     )
 }
 
+// --- String truncation helpers ---
+
+/// Truncate a string to `limit` bytes at a char boundary, appending "…" if truncated.
+pub fn truncate_with_ellipsis(s: &str, limit: usize) -> String {
+    if s.len() <= limit {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..s.floor_char_boundary(limit)])
+    }
+}
+
 // --- Tool output truncation ---
 
 /// Truncate tool output to fit within `limit` bytes, preserving head and tail

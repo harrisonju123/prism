@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use prism_cli::{acp, agent::Agent, config::Config, mcp, session::Session};
+use prism_cli::{
+    acp, agent::Agent, config::Config, mcp, permissions::PermissionMode, session::Session,
+};
 use prism_client::PrismClient;
 
 #[derive(Parser)]
@@ -32,6 +34,8 @@ enum Commands {
             help = "Resume a previous session. Omit value for most recent; pass UUID prefix for specific."
         )]
         resume: Option<Option<String>>,
+        #[arg(long, value_enum)]
+        permission_mode: Option<PermissionMode>,
     },
     /// List available models via the PrisM gateway
     Models,
@@ -115,6 +119,7 @@ async fn run(cli: Cli) -> Result<()> {
             cost_cap,
             system,
             resume,
+            permission_mode,
         } => {
             let mut config = Config::from_env()?;
             if let Some(m) = model {
@@ -128,6 +133,9 @@ async fn run(cli: Cli) -> Result<()> {
             }
             if let Some(s) = system {
                 config.system_prompt = Some(s);
+            }
+            if let Some(pm) = permission_mode {
+                config.permission_mode = Some(pm);
             }
             let client = PrismClient::new(&config.prism_url).with_api_key(&config.prism_api_key);
             let mcp_registry = load_mcp_registry(&config).await;
