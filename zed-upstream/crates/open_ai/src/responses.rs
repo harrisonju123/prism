@@ -255,13 +255,18 @@ pub async fn stream_response(
     api_url: &str,
     api_key: &str,
     request: Request,
+    extra_headers: Vec<(String, String)>,
 ) -> Result<BoxStream<'static, Result<StreamEvent>>, RequestError> {
     let uri = format!("{api_url}/responses");
-    let request_builder = HttpRequest::builder()
+    let mut request_builder = HttpRequest::builder()
         .method(Method::POST)
         .uri(uri)
         .header("Content-Type", "application/json")
         .header("Authorization", format!("Bearer {}", api_key.trim()));
+
+    for (key, value) in &extra_headers {
+        request_builder = request_builder.header(key.as_str(), value.as_str());
+    }
 
     let is_streaming = request.stream;
     let request = request_builder

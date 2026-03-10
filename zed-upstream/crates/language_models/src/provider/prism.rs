@@ -505,6 +505,7 @@ impl PrismLanguageModel {
     fn stream_completion(
         &self,
         request: open_ai::Request,
+        extra_headers: Vec<(String, String)>,
         cx: &AsyncApp,
     ) -> BoxFuture<
         'static,
@@ -533,6 +534,7 @@ impl PrismLanguageModel {
                 &api_url,
                 &api_key,
                 request,
+                extra_headers,
             )
             .await?;
 
@@ -551,6 +553,7 @@ impl PrismLanguageModel {
     fn stream_response(
         &self,
         request: ResponseRequest,
+        extra_headers: Vec<(String, String)>,
         cx: &AsyncApp,
     ) -> BoxFuture<'static, Result<futures::stream::BoxStream<'static, Result<ResponsesStreamEvent>>>>
     {
@@ -571,6 +574,7 @@ impl PrismLanguageModel {
                 &api_url,
                 &api_key,
                 request,
+                extra_headers,
             )
             .await?;
             Ok(response)
@@ -708,6 +712,11 @@ impl LanguageModel for PrismLanguageModel {
             LanguageModelCompletionError,
         >,
     > {
+        let mut extra_headers = Vec::new();
+        if let Some(ref thread_id) = request.thread_id {
+            extra_headers.push(("x-uglyhat-thread-id".into(), thread_id.clone()));
+        }
+
         if self.model.capabilities.chat_completions {
             let request = into_open_ai(
                 request,
@@ -717,7 +726,7 @@ impl LanguageModel for PrismLanguageModel {
                 self.max_output_tokens(),
                 None,
             );
-            let completions = self.stream_completion(request, cx);
+            let completions = self.stream_completion(request, extra_headers, cx);
             async move {
                 let mapper = OpenAiEventMapper::new();
                 Ok(mapper.map_stream(completions.await?).boxed())
@@ -732,7 +741,7 @@ impl LanguageModel for PrismLanguageModel {
                 self.max_output_tokens(),
                 None,
             );
-            let completions = self.stream_response(request, cx);
+            let completions = self.stream_response(request, extra_headers, cx);
             async move {
                 let mapper = OpenAiResponseEventMapper::new();
                 Ok(mapper.map_stream(completions.await?).boxed())

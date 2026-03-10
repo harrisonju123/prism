@@ -903,6 +903,8 @@ pub struct Thread {
     ui_scroll_position: Option<gpui::ListOffset>,
     /// Weak references to running subagent threads for cancellation propagation
     running_subagents: Vec<WeakEntity<Thread>>,
+    /// Linked uglyhat thread ID for cost attribution and context tracking
+    uglyhat_thread_id: Option<String>,
 }
 
 impl Thread {
@@ -1019,11 +1021,20 @@ impl Thread {
             draft_prompt: None,
             ui_scroll_position: None,
             running_subagents: Vec::new(),
+            uglyhat_thread_id: None,
         }
     }
 
     pub fn id(&self) -> &acp::SessionId {
         &self.id
+    }
+
+    pub fn uglyhat_thread_id(&self) -> Option<&str> {
+        self.uglyhat_thread_id.as_deref()
+    }
+
+    pub fn set_uglyhat_thread_id(&mut self, id: String) {
+        self.uglyhat_thread_id = Some(id);
     }
 
     /// Returns true if this thread was imported from a shared thread.
@@ -1239,6 +1250,7 @@ impl Thread {
                 offset_in_item: gpui::px(sp.offset_in_item),
             }),
             running_subagents: Vec::new(),
+            uglyhat_thread_id: db_thread.uglyhat_thread_id,
         }
     }
 
@@ -1269,6 +1281,7 @@ impl Thread {
                     offset_in_item: lo.offset_in_item.as_f32(),
                 }
             }),
+            uglyhat_thread_id: self.uglyhat_thread_id.clone(),
         };
 
         cx.background_spawn(async move {
@@ -2657,7 +2670,7 @@ impl Thread {
         log::debug!("Request will include {} messages", messages.len());
 
         let request = LanguageModelRequest {
-            thread_id: Some(self.id.to_string()),
+            thread_id: self.uglyhat_thread_id.clone().or_else(|| Some(self.id.to_string())),
             prompt_id: Some(self.prompt_id.to_string()),
             intent: Some(completion_intent),
             messages,

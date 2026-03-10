@@ -268,6 +268,7 @@ impl OpenAiCompatibleLanguageModel {
                 &api_url,
                 &api_key,
                 request,
+                Vec::new(),
             );
             let response = request.await?;
             Ok(response)

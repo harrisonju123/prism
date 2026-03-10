@@ -29,6 +29,18 @@ actions!(
     ]
 );
 
+#[derive(Clone, Debug, Deserialize)]
+struct ThreadCost {
+    #[serde(default)]
+    total_cost_usd: f64,
+    #[serde(default)]
+    request_count: u64,
+    #[serde(default)]
+    total_input_tokens: u64,
+    #[serde(default)]
+    total_output_tokens: u64,
+}
+
 #[derive(Default)]
 enum ViewState {
     #[default]
@@ -48,6 +60,10 @@ pub struct SessionHistoryPanel {
     refresh_task: Option<Task<()>>,
     _auto_refresh: Task<()>,
     pending_serialization: Task<Option<()>>,
+    thread_cost: Option<ThreadCost>,
+    cost_task: Option<Task<()>>,
+    prism_api_url: Option<String>,
+    prism_api_key: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -81,6 +97,12 @@ impl SessionHistoryPanel {
                 refresh_task: None,
                 _auto_refresh: Task::ready(()),
                 pending_serialization: Task::ready(None),
+                thread_cost: None,
+                cost_task: None,
+                prism_api_url: std::env::var("PRISM_API_URL")
+                    .ok()
+                    .or_else(|| Some("http://localhost:3000".to_string())),
+                prism_api_key: std::env::var("PRISM_API_KEY").ok(),
             };
 
             let auto_refresh = cx.spawn(async move |this, cx| loop {
@@ -219,12 +241,58 @@ impl SessionHistoryPanel {
     }
 
     fn open_detail(&mut self, session: SessionEntry, cx: &mut Context<Self>) {
-        self.view_state = ViewState::Detail(session);
+        self.thread_cost = None;
+        self.view_state = ViewState::Detail(session.clone());
         cx.notify();
+        self.fetch_thread_cost(&session, cx);
+    }
+
+    fn fetch_thread_cost(&mut self, session: &SessionEntry, cx: &mut Context<Self>) {
+        let Some(api_url) = self.prism_api_url.clone() else {
+            return;
+        };
+        let Some(api_key) = self.prism_api_key.clone() else {
+            return;
+        };
+        // Use the session's task_name as a proxy for thread_id
+        let Some(thread_id) = session.task_name.clone() else {
+            return;
+        };
+
+        self.cost_task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_spawn(async move {
+                    let url = format!("{api_url}/v1/costs?thread_id={thread_id}");
+                    let output = std::process::Command::new("curl")
+                        .args([
+                            "-s",
+                            "-H",
+                            &format!("Authorization: Bearer {api_key}"),
+                            &url,
+                        ])
+                        .output()?;
+                    if !output.status.success() {
+                        anyhow::bail!("cost fetch failed");
+                    }
+                    let cost = serde_json::from_slice::<ThreadCost>(&output.stdout)?;
+                    anyhow::Ok(cost)
+                })
+                .await;
+            this.update(cx, |this, cx| {
+                this.cost_task = None;
+                if let Ok(cost) = result {
+                    this.thread_cost = Some(cost);
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
     }
 
     fn close_detail(&mut self, cx: &mut Context<Self>) {
         self.view_state = ViewState::List;
+        self.thread_cost = None;
+        self.cost_task = None;
         cx.notify();
     }
 
@@ -274,8 +342,9 @@ impl SessionHistoryPanel {
             )
     }
 
-    fn render_detail_view(session: &SessionEntry, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_detail_view(&self, session: &SessionEntry, cx: &mut Context<Self>) -> impl IntoElement {
         let session = session.clone();
+        let cost = self.thread_cost.clone();
 
         v_flex()
             .size_full()
@@ -350,7 +419,34 @@ impl SessionHistoryPanel {
                                     .color(Color::Muted),
                             )
                             .child(Label::new(session.summary).size(LabelSize::Small)),
-                    ),
+                    )
+                    .when_some(cost, |this, cost| {
+                        this.child(
+                            v_flex()
+                                .gap_0p5()
+                                .mt_2()
+                                .pt_2()
+                                .border_t_1()
+                                .border_color(cx.theme().colors().border)
+                                .child(
+                                    Label::new("Cost")
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted),
+                                )
+                                .child(
+                                    h_flex()
+                                        .gap_2()
+                                        .child(Label::new(format!("${:.4}", cost.total_cost_usd)).size(LabelSize::Small))
+                                        .child(Label::new(format!("{} requests", cost.request_count)).size(LabelSize::Small).color(Color::Muted)),
+                                )
+                                .child(
+                                    h_flex()
+                                        .gap_2()
+                                        .child(Label::new(format!("{} in", cost.total_input_tokens)).size(LabelSize::Small).color(Color::Muted))
+                                        .child(Label::new(format!("{} out", cost.total_output_tokens)).size(LabelSize::Small).color(Color::Muted)),
+                                ),
+                        )
+                    }),
             )
     }
 }
@@ -372,7 +468,7 @@ impl Render for SessionHistoryPanel {
                 .key_context("SessionHistory")
                 .track_focus(&self.focus_handle)
                 .size_full()
-                .child(Self::render_detail_view(&session, cx))
+                .child(self.render_detail_view(&session, cx))
                 .into_any_element();
         }
 
