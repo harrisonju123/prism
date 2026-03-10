@@ -1,6 +1,8 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
+use crate::permissions::PermissionMode;
+
 /// Returns `~/.prism`, the base directory for all prism-cli state.
 pub fn prism_home() -> PathBuf {
     dirs::home_dir()
@@ -57,6 +59,7 @@ pub struct Config {
     pub max_session_messages: usize,
     pub max_sessions: usize,
     pub mcp_config_path: PathBuf,
+    pub permission_mode: Option<PermissionMode>,
 }
 
 impl Config {
@@ -135,6 +138,13 @@ impl Config {
 
         let mcp_config_path = crate::mcp::config::mcp_config_path();
 
+        let permission_mode = std::env::var("PRISM_PERMISSION_MODE")
+            .ok()
+            .and_then(|s| {
+                use clap::ValueEnum;
+                PermissionMode::from_str(&s, true).ok()
+            });
+
         Ok(Self {
             prism_url,
             prism_api_key,
@@ -155,6 +165,7 @@ impl Config {
             max_session_messages,
             max_sessions,
             mcp_config_path,
+            permission_mode,
         })
     }
 }

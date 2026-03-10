@@ -19,6 +19,7 @@ use crate::common::{
 use crate::config::Config;
 use crate::mcp::McpRegistry;
 use crate::memory::MemoryManager;
+use crate::permissions::{self, PermissionDecision, ToolPermissionGate};
 use crate::session::Session;
 use crate::tools;
 
@@ -29,6 +30,7 @@ pub struct Agent {
     messages: Vec<Message>,
     memory: MemoryManager,
     mcp_registry: Option<McpRegistry>,
+    permission_gate: ToolPermissionGate,
 }
 
 impl Agent {
@@ -42,6 +44,7 @@ impl Agent {
         let session = Session::new(episode_id, task, &config.prism_model);
         let memory_dir = crate::config::prism_home().join("memory");
         let memory = MemoryManager::new(&memory_dir, config.memory_window_size);
+        let permission_gate = ToolPermissionGate::resolve(config.permission_mode);
         Self {
             client,
             config,
@@ -49,6 +52,7 @@ impl Agent {
             messages: Vec::new(),
             memory,
             mcp_registry,
+            permission_gate,
         }
     }
 
@@ -61,6 +65,7 @@ impl Agent {
         let messages = session.messages.clone();
         let memory_dir = crate::config::prism_home().join("memory");
         let memory = MemoryManager::new(&memory_dir, config.memory_window_size);
+        let permission_gate = ToolPermissionGate::resolve(config.permission_mode);
         Self {
             client,
             config,
@@ -68,6 +73,7 @@ impl Agent {
             messages,
             memory,
             mcp_registry,
+            permission_gate,
         }
     }
 
@@ -312,15 +318,25 @@ impl Agent {
                             .and_then(|s| serde_json::from_str(s).ok())
                             .unwrap_or(json!({}));
 
-                        let args_preview = {
-                            let s = args.to_string();
-                            if s.len() > 120 {
-                                format!("{}…", &s[..120.min(s.len())])
-                            } else {
-                                s
-                            }
-                        };
+                        let args_preview = common::truncate_with_ellipsis(&args.to_string(), 120);
                         eprintln!("[tool] {name}  args={args_preview}");
+
+                        // Permission check — blocks on TTY read when prompting,
+                        // which is intentional (we're waiting for user input)
+                        let decision = self.permission_gate.check_permission(name, &args);
+
+                        if decision == PermissionDecision::Deny {
+                            eprintln!("[tool] {name}  permission denied");
+                            self.messages.push(Message {
+                                role: "tool".into(),
+                                content: Some(json!(permissions::PERMISSION_DENIED_MSG)),
+                                name: None,
+                                tool_calls: None,
+                                tool_call_id: Some(id),
+                                extra: Default::default(),
+                            });
+                            continue;
+                        }
 
                         let t0 = std::time::Instant::now();
                         // Execute the tool; save_memory and spawn_agent are intercepted here
@@ -374,12 +390,7 @@ impl Agent {
 
                         let result_preview = {
                             let s = tool_content.to_string();
-                            let trimmed = s.trim_start().to_string();
-                            if trimmed.len() > 80 {
-                                format!("{}…", &trimmed[..80.min(trimmed.len())])
-                            } else {
-                                trimmed
-                            }
+                            common::truncate_with_ellipsis(s.trim_start(), 80)
                         };
                         eprintln!(
                             "[tool] {name}  {}ms  {} bytes  {result_preview}",
