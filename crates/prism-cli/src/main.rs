@@ -1,10 +1,11 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use prism_cli::{
-    acp, agent::Agent, config::Config, mcp, memory, permissions::PermissionMode, persona, session::Session,
-    skills::SkillRegistry,
+    acp, agent::Agent, config::Config, mcp, memory, permissions::PermissionMode, persona, repl,
+    session::Session, skills::SkillRegistry,
 };
 use prism_client::PrismClient;
+use std::io::IsTerminal;
 use std::sync::Arc;
 
 #[derive(Parser)]
@@ -40,6 +41,10 @@ enum Commands {
         resume: Option<Option<String>>,
         #[arg(long, value_enum)]
         permission_mode: Option<PermissionMode>,
+        #[arg(long, help = "Undo last assistant turn before resuming (requires --resume)")]
+        undo: bool,
+        #[arg(long, help = "Switch to branch N before resuming (requires --resume)")]
+        branch: Option<u32>,
     },
     /// List and manage agent personas
     Personas {
@@ -87,6 +92,8 @@ enum SessionsCmd {
     List,
     /// Delete a session by UUID prefix
     Rm { id_prefix: String },
+    /// Show branch points in a session
+    Branches { id_prefix: String },
 }
 
 fn main() {
@@ -140,6 +147,8 @@ async fn run(cli: Cli) -> Result<()> {
             persona: persona_name,
             resume,
             permission_mode,
+            undo,
+            branch,
         } => {
             let mut config = Config::from_env()?;
 
@@ -174,24 +183,40 @@ async fn run(cli: Cli) -> Result<()> {
             let cwd = std::env::current_dir().unwrap_or_default();
             let skill_registry = SkillRegistry::discover(&cwd);
 
+            if (undo || branch.is_some()) && resume.is_none() {
+                anyhow::bail!("--undo and --branch require --resume");
+            }
+
             if let Some(resume_flag) = resume {
                 // Resume a previous session
                 let id_prefix = resume_flag.unwrap_or_else(|| "last".to_string());
-                let session = Session::load_by_id_prefix(&config.session.sessions_dir, &id_prefix)?;
-                eprintln!(
-                    "[resume] episode {}  {} turns so far",
-                    session.episode_id.to_string()[..8].to_string(),
-                    session.turns
-                );
-                let mut agent = Agent::from_session(client, config, session, mcp_registry, memory, skill_registry);
-                let task_str = task.as_deref().unwrap_or("");
-                agent.resume(task_str).await?;
-            } else {
-                // New session
-                let task_str =
-                    task.ok_or_else(|| anyhow::anyhow!("task is required for new sessions"))?;
+                let mut session = Session::load_by_id_prefix(&config.session.sessions_dir, &id_prefix)?;
 
-                // Check for skill invocation via /prefix
+                if let Some(node_id) = branch {
+                    session.switch_branch(node_id);
+                    eprintln!("[branch] switched to branch at node {node_id}");
+                }
+
+                if undo {
+                    let removed = session.undo();
+                    eprintln!("[undo] removed {removed} messages (last assistant turn)");
+                }
+
+                if std::io::stdin().is_terminal() && task.is_none() {
+                    // TTY + resume + no explicit task → interactive mode
+                    repl::run_interactive(client, config, Some(session), mcp_registry, memory, skill_registry).await?;
+                } else {
+                    eprintln!(
+                        "[resume] episode {}  {} turns so far",
+                        &session.episode_id.to_string()[..8],
+                        session.turns
+                    );
+                    let mut agent = Agent::from_session(client, config, session, mcp_registry, memory, skill_registry);
+                    let task_str = task.as_deref().unwrap_or("");
+                    agent.resume(task_str).await?;
+                }
+            } else if let Some(task_str) = task {
+                // Explicit task → single-shot (expand skill if needed)
                 let task_str = if let Some((skill_name, skill_args)) = prism_cli::skills::parse_skill_invocation(&task_str) {
                     match skill_registry.get(skill_name) {
                         Some(skill) => {
@@ -211,6 +236,11 @@ async fn run(cli: Cli) -> Result<()> {
 
                 let mut agent = Agent::new(client, config, &task_str, mcp_registry, memory, skill_registry);
                 agent.run(&task_str).await?;
+            } else if std::io::stdin().is_terminal() {
+                // No task, TTY → interactive mode
+                repl::run_interactive(client, config, None, mcp_registry, memory, skill_registry).await?;
+            } else {
+                anyhow::bail!("task is required when stdin is not a terminal");
             }
         }
         Commands::Personas { cmd } => {
@@ -302,6 +332,23 @@ async fn run(cli: Cli) -> Result<()> {
                             s.total_cost_usd,
                             status
                         );
+                    }
+                }
+                SessionsCmd::Branches { id_prefix } => {
+                    let session = Session::load_by_id_prefix(&sessions_dir, &id_prefix)?;
+                    let tree = session.tree.as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("session has no conversation tree (v1 format)"))?;
+                    let points = tree.branch_points();
+                    if points.is_empty() {
+                        eprintln!("no branch points in session");
+                    } else {
+                        eprintln!("{:<10} {}", "NODE", "BRANCHES");
+                        for (parent_id, branches) in &points {
+                            let branch_desc: Vec<String> = branches.iter().map(|b| {
+                                format!("node {} ({}, depth {})", b.node_id, b.role, b.depth)
+                            }).collect();
+                            eprintln!("{:<10} {}", parent_id, branch_desc.join(" | "));
+                        }
                     }
                 }
                 SessionsCmd::Rm { id_prefix } => {
