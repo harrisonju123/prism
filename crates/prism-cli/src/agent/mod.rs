@@ -12,48 +12,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use uuid::Uuid;
 
+use crate::common::{
+    self, ToolCallBuilder, accumulate_tool_call_deltas, build_system_prompt,
+    reconstruct_tool_calls, truncate_tool_output,
+};
 use crate::config::Config;
+use crate::mcp::McpRegistry;
 use crate::memory::MemoryManager;
 use crate::session::Session;
 use crate::tools;
-
-const SYSTEM_PROMPT: &str = "\
-You are PrisM Code Agent, an autonomous coding assistant. \
-You have access to tools to read, edit, and run code. \
-Complete the task fully — don't stop to ask for confirmation unless truly stuck.
-
-## Available tools
-
-- **read_file** path [offset] [limit]: Read a file. Use offset/limit (1-based line numbers) \
-  to read a section of a large file instead of the whole thing.
-- **write_file** path content: Write (or overwrite) a file. Creates parent dirs automatically.
-- **edit_file** path old_string new_string: Replace an exact string in a file. \
-  Fails if old_string is not found or appears more than once — add more surrounding context.
-- **list_dir** path: List directory contents.
-- **bash** command [timeout_secs] [cwd]: Run a shell command. Returns {exit_code, stdout, stderr}. \
-  Prefer this for builds, tests, git operations, and multi-step shell pipelines.
-- **run_command** command args [timeout_secs] [cwd]: Run a command with separate args array. \
-  Same output as bash. Use bash for most cases.
-- **glob_files** pattern [dir]: Find files matching a glob (e.g. '**/*.rs').
-- **grep_files** pattern [dir] [file_glob]: Search file contents by regex.
-- **web_fetch** url: Fetch a URL and return its text (HTML stripped). \
-  Use for documentation, crate pages, or any web resource.
-
-## Guidelines
-
-- Read before editing — understand the file first.
-- Use bash for compiling, testing, and running programs.
-- Use grep_files + glob_files to navigate unfamiliar codebases before reading individual files.
-- Use read_file with offset+limit for large files — avoid reading thousands of lines you don't need.
-- When done, provide a concise summary of what was changed and why.
-";
-
-struct ToolCallBuilder {
-    id: String,
-    tc_type: String,
-    name: String,
-    arguments_buf: String,
-}
 
 pub struct Agent {
     client: PrismClient,
@@ -61,15 +28,14 @@ pub struct Agent {
     session: Session,
     messages: Vec<Message>,
     memory: MemoryManager,
+    mcp_registry: Option<McpRegistry>,
 }
 
 impl Agent {
-    pub fn new(client: PrismClient, config: Config, task: &str) -> Self {
+    pub fn new(client: PrismClient, config: Config, task: &str, mcp_registry: Option<McpRegistry>) -> Self {
         let episode_id = Uuid::new_v4();
         let session = Session::new(episode_id, task, &config.prism_model);
-        let memory_dir = dirs::home_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".prism/memory");
+        let memory_dir = crate::config::prism_home().join("memory");
         let memory = MemoryManager::new(&memory_dir, config.memory_window_size);
         Self {
             client,
@@ -77,14 +43,13 @@ impl Agent {
             session,
             messages: Vec::new(),
             memory,
+            mcp_registry,
         }
     }
 
-    pub fn from_session(client: PrismClient, config: Config, session: Session) -> Self {
+    pub fn from_session(client: PrismClient, config: Config, session: Session, mcp_registry: Option<McpRegistry>) -> Self {
         let messages = session.messages.clone();
-        let memory_dir = dirs::home_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".prism/memory");
+        let memory_dir = crate::config::prism_home().join("memory");
         let memory = MemoryManager::new(&memory_dir, config.memory_window_size);
         Self {
             client,
@@ -92,33 +57,28 @@ impl Agent {
             session,
             messages,
             memory,
+            mcp_registry,
         }
     }
 
     pub async fn run(&mut self, task: &str) -> Result<()> {
         tracing::info!(episode_id = %self.session.episode_id, model = %self.config.prism_model, "starting agent session");
 
-        let base_system_prompt = self
-            .config
-            .system_prompt
-            .as_deref()
-            .unwrap_or(SYSTEM_PROMPT);
-
         let memory_content = self.memory.load();
-        let full_system = if memory_content.is_empty() {
-            base_system_prompt.to_string()
-        } else {
-            format!("## Persistent Memory\n{memory_content}\n\n---\n\n{base_system_prompt}")
-        };
+        let mcp_section = self
+            .mcp_registry
+            .as_ref()
+            .map(|r| r.system_prompt_section())
+            .unwrap_or("");
 
-        self.messages.push(Message {
-            role: "system".into(),
-            content: Some(json!(full_system)),
-            name: None,
-            tool_calls: None,
-            tool_call_id: None,
-            extra: Default::default(),
-        });
+        let full_system = build_system_prompt(
+            self.config.system_prompt.as_deref(),
+            &memory_content,
+            "",
+            mcp_section,
+        );
+
+        self.messages.push(common::system_message(full_system));
         self.messages.push(Message {
             role: "user".into(),
             content: Some(json!(task)),
@@ -139,7 +99,6 @@ impl Agent {
             "resuming agent session"
         );
 
-        // If task is non-empty, push it as a new user message
         if !task.is_empty() {
             self.messages.push(Message {
                 role: "user".into(),
@@ -187,7 +146,7 @@ impl Agent {
             let req = ChatCompletionRequest {
                 model: self.config.prism_model.clone(),
                 messages: self.messages.clone(),
-                tools: Some(tools::tool_definitions_filtered(&self.config)),
+                tools: Some(tools::all_tool_definitions_filtered(&self.config, self.mcp_registry.as_ref())),
                 tool_choice: Some(json!("auto")),
                 ..Default::default()
             };
@@ -205,7 +164,6 @@ impl Agent {
             let mut turn_completion: u32 = 0;
             let mut turn_cost: f64 = 0.0;
 
-            // Accumulate streaming response
             let mut content_buf = String::new();
             let mut tc_builders: HashMap<usize, ToolCallBuilder> = HashMap::new();
             let mut finish_reason: Option<String> = None;
@@ -218,64 +176,24 @@ impl Agent {
 
                 let chunk = chunk_result.map_err(|e| anyhow!("stream error: {e}"))?;
 
-                // Print content delta immediately
                 if !chunk.delta.is_empty() {
                     print!("{}", chunk.delta);
                     let _ = std::io::stdout().flush();
                     content_buf.push_str(&chunk.delta);
                 }
 
-                // Accumulate tool_call deltas
                 if let Some(tc_arr) = chunk
                     .tool_calls
                     .as_ref()
                     .and_then(|v: &serde_json::Value| v.as_array())
                 {
-                    for tc in tc_arr {
-                        let tc: &serde_json::Value = tc;
-                        let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
-                        let builder = tc_builders.entry(idx).or_insert_with(|| ToolCallBuilder {
-                            id: String::new(),
-                            tc_type: "function".to_string(),
-                            name: String::new(),
-                            arguments_buf: String::new(),
-                        });
-                        if let Some(id) = tc.get("id").and_then(|v: &serde_json::Value| v.as_str())
-                        {
-                            if !id.is_empty() {
-                                builder.id = id.to_string();
-                            }
-                        }
-                        if let Some(t) = tc.get("type").and_then(|v: &serde_json::Value| v.as_str())
-                        {
-                            if !t.is_empty() {
-                                builder.tc_type = t.to_string();
-                            }
-                        }
-                        if let Some(fname) = tc
-                            .get("function")
-                            .and_then(|f: &serde_json::Value| f.get("name"))
-                            .and_then(|v: &serde_json::Value| v.as_str())
-                        {
-                            if !fname.is_empty() {
-                                builder.name.push_str(fname);
-                            }
-                        }
-                        if let Some(args_frag) = tc
-                            .get("function")
-                            .and_then(|f: &serde_json::Value| f.get("arguments"))
-                            .and_then(|v: &serde_json::Value| v.as_str())
-                        {
-                            builder.arguments_buf.push_str(args_frag);
-                        }
-                    }
+                    accumulate_tool_call_deltas(tc_arr, &mut tc_builders);
                 }
 
                 if chunk.finish_reason.is_some() {
                     finish_reason = chunk.finish_reason;
                 }
 
-                // Capture usage from final chunk
                 if let Some(u) = &chunk.usage {
                     turn_prompt = u.prompt_tokens;
                     turn_completion = u.completion_tokens;
@@ -317,7 +235,6 @@ impl Agent {
                 );
             }
 
-            // If interrupted mid-stream, save partial content so session is resumable
             if stop_reason.as_deref() == Some("interrupt") {
                 if !content_buf.is_empty() {
                     self.messages.push(Message {
@@ -332,29 +249,7 @@ impl Agent {
                 break;
             }
 
-            // Reconstruct tool_calls vec in index order
-            let tool_calls_vec: Option<Vec<serde_json::Value>> = if tc_builders.is_empty() {
-                None
-            } else {
-                let mut indices: Vec<usize> = tc_builders.keys().cloned().collect();
-                indices.sort_unstable();
-                Some(
-                    indices
-                        .iter()
-                        .map(|i| {
-                            let b = &tc_builders[i];
-                            json!({
-                                "id": b.id,
-                                "type": b.tc_type,
-                                "function": {
-                                    "name": b.name,
-                                    "arguments": b.arguments_buf
-                                }
-                            })
-                        })
-                        .collect(),
-                )
-            };
+            let tool_calls_vec = reconstruct_tool_calls(&tc_builders);
 
             // Push assistant message
             self.messages.push(Message {
@@ -379,20 +274,19 @@ impl Agent {
             }
 
             // Check cost cap
-            if let Some(cap) = self.config.max_cost_usd {
-                if total_cost_usd >= cap {
-                    eprintln!(
-                        "\n[cost-cap] ${:.4} >= cap ${:.4} — stopping",
-                        total_cost_usd, cap
-                    );
-                    stop_reason = Some("cost_cap".to_string());
-                    break;
-                }
+            if let Some(cap) = self.config.max_cost_usd
+                && total_cost_usd >= cap
+            {
+                eprintln!(
+                    "\n[cost-cap] ${:.4} >= cap ${:.4} — stopping",
+                    total_cost_usd, cap
+                );
+                stop_reason = Some("cost_cap".to_string());
+                break;
             }
 
             match finish_reason.as_deref() {
                 Some("stop") | None => {
-                    // Content was already printed during streaming; add newline if needed
                     if !content_buf.is_empty() && !content_buf.ends_with('\n') {
                         println!();
                     }
@@ -452,7 +346,7 @@ impl Agent {
                             let len = s.len();
                             (json!(s), len)
                         } else {
-                            match tools::dispatch(name, &args, &self.config, None).await {
+                            match tools::dispatch(name, &args, &self.config, None, self.mcp_registry.as_ref()).await {
                                 tools::ToolResult::Text(s) => {
                                     let s = truncate_tool_output(name, &s, self.config.max_tool_output);
                                     let len = s.len();
@@ -514,7 +408,7 @@ impl Agent {
         );
         eprintln!(
             "[session] episode {}",
-            self.session.episode_id.to_string()[..8].to_string()
+            &self.session.episode_id.to_string()[..8]
         );
         if stop_reason.as_deref() == Some("interrupt") {
             eprintln!(
@@ -543,69 +437,6 @@ impl Agent {
     }
 }
 
-fn truncate_tool_output(tool_name: &str, output: &str, limit: usize) -> String {
-    if output.len() <= limit {
-        return output.to_string();
-    }
-
-    // run_command and bash return {"exit_code":N,"stdout":"...","stderr":"..."}
-    // Truncate the two text fields individually so the JSON stays valid.
-    if tool_name == "run_command" || tool_name == "bash" {
-        if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(output) {
-            let field_limit = limit / 2;
-            for field in ["stdout", "stderr"] {
-                if let Some(s) = val.get(field).and_then(|v| v.as_str()) {
-                    if s.len() > field_limit {
-                        let head = floor_char_boundary(s, field_limit * 2 / 3);
-                        let tail_start = s.len() - ceil_char_boundary(s, field_limit / 3);
-                        let omitted = tail_start - head;
-                        let truncated = format!(
-                            "{}\n[... {omitted} chars omitted ...]\n{}",
-                            &s[..head],
-                            &s[tail_start..]
-                        );
-                        val[field] = serde_json::Value::String(truncated);
-                    }
-                }
-            }
-            if let Ok(s) = serde_json::to_string(&val) {
-                return s;
-            }
-        }
-    }
-
-    // Generic head + tail with omission notice.
-    let head = floor_char_boundary(output, limit * 2 / 3);
-    let tail_start = output.len() - ceil_char_boundary(output, limit / 3);
-    let omitted = tail_start - head;
-    format!(
-        "{}\n[... {omitted} chars omitted — use a line range or narrower query to see more ...]\n{}",
-        &output[..head],
-        &output[tail_start..]
-    )
-}
-
-/// Round `pos` down to the nearest UTF-8 char boundary.
-fn floor_char_boundary(s: &str, pos: usize) -> usize {
-    let pos = pos.min(s.len());
-    let mut p = pos;
-    while p > 0 && !s.is_char_boundary(p) {
-        p -= 1;
-    }
-    p
-}
-
-/// Round `len` up so that `s.len() - len` lands on a char boundary.
-fn ceil_char_boundary(s: &str, len: usize) -> usize {
-    let len = len.min(s.len());
-    let start = s.len() - len;
-    let mut p = start;
-    while p < s.len() && !s.is_char_boundary(p) {
-        p += 1;
-    }
-    s.len() - p
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -622,7 +453,6 @@ mod tests {
         let result = truncate_tool_output("read_file", &s, 100);
         assert!(result.len() < 1000);
         assert!(result.contains("chars omitted"));
-        // head and tail still present
         assert!(result.starts_with('a'));
         assert!(result.ends_with('a'));
     }
@@ -647,10 +477,8 @@ mod tests {
 
     #[test]
     fn non_ascii_no_panic() {
-        // emoji = 4 bytes each
         let s = "🦀".repeat(10_000);
         let result = truncate_tool_output("read_file", &s, 100);
-        // result must be valid UTF-8 (String is always UTF-8)
         assert!(result.contains("chars omitted"));
     }
 }

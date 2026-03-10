@@ -57,9 +57,7 @@ impl MemoryManager {
 
 impl Default for MemoryManager {
     fn default() -> Self {
-        let memory_dir = dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(".prism/memory");
+        let memory_dir = crate::config::prism_home().join("memory");
         Self::new(&memory_dir, MAX_DEFAULT_BYTES)
     }
 }

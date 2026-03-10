@@ -10,6 +10,8 @@ use crate::config::{Config, SandboxMode};
 use prism_types::{Tool, ToolFunction};
 use serde_json::json;
 
+use crate::mcp::McpRegistry;
+
 /// Result type for tool dispatch — text or multimodal image content.
 pub enum ToolResult {
     Text(String),
@@ -28,7 +30,6 @@ impl ToolResult {
 /// Write-capable tool names (blocked in ReadOnly mode).
 const WRITE_TOOLS: &[&str] = &["write_file", "edit_file", "bash", "run_command"];
 
-/// Returns all tool definitions (unfiltered).
 pub fn tool_definitions() -> Vec<Tool> {
     vec![
         make_tool(
@@ -216,7 +217,42 @@ fn resolve_path(path: Option<&str>, session_cwd: Option<&Path>) -> String {
     }
 }
 
-pub async fn dispatch(name: &str, args: &serde_json::Value, config: &Config, session_cwd: Option<&Path>) -> ToolResult {
+/// Returns built-in tools merged with MCP tools (if any).
+pub fn all_tool_definitions(mcp: Option<&McpRegistry>) -> Vec<Tool> {
+    let mut tools = tool_definitions();
+    if let Some(registry) = mcp {
+        tools.extend_from_slice(registry.tool_definitions());
+    }
+    tools
+}
+
+/// Returns built-in + MCP tools, filtered by sandbox mode and allow/deny config.
+pub fn all_tool_definitions_filtered(config: &Config, mcp: Option<&McpRegistry>) -> Vec<Tool> {
+    all_tool_definitions(mcp)
+        .into_iter()
+        .chain(computer::computer_tool_definitions())
+        .filter(|t| is_tool_allowed(&t.function.name, config))
+        .collect()
+}
+
+pub async fn dispatch(
+    name: &str,
+    args: &serde_json::Value,
+    config: &Config,
+    session_cwd: Option<&Path>,
+    mcp: Option<&McpRegistry>,
+) -> ToolResult {
+    // Route MCP-namespaced tools to the registry
+    if McpRegistry::is_mcp_tool(name) {
+        if let Some(registry) = mcp {
+            return match registry.dispatch(name, args).await {
+                Ok(result) => ToolResult::Text(result),
+                Err(e) => ToolResult::Text(format!("{{\"error\": \"{e}\"}}")),
+            };
+        }
+        return ToolResult::Text(format!("{{\"error\": \"MCP tool '{name}' called but no MCP registry available\"}}"));
+    }
+
     // Permission check
     if !is_tool_allowed(name, config) {
         return ToolResult::Text(format!(

@@ -37,40 +37,14 @@ use prism_types::{ChatCompletionRequest, Message};
 use serde_json::json;
 use uuid::Uuid;
 
+use crate::common::{
+    self, ToolCallBuilder, accumulate_tool_call_deltas, build_system_prompt,
+    reconstruct_tool_calls, truncate_tool_output,
+};
 use crate::config::Config;
+use crate::mcp::McpRegistry;
 use crate::memory::MemoryManager;
 use crate::tools;
-
-const SYSTEM_PROMPT: &str = "\
-You are PrisM Code Agent, an autonomous coding assistant. \
-You have access to tools to read, edit, and run code. \
-Complete the task fully — don't stop to ask for confirmation unless truly stuck.
-
-## Available tools
-
-- **read_file** path [offset] [limit]: Read a file. Use offset/limit (1-based line numbers) \
-  to read a section of a large file instead of the whole thing.
-- **write_file** path content: Write (or overwrite) a file. Creates parent dirs automatically.
-- **edit_file** path old_string new_string: Replace an exact string in a file. \
-  Fails if old_string is not found or appears more than once — add more surrounding context.
-- **list_dir** path: List directory contents.
-- **bash** command [timeout_secs] [cwd]: Run a shell command. Returns {exit_code, stdout, stderr}. \
-  Prefer this for builds, tests, git operations, and multi-step shell pipelines.
-- **run_command** command args [timeout_secs] [cwd]: Run a command with separate args array. \
-  Same output as bash. Use bash for most cases.
-- **glob_files** pattern [dir]: Find files matching a glob (e.g. '**/*.rs').
-- **grep_files** pattern [dir] [file_glob]: Search file contents by regex.
-- **web_fetch** url: Fetch a URL and return its text (HTML stripped). \
-  Use for documentation, crate pages, or any web resource.
-
-## Guidelines
-
-- Read before editing — understand the file first.
-- Use bash for compiling, testing, and running programs.
-- Use grep_files + glob_files to navigate unfamiliar codebases before reading individual files.
-- Use read_file with offset+limit for large files — avoid reading thousands of lines you don't need.
-- When done, provide a concise summary of what was changed and why.
-";
 
 struct AcpSession {
     messages: Vec<Message>,
@@ -93,19 +67,19 @@ pub struct PrismAgent {
     connection: RefCell<Option<Rc<acp::AgentSideConnection>>>,
     config: Config,
     memory: RefCell<MemoryManager>,
+    mcp_registry: Option<McpRegistry>,
 }
 
 impl PrismAgent {
-    pub fn new(config: Config) -> Self {
-        let memory_dir = dirs::home_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".prism/memory");
+    pub fn new(config: Config, mcp_registry: Option<McpRegistry>) -> Self {
+        let memory_dir = crate::config::prism_home().join("memory");
         let memory = MemoryManager::new(&memory_dir, config.memory_window_size);
         Self {
             sessions: RefCell::new(HashMap::new()),
             connection: RefCell::new(None),
             config,
             memory: RefCell::new(memory),
+            mcp_registry,
         }
     }
 
@@ -141,12 +115,6 @@ impl PrismAgent {
     }
 
     fn build_system_message(&self, cwd: Option<&Path>) -> Message {
-        let base_system_prompt = self
-            .config
-            .system_prompt
-            .as_deref()
-            .unwrap_or(SYSTEM_PROMPT);
-
         let memory_content = self.memory.borrow().load();
         let cwd_section = cwd
             .map(|p| {
@@ -159,23 +127,27 @@ impl PrismAgent {
             })
             .unwrap_or_default();
 
-        let full_system = if memory_content.is_empty() {
-            format!("{base_system_prompt}{cwd_section}")
-        } else {
-            format!("## Persistent Memory\n{memory_content}\n\n---\n\n{base_system_prompt}{cwd_section}")
-        };
+        let mcp_section = self
+            .mcp_registry
+            .as_ref()
+            .map(|r| r.system_prompt_section())
+            .unwrap_or("");
 
-        Message {
-            role: "system".into(),
-            content: Some(json!(full_system)),
-            name: None,
-            tool_calls: None,
-            tool_call_id: None,
-            extra: Default::default(),
-        }
+        let full_system = build_system_prompt(
+            self.config.system_prompt.as_deref(),
+            &memory_content,
+            &cwd_section,
+            mcp_section,
+        );
+
+        common::system_message(full_system)
     }
 
     fn is_read_only(tool_name: &str) -> bool {
+        // MCP tools are treated as read-only — the MCP server handles its own safety
+        if McpRegistry::is_mcp_tool(tool_name) {
+            return true;
+        }
         matches!(
             tool_name,
             "read_file" | "list_dir" | "glob_files" | "grep_files" | "web_fetch"
@@ -318,7 +290,7 @@ impl PrismAgent {
             let req = ChatCompletionRequest {
                 model: session_model.unwrap_or_else(|| model_fallback.clone()),
                 messages,
-                tools: Some(tools::tool_definitions()),
+                tools: Some(tools::all_tool_definitions(self.mcp_registry.as_ref())),
                 tool_choice: Some(json!("auto")),
                 ..Default::default()
             };
@@ -360,37 +332,7 @@ impl PrismAgent {
                     .as_ref()
                     .and_then(|v| v.as_array())
                 {
-                    for tc in tc_arr {
-                        let idx =
-                            tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
-                        let builder =
-                            tc_builders.entry(idx).or_insert_with(|| ToolCallBuilder {
-                                id: String::new(),
-                                name: String::new(),
-                                arguments_buf: String::new(),
-                            });
-                        if let Some(id) = tc.get("id").and_then(|v| v.as_str())
-                            && !id.is_empty()
-                        {
-                            builder.id = id.to_string();
-                        }
-                        // Name only appears once per tool call in the SSE stream
-                        if let Some(fname) = tc
-                            .get("function")
-                            .and_then(|f| f.get("name"))
-                            .and_then(|v| v.as_str())
-                            && !fname.is_empty()
-                        {
-                            builder.name = fname.to_string();
-                        }
-                        if let Some(args_frag) = tc
-                            .get("function")
-                            .and_then(|f| f.get("arguments"))
-                            .and_then(|v| v.as_str())
-                        {
-                            builder.arguments_buf.push_str(args_frag);
-                        }
-                    }
+                    accumulate_tool_call_deltas(tc_arr, &mut tc_builders);
                 }
 
                 if chunk.finish_reason.is_some() {
@@ -402,29 +344,7 @@ impl PrismAgent {
                 return acp::StopReason::Cancelled;
             }
 
-            // Reconstruct tool_calls
-            let tool_calls_vec: Option<Vec<serde_json::Value>> = if tc_builders.is_empty() {
-                None
-            } else {
-                let mut indices: Vec<usize> = tc_builders.keys().cloned().collect();
-                indices.sort_unstable();
-                Some(
-                    indices
-                        .iter()
-                        .map(|i| {
-                            let b = &tc_builders[i];
-                            json!({
-                                "id": b.id,
-                                "type": "function",
-                                "function": {
-                                    "name": b.name,
-                                    "arguments": b.arguments_buf
-                                }
-                            })
-                        })
-                        .collect(),
-                )
-            };
+            let tool_calls_vec = reconstruct_tool_calls(&tc_builders);
 
             // Push assistant message
             {
@@ -543,7 +463,7 @@ impl PrismAgent {
                             self.memory.borrow_mut().append(key.clone(), value);
                             json!({"saved": true, "key": key}).to_string()
                         } else {
-                            tools::dispatch(name, &args, &self.config, Some(&session_cwd)).await.into_text()
+                            tools::dispatch(name, &args, &self.config, Some(&session_cwd), self.mcp_registry.as_ref()).await.into_text()
                         };
                         let result = truncate_tool_output(
                             name,
@@ -589,12 +509,6 @@ impl PrismAgent {
         // Exceeded max turns
         acp::StopReason::MaxTurnRequests
     }
-}
-
-struct ToolCallBuilder {
-    id: String,
-    name: String,
-    arguments_buf: String,
 }
 
 fn tool_kind(name: &str) -> acp::ToolKind {
@@ -659,57 +573,6 @@ fn tool_title(name: &str, args: &serde_json::Value) -> String {
         ),
         other => other.to_string(),
     }
-}
-
-fn truncate_tool_output(tool_name: &str, output: &str, limit: usize) -> String {
-    if limit == 0 || output.len() <= limit {
-        return output.to_string();
-    }
-
-    if (tool_name == "run_command" || tool_name == "bash")
-        && let Ok(mut val) = serde_json::from_str::<serde_json::Value>(output)
-    {
-        let field_limit = limit / 2;
-        for field in ["stdout", "stderr"] {
-            if let Some(s) = val.get(field).and_then(|v| v.as_str())
-                && s.len() > field_limit
-            {
-                let head_end = s.floor_char_boundary(field_limit * 2 / 3);
-                let tail_len = (field_limit / 3).min(s.len());
-                let tail_start = snap_to_char_boundary_right(s, s.len() - tail_len);
-                let omitted = tail_start.saturating_sub(head_end);
-                let truncated = format!(
-                    "{}\n[... {omitted} chars omitted ...]\n{}",
-                    &s[..head_end],
-                    &s[tail_start..]
-                );
-                val[field] = serde_json::Value::String(truncated);
-            }
-        }
-        if let Ok(s) = serde_json::to_string(&val) {
-            return s;
-        }
-    }
-
-    let head_end = output.floor_char_boundary(limit * 2 / 3);
-    let tail_len = (limit / 3).min(output.len());
-    let tail_start = snap_to_char_boundary_right(output, output.len() - tail_len);
-    let omitted = tail_start.saturating_sub(head_end);
-    format!(
-        "{}\n[... {omitted} chars omitted ...]\n{}",
-        &output[..head_end],
-        &output[tail_start..]
-    )
-}
-
-/// Find the nearest char boundary at or after `pos`.
-fn snap_to_char_boundary_right(s: &str, pos: usize) -> usize {
-    let pos = pos.min(s.len());
-    let mut p = pos;
-    while p < s.len() && !s.is_char_boundary(p) {
-        p += 1;
-    }
-    p
 }
 
 #[async_trait::async_trait(?Send)]
@@ -820,9 +683,7 @@ impl acp::Agent for PrismAgent {
 
         let session_id = args.session_id.to_string();
 
-        let sessions_dir = dirs::home_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join(".prism/sessions");
+        let sessions_dir = crate::config::prism_home().join("sessions");
 
         let session = crate::session::Session::load_by_id_prefix(&sessions_dir, &session_id)
             .map_err(|e| acp::Error::invalid_params().data(json!(format!("{e}"))))?;
@@ -863,8 +724,8 @@ impl acp::Agent for PrismAgent {
     }
 }
 
-pub async fn run_acp_server(config: Config) -> Result<()> {
-    let agent = Rc::new(PrismAgent::new(config));
+pub async fn run_acp_server(config: Config, mcp_registry: Option<McpRegistry>) -> Result<()> {
+    let agent = Rc::new(PrismAgent::new(config, mcp_registry));
 
     use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
     let stdin = tokio::io::stdin().compat();
@@ -889,6 +750,7 @@ pub async fn run_acp_server(config: Config) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::truncate_tool_output;
 
     #[test]
     fn test_truncate_tool_output_within_limit() {
@@ -907,10 +769,8 @@ mod tests {
 
     #[test]
     fn test_truncate_tool_output_multibyte_utf8() {
-        // Each emoji is 4 bytes
-        let output = "🔥".repeat(100); // 400 bytes
+        let output = "🔥".repeat(100);
         let result = truncate_tool_output("read_file", &output, 100);
-        // Must not panic and must produce valid UTF-8
         assert!(result.len() < 400);
         assert!(result.contains("[..."));
     }
@@ -933,23 +793,6 @@ mod tests {
     }
 
     #[test]
-    fn test_snap_to_char_boundary_right() {
-        let s = "hello 🌍 world";
-        // 🌍 is 4 bytes, starts at byte 6
-        // Trying to snap mid-emoji should advance to after it
-        let boundary = snap_to_char_boundary_right(s, 7);
-        assert!(s.is_char_boundary(boundary));
-        assert!(boundary >= 7);
-
-        // At a boundary already
-        assert_eq!(snap_to_char_boundary_right(s, 0), 0);
-        assert_eq!(snap_to_char_boundary_right(s, s.len()), s.len());
-
-        // Past end
-        assert_eq!(snap_to_char_boundary_right(s, s.len() + 10), s.len());
-    }
-
-    #[test]
     fn test_trim_messages_within_limit() {
         let mut msgs = vec![
             make_msg("system"),
@@ -965,7 +808,6 @@ mod tests {
         let mut msgs: Vec<Message> = (0..20)
             .map(|i| make_msg(&format!("msg-{i}")))
             .collect();
-        // First message is "system"
         msgs[0].role = "system".into();
         PrismAgent::trim_messages(&mut msgs, 5);
         assert_eq!(msgs.len(), 5);
