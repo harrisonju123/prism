@@ -132,10 +132,12 @@ impl Agent {
             .map(|r| r.system_prompt_section())
             .unwrap_or("");
 
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let instructions_section = crate::instructions::load_project_instructions(&cwd);
         let full_system = build_system_prompt(
             self.config.model.system_prompt.as_deref(),
             &memory_content,
-            "",
+            &instructions_section,
             mcp_section,
         );
 
