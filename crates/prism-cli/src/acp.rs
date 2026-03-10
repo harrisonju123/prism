@@ -80,6 +80,11 @@ struct AcpSession {
     model: Option<String>,
 }
 
+// SAFETY: PrismAgent uses RefCell because the ACP Agent trait is !Send and runs
+// on a single-threaded LocalSet. All RefCell borrows MUST be scoped in synchronous
+// blocks and dropped before any .await point. The `cancel` method only needs the
+// Arc<AtomicBool> (extracted via a short-lived immutable borrow), so it cannot
+// conflict with the scoped mutable borrows in run_agent_loop.
 pub struct PrismAgent {
     sessions: RefCell<HashMap<String, AcpSession>>,
     connection: RefCell<Option<Rc<acp::AgentSideConnection>>>,
@@ -159,7 +164,7 @@ impl PrismAgent {
     fn is_read_only(tool_name: &str) -> bool {
         matches!(
             tool_name,
-            "read_file" | "list_dir" | "glob_files" | "grep_files" | "web_fetch" | "save_memory"
+            "read_file" | "list_dir" | "glob_files" | "grep_files" | "web_fetch"
         )
     }
 
@@ -243,6 +248,30 @@ impl PrismAgent {
         }
     }
 
+    /// Trim old messages to stay within max_session_messages, preserving the system prompt.
+    fn trim_messages(messages: &mut Vec<Message>, max: usize) {
+        if max == 0 || messages.len() <= max {
+            return;
+        }
+        // Keep system prompt (index 0) + the most recent (max - 1) messages
+        let drain_end = messages.len() - (max - 1);
+        messages.drain(1..drain_end);
+    }
+
+    /// Evict oldest sessions when we exceed max_sessions.
+    fn evict_sessions_if_needed(&self) {
+        let mut sessions = self.sessions.borrow_mut();
+        let max = self.config.max_sessions;
+        if max == 0 || sessions.len() <= max {
+            return;
+        }
+        let excess = sessions.len() - max;
+        let keys_to_remove: Vec<String> = sessions.keys().take(excess).cloned().collect();
+        for key in keys_to_remove {
+            sessions.remove(&key);
+        }
+    }
+
     async fn run_agent_loop(&self, session_id: &str) -> acp::StopReason {
         let client = PrismClient::new(&self.config.prism_url)
             .with_api_key(&self.config.prism_api_key);
@@ -259,7 +288,7 @@ impl PrismAgent {
                 }
             };
 
-            if cancelled.load(Ordering::Relaxed) {
+            if cancelled.load(Ordering::Acquire) {
                 return acp::StopReason::Cancelled;
             }
 
@@ -285,7 +314,7 @@ impl PrismAgent {
             let mut finish_reason: Option<String> = None;
 
             while let Some(chunk_result) = stream.next().await {
-                if cancelled.load(Ordering::Relaxed) {
+                if cancelled.load(Ordering::Acquire) {
                     return acp::StopReason::Cancelled;
                 }
 
@@ -322,13 +351,14 @@ impl PrismAgent {
                         {
                             builder.id = id.to_string();
                         }
+                        // Name only appears once per tool call in the SSE stream
                         if let Some(fname) = tc
                             .get("function")
                             .and_then(|f| f.get("name"))
                             .and_then(|v| v.as_str())
                             && !fname.is_empty()
                         {
-                            builder.name.push_str(fname);
+                            builder.name = fname.to_string();
                         }
                         if let Some(args_frag) = tc
                             .get("function")
@@ -345,7 +375,7 @@ impl PrismAgent {
                 }
             }
 
-            if cancelled.load(Ordering::Relaxed) {
+            if cancelled.load(Ordering::Acquire) {
                 return acp::StopReason::Cancelled;
             }
 
@@ -389,6 +419,10 @@ impl PrismAgent {
                         tool_call_id: None,
                         extra: Default::default(),
                     });
+                    Self::trim_messages(
+                        &mut session.messages,
+                        self.config.max_session_messages,
+                    );
                 }
             }
 
@@ -398,7 +432,7 @@ impl PrismAgent {
                 }
                 Some("tool_calls") => {
                     for tc in tool_calls_vec.unwrap_or_default() {
-                        if cancelled.load(Ordering::Relaxed) {
+                        if cancelled.load(Ordering::Acquire) {
                             return acp::StopReason::Cancelled;
                         }
 
@@ -605,7 +639,7 @@ fn tool_title(name: &str, args: &serde_json::Value) -> String {
 }
 
 fn truncate_tool_output(tool_name: &str, output: &str, limit: usize) -> String {
-    if output.len() <= limit {
+    if limit == 0 || output.len() <= limit {
         return output.to_string();
     }
 
@@ -617,13 +651,13 @@ fn truncate_tool_output(tool_name: &str, output: &str, limit: usize) -> String {
             if let Some(s) = val.get(field).and_then(|v| v.as_str())
                 && s.len() > field_limit
             {
-                let head = s.floor_char_boundary(field_limit * 2 / 3);
-                let tail_start =
-                    s.len() - ceil_char_boundary(s, field_limit / 3);
-                let omitted = tail_start - head;
+                let head_end = s.floor_char_boundary(field_limit * 2 / 3);
+                let tail_len = (field_limit / 3).min(s.len());
+                let tail_start = snap_to_char_boundary_right(s, s.len() - tail_len);
+                let omitted = tail_start.saturating_sub(head_end);
                 let truncated = format!(
                     "{}\n[... {omitted} chars omitted ...]\n{}",
-                    &s[..head],
+                    &s[..head_end],
                     &s[tail_start..]
                 );
                 val[field] = serde_json::Value::String(truncated);
@@ -634,24 +668,25 @@ fn truncate_tool_output(tool_name: &str, output: &str, limit: usize) -> String {
         }
     }
 
-    let head = output.floor_char_boundary(limit * 2 / 3);
-    let tail_start = output.len() - ceil_char_boundary(output, limit / 3);
-    let omitted = tail_start - head;
+    let head_end = output.floor_char_boundary(limit * 2 / 3);
+    let tail_len = (limit / 3).min(output.len());
+    let tail_start = snap_to_char_boundary_right(output, output.len() - tail_len);
+    let omitted = tail_start.saturating_sub(head_end);
     format!(
         "{}\n[... {omitted} chars omitted ...]\n{}",
-        &output[..head],
+        &output[..head_end],
         &output[tail_start..]
     )
 }
 
-fn ceil_char_boundary(s: &str, len: usize) -> usize {
-    let len = len.min(s.len());
-    let start = s.len() - len;
-    let mut p = start;
+/// Find the nearest char boundary at or after `pos`.
+fn snap_to_char_boundary_right(s: &str, pos: usize) -> usize {
+    let pos = pos.min(s.len());
+    let mut p = pos;
     while p < s.len() && !s.is_char_boundary(p) {
         p += 1;
     }
-    s.len() - p
+    p
 }
 
 #[async_trait::async_trait(?Send)]
@@ -680,6 +715,8 @@ impl acp::Agent for PrismAgent {
         &self,
         _args: acp::NewSessionRequest,
     ) -> acp::Result<acp::NewSessionResponse> {
+        self.evict_sessions_if_needed();
+
         let session_id = Uuid::new_v4().to_string();
         let messages = vec![self.build_system_message()];
 
@@ -720,7 +757,7 @@ impl acp::Agent for PrismAgent {
                 acp::Error::invalid_params()
                     .data(json!(format!("session not found: {session_id}")))
             })?;
-            session.cancelled.store(false, Ordering::SeqCst);
+            session.cancelled.store(false, Ordering::Release);
             session.messages.push(Message {
                 role: "user".into(),
                 content: Some(json!(user_text)),
@@ -745,7 +782,7 @@ impl acp::Agent for PrismAgent {
         let session_id = args.session_id.to_string();
         let sessions = self.sessions.borrow();
         if let Some(session) = sessions.get(&session_id) {
-            session.cancelled.store(true, Ordering::SeqCst);
+            session.cancelled.store(true, Ordering::Release);
         }
         Ok(())
     }
@@ -754,6 +791,8 @@ impl acp::Agent for PrismAgent {
         &self,
         args: acp::LoadSessionRequest,
     ) -> acp::Result<acp::LoadSessionResponse> {
+        self.evict_sessions_if_needed();
+
         let session_id = args.session_id.to_string();
 
         let sessions_dir = dirs::home_dir()
@@ -766,6 +805,7 @@ impl acp::Agent for PrismAgent {
         // Rebuild messages: system prompt + saved conversation history
         let mut messages = vec![self.build_system_message()];
         messages.extend(session.messages);
+        Self::trim_messages(&mut messages, self.config.max_session_messages);
 
         self.sessions.borrow_mut().insert(
             session_id.clone(),
@@ -817,4 +857,109 @@ pub async fn run_acp_server(config: Config) -> Result<()> {
     io_task.await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_tool_output_within_limit() {
+        let output = "short output";
+        assert_eq!(truncate_tool_output("bash", output, 100), output);
+    }
+
+    #[test]
+    fn test_truncate_tool_output_exceeds_limit() {
+        let output = "a".repeat(300);
+        let result = truncate_tool_output("read_file", &output, 100);
+        assert!(result.len() < 300);
+        assert!(result.contains("[..."));
+        assert!(result.contains("chars omitted"));
+    }
+
+    #[test]
+    fn test_truncate_tool_output_multibyte_utf8() {
+        // Each emoji is 4 bytes
+        let output = "🔥".repeat(100); // 400 bytes
+        let result = truncate_tool_output("read_file", &output, 100);
+        // Must not panic and must produce valid UTF-8
+        assert!(result.len() < 400);
+        assert!(result.contains("[..."));
+    }
+
+    #[test]
+    fn test_truncate_bash_json_output() {
+        let long_stdout = "x".repeat(500);
+        let output = json!({"exit_code": 0, "stdout": long_stdout, "stderr": ""}).to_string();
+        let result = truncate_tool_output("bash", &output, 200);
+        assert!(result.len() < output.len());
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(parsed["stdout"].as_str().unwrap().contains("[..."));
+    }
+
+    #[test]
+    fn test_truncate_empty_and_zero_limit() {
+        assert_eq!(truncate_tool_output("bash", "", 100), "");
+        let output = "some output";
+        assert_eq!(truncate_tool_output("bash", output, 0), output);
+    }
+
+    #[test]
+    fn test_snap_to_char_boundary_right() {
+        let s = "hello 🌍 world";
+        // 🌍 is 4 bytes, starts at byte 6
+        // Trying to snap mid-emoji should advance to after it
+        let boundary = snap_to_char_boundary_right(s, 7);
+        assert!(s.is_char_boundary(boundary));
+        assert!(boundary >= 7);
+
+        // At a boundary already
+        assert_eq!(snap_to_char_boundary_right(s, 0), 0);
+        assert_eq!(snap_to_char_boundary_right(s, s.len()), s.len());
+
+        // Past end
+        assert_eq!(snap_to_char_boundary_right(s, s.len() + 10), s.len());
+    }
+
+    #[test]
+    fn test_trim_messages_within_limit() {
+        let mut msgs = vec![
+            make_msg("system"),
+            make_msg("user"),
+            make_msg("assistant"),
+        ];
+        PrismAgent::trim_messages(&mut msgs, 10);
+        assert_eq!(msgs.len(), 3);
+    }
+
+    #[test]
+    fn test_trim_messages_exceeds_limit() {
+        let mut msgs: Vec<Message> = (0..20)
+            .map(|i| make_msg(&format!("msg-{i}")))
+            .collect();
+        // First message is "system"
+        msgs[0].role = "system".into();
+        PrismAgent::trim_messages(&mut msgs, 5);
+        assert_eq!(msgs.len(), 5);
+        assert_eq!(msgs[0].role, "system");
+    }
+
+    #[test]
+    fn test_trim_messages_zero_limit_is_noop() {
+        let mut msgs = vec![make_msg("system"), make_msg("user")];
+        PrismAgent::trim_messages(&mut msgs, 0);
+        assert_eq!(msgs.len(), 2);
+    }
+
+    fn make_msg(role: &str) -> Message {
+        Message {
+            role: role.into(),
+            content: Some(json!("test")),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            extra: Default::default(),
+        }
+    }
 }
