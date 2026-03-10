@@ -584,8 +584,14 @@ impl Store for SqliteStore {
         name: &str,
         description: &str,
     ) -> Result<Task> {
-        self.upsert_task_by_github_id_impl(workspace_id, epic_id, github_issue_id, name, description)
-            .await
+        self.upsert_task_by_github_id_impl(
+            workspace_id,
+            epic_id,
+            github_issue_id,
+            name,
+            description,
+        )
+        .await
     }
 
     async fn agent_metrics(&self, workspace_id: Uuid) -> Result<Vec<AgentMetrics>> {

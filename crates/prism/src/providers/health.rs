@@ -39,13 +39,16 @@ impl ProviderHealthTracker {
     }
 
     pub fn record_success(&self, provider: &str) {
-        let mut entry = self.entries.entry(provider.to_string()).or_insert_with(|| ProviderHealth {
-            provider: provider.to_string(),
-            status: HealthStatus::Unknown,
-            last_check: None,
-            consecutive_failures: 0,
-            error: None,
-        });
+        let mut entry =
+            self.entries
+                .entry(provider.to_string())
+                .or_insert_with(|| ProviderHealth {
+                    provider: provider.to_string(),
+                    status: HealthStatus::Unknown,
+                    last_check: None,
+                    consecutive_failures: 0,
+                    error: None,
+                });
         entry.status = HealthStatus::Healthy;
         entry.consecutive_failures = 0;
         entry.last_check = Some(Utc::now());
@@ -53,13 +56,16 @@ impl ProviderHealthTracker {
     }
 
     pub fn record_failure(&self, provider: &str, error: String) -> HealthStatus {
-        let mut entry = self.entries.entry(provider.to_string()).or_insert_with(|| ProviderHealth {
-            provider: provider.to_string(),
-            status: HealthStatus::Unknown,
-            last_check: None,
-            consecutive_failures: 0,
-            error: None,
-        });
+        let mut entry =
+            self.entries
+                .entry(provider.to_string())
+                .or_insert_with(|| ProviderHealth {
+                    provider: provider.to_string(),
+                    status: HealthStatus::Unknown,
+                    last_check: None,
+                    consecutive_failures: 0,
+                    error: None,
+                });
         entry.consecutive_failures += 1;
         entry.last_check = Some(Utc::now());
         entry.error = Some(error);

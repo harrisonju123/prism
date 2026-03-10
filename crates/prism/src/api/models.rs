@@ -48,9 +48,7 @@ pub async fn list_models(State(state): State<Arc<AppState>>) -> impl IntoRespons
         state.providers.list().into_iter().collect();
 
     for (name, info) in MODEL_CATALOG.iter() {
-        if !alias_ids.contains(info.model_id)
-            && configured_providers.contains(info.provider)
-        {
+        if !alias_ids.contains(info.model_id) && configured_providers.contains(info.provider) {
             models.push(ModelEntry {
                 id: name.to_string(),
                 object: "model",

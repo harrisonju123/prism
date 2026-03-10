@@ -1404,10 +1404,7 @@ pub fn estimate_cost(model: &str, input_tokens: u32, output_tokens: u32) -> f64 
 }
 
 /// Resolve alias checking DB cache first, then static SEMANTIC_ALIASES.
-pub async fn resolve_alias_cached(
-    name: &str,
-    cache: Option<&alias::AliasCache>,
-) -> Option<String> {
+pub async fn resolve_alias_cached(name: &str, cache: Option<&alias::AliasCache>) -> Option<String> {
     if let Some(cache) = cache {
         if let Some(target) = cache.get(name).await {
             return Some(target);

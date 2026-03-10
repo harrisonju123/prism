@@ -111,10 +111,19 @@ pub fn grep_files(
     let mode = output_mode.unwrap_or("content");
 
     match mode {
-        "content" => grep_content_mode(&re, dir, base, file_filter.as_ref(), max_results, context_lines.unwrap_or(0)),
+        "content" => grep_content_mode(
+            &re,
+            dir,
+            base,
+            file_filter.as_ref(),
+            max_results,
+            context_lines.unwrap_or(0),
+        ),
         "files" => grep_files_mode(&re, dir, base, file_filter.as_ref(), max_results),
         "count" => grep_count_mode(&re, dir, base, file_filter.as_ref(), max_results),
-        other => format!("error: unknown output_mode '{other}', expected 'content', 'files', or 'count'"),
+        other => {
+            format!("error: unknown output_mode '{other}', expected 'content', 'files', or 'count'")
+        }
     }
 }
 
@@ -296,12 +305,24 @@ mod tests {
     fn test_glob_sort_by_modified() {
         let dir = make_temp_tree();
         std::thread::sleep(std::time::Duration::from_millis(50));
-        fs::write(dir.path().join("src/lib.rs"), "pub struct Bar;\n// updated\n").unwrap();
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub struct Bar;\n// updated\n",
+        )
+        .unwrap();
 
-        let result = glob_files("**/*.rs", dir.path().to_str().unwrap(), 100, Some("modified"));
+        let result = glob_files(
+            "**/*.rs",
+            dir.path().to_str().unwrap(),
+            100,
+            Some("modified"),
+        );
         let paths: Vec<String> = serde_json::from_str(&result).unwrap();
         assert_eq!(paths.len(), 3);
-        assert!(paths[0].ends_with("lib.rs"), "expected lib.rs first, got: {paths:?}");
+        assert!(
+            paths[0].ends_with("lib.rs"),
+            "expected lib.rs first, got: {paths:?}"
+        );
     }
 
     #[test]
@@ -317,7 +338,14 @@ mod tests {
     #[test]
     fn test_grep_pub_struct() {
         let dir = make_temp_tree();
-        let result = grep_files("pub struct", dir.path().to_str().unwrap(), None, 50, None, None);
+        let result = grep_files(
+            "pub struct",
+            dir.path().to_str().unwrap(),
+            None,
+            50,
+            None,
+            None,
+        );
         let matches: Vec<serde_json::Value> = serde_json::from_str(&result).unwrap();
         assert_eq!(matches.len(), 2);
         let texts: Vec<&str> = matches
@@ -345,7 +373,14 @@ mod tests {
     #[test]
     fn test_grep_max_results() {
         let dir = make_temp_tree();
-        let result = grep_files("pub struct", dir.path().to_str().unwrap(), None, 1, None, None);
+        let result = grep_files(
+            "pub struct",
+            dir.path().to_str().unwrap(),
+            None,
+            1,
+            None,
+            None,
+        );
         let matches: Vec<serde_json::Value> = serde_json::from_str(&result).unwrap();
         assert_eq!(matches.len(), 1);
     }
@@ -353,7 +388,14 @@ mod tests {
     #[test]
     fn test_grep_bad_regex() {
         let dir = make_temp_tree();
-        let result = grep_files("(unclosed", dir.path().to_str().unwrap(), None, 10, None, None);
+        let result = grep_files(
+            "(unclosed",
+            dir.path().to_str().unwrap(),
+            None,
+            10,
+            None,
+            None,
+        );
         assert!(result.starts_with("error:"));
     }
 
@@ -413,8 +455,15 @@ mod tests {
             Some(1),
         );
         let matches: Vec<serde_json::Value> = serde_json::from_str(&result).unwrap();
-        assert_eq!(matches.len(), 3, "expected 3 context lines, got: {matches:?}");
-        let line_nums: Vec<u64> = matches.iter().map(|m| m["line"].as_u64().unwrap()).collect();
+        assert_eq!(
+            matches.len(),
+            3,
+            "expected 3 context lines, got: {matches:?}"
+        );
+        let line_nums: Vec<u64> = matches
+            .iter()
+            .map(|m| m["line"].as_u64().unwrap())
+            .collect();
         assert_eq!(line_nums, vec![2, 3, 4]);
     }
 
@@ -436,7 +485,14 @@ mod tests {
     #[test]
     fn test_grep_invalid_output_mode() {
         let dir = make_temp_tree();
-        let result = grep_files("pub struct", dir.path().to_str().unwrap(), None, 10, Some("bogus"), None);
+        let result = grep_files(
+            "pub struct",
+            dir.path().to_str().unwrap(),
+            None,
+            10,
+            Some("bogus"),
+            None,
+        );
         assert!(result.starts_with("error:"));
     }
 }

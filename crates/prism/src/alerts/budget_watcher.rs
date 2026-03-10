@@ -152,7 +152,9 @@ impl BudgetWatcher {
                             triggered_at: chrono::Utc::now().to_rfc3339(),
                             message: format!(
                                 "Key '{}' ({}) daily budget at {:.0}%: ${daily_spend:.4} / ${daily_limit:.4}",
-                                key.name, &key.key_prefix, pct * 100.0
+                                key.name,
+                                &key.key_prefix,
+                                pct * 100.0
                             ),
                             severity: AlertSeverity::Warning,
                             current_value: Some(daily_spend),
@@ -193,7 +195,9 @@ impl BudgetWatcher {
                             triggered_at: chrono::Utc::now().to_rfc3339(),
                             message: format!(
                                 "Key '{}' ({}) monthly budget at {:.0}%: ${monthly_spend:.4} / ${monthly_limit:.4}",
-                                key.name, &key.key_prefix, pct * 100.0
+                                key.name,
+                                &key.key_prefix,
+                                pct * 100.0
                             ),
                             severity: AlertSeverity::Warning,
                             current_value: Some(monthly_spend),

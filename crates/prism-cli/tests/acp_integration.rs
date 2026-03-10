@@ -30,7 +30,13 @@ fn initialize_request(id: u64) -> serde_json::Value {
 
 /// Spawn the ACP server and set up a reader thread that forwards responses via mpsc.
 /// Returns (child, stdin, response_receiver).
-fn setup_acp(expected_responses: usize) -> (std::process::Child, std::process::ChildStdin, Receiver<serde_json::Value>) {
+fn setup_acp(
+    expected_responses: usize,
+) -> (
+    std::process::Child,
+    std::process::ChildStdin,
+    Receiver<serde_json::Value>,
+) {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| {
         dirs::home_dir()
             .unwrap()
@@ -139,7 +145,9 @@ fn test_prompt_without_session() {
         }),
     );
 
-    let resp = rx.recv_timeout(TIMEOUT).expect("timed out on session/prompt");
+    let resp = rx
+        .recv_timeout(TIMEOUT)
+        .expect("timed out on session/prompt");
 
     assert_eq!(resp["id"], 2);
     assert!(

@@ -29,8 +29,7 @@ impl Config {
         let prism_url =
             std::env::var("PRISM_URL").unwrap_or_else(|_| "http://localhost:9100".to_string());
 
-        let prism_api_key =
-            std::env::var("PRISM_API_KEY").unwrap_or_default();
+        let prism_api_key = std::env::var("PRISM_API_KEY").unwrap_or_default();
 
         let prism_model =
             std::env::var("PRISM_MODEL").unwrap_or_else(|_| "gpt-5-2-codex".to_string());

@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, oneshot};
@@ -20,11 +20,7 @@ pub struct StdioTransport {
 
 impl StdioTransport {
     /// Spawn an MCP server process and set up the stdio transport.
-    pub fn spawn(
-        command: &str,
-        args: &[String],
-        env: &HashMap<String, String>,
-    ) -> Result<Self> {
+    pub fn spawn(command: &str, args: &[String], env: &HashMap<String, String>) -> Result<Self> {
         let mut cmd = Command::new(command);
         cmd.args(args)
             .envs(env)
@@ -32,7 +28,9 @@ impl StdioTransport {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
-        let mut child = cmd.spawn().map_err(|e| anyhow!("failed to spawn MCP server `{command}`: {e}"))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| anyhow!("failed to spawn MCP server `{command}`: {e}"))?;
 
         let stdin = child
             .stdin
@@ -125,7 +123,9 @@ impl StdioTransport {
             Err(_) => {
                 // Timeout — clean up the pending entry to avoid leak
                 self.pending.lock().await.remove(&id);
-                Err(anyhow!("MCP request `{method}` timed out after {timeout_secs}s"))
+                Err(anyhow!(
+                    "MCP request `{method}` timed out after {timeout_secs}s"
+                ))
             }
         }
     }

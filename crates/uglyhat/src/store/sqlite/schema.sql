@@ -203,3 +203,29 @@ CREATE INDEX IF NOT EXISTS idx_handoffs_task ON handoffs(task_id);
 CREATE INDEX IF NOT EXISTS idx_handoffs_workspace ON handoffs(workspace_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_handoffs_agent ON handoffs(workspace_id, agent_name)
     WHERE agent_name != '';
+
+-- Sprints
+CREATE TABLE IF NOT EXISTS sprints (
+    id            TEXT PRIMARY KEY,
+    workspace_id  TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    name          TEXT NOT NULL,
+    goal          TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'active'
+        CHECK(status IN ('active','closed')),
+    start_date    TEXT,
+    end_date      TEXT,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sprints_workspace ON sprints(workspace_id);
+
+-- Sprint-Task assignments
+CREATE TABLE IF NOT EXISTS sprint_tasks (
+    id          TEXT PRIMARY KEY,
+    sprint_id   TEXT NOT NULL REFERENCES sprints(id) ON DELETE CASCADE,
+    task_id     TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    created_at  TEXT NOT NULL,
+    UNIQUE (sprint_id, task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_sprint_tasks_sprint ON sprint_tasks(sprint_id);
+CREATE INDEX IF NOT EXISTS idx_sprint_tasks_task ON sprint_tasks(task_id);

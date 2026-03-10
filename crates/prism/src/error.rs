@@ -96,11 +96,7 @@ impl IntoResponse for PrismError {
                 "unauthorized",
                 "authentication required".into(),
             ),
-            PrismError::Forbidden => (
-                StatusCode::FORBIDDEN,
-                "forbidden",
-                "access denied".into(),
-            ),
+            PrismError::Forbidden => (StatusCode::FORBIDDEN, "forbidden", "access denied".into()),
             PrismError::SchemaValidationFailed(msg) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "schema_validation_failed",
