@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::io::Write;
 
+use crate::approval_bridge::{ApprovalClient, ApprovalDecision, ApprovalRequest};
 use crate::common::truncate_with_ellipsis;
 use crate::mcp::McpRegistry;
 use crate::render::Renderer;
@@ -44,6 +45,7 @@ pub struct ToolPermissionGate {
     session_allowed: HashSet<String>,
     interactive: bool,
     renderer: Renderer,
+    bridge_client: Option<ApprovalClient>,
 }
 
 impl ToolPermissionGate {
@@ -53,6 +55,7 @@ impl ToolPermissionGate {
             session_allowed: HashSet::new(),
             interactive,
             renderer: Renderer::new(),
+            bridge_client: None,
         }
     }
 
@@ -61,8 +64,9 @@ impl ToolPermissionGate {
     }
 
     /// Resolve the effective permission mode: explicit > heuristic (tty check).
+    /// Tries to connect to the approval bridge (Zed) for interactive modes.
     pub fn resolve(explicit: Option<PermissionMode>) -> Self {
-        match explicit {
+        let mut gate = match explicit {
             Some(mode) => {
                 let interactive = mode != PermissionMode::Auto && tty_available();
                 Self::new(mode, interactive)
@@ -74,7 +78,18 @@ impl ToolPermissionGate {
                     Self::new(PermissionMode::Auto, false)
                 }
             }
+        };
+
+        // Try connecting to the Zed approval bridge
+        if gate.mode != PermissionMode::Auto {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            gate.bridge_client = ApprovalClient::try_connect(&cwd);
+            if gate.bridge_client.is_some() {
+                tracing::info!("connected to Zed approval bridge");
+            }
         }
+
+        gate
     }
 
     pub fn check_permission(
@@ -107,6 +122,29 @@ impl ToolPermissionGate {
 
     fn prompt_user(&mut self, tool_name: &str, args: &serde_json::Value) -> PermissionDecision {
         let preview = tool_preview(tool_name, args);
+
+        // Try the Zed approval bridge first
+        if let Some(ref mut client) = self.bridge_client {
+            let req = ApprovalRequest {
+                tool_name: tool_name.to_string(),
+                args: args.clone(),
+                title: preview.clone(),
+            };
+            if let Some(resp) = client.request_approval(&req) {
+                return match resp.decision {
+                    ApprovalDecision::AllowOnce => PermissionDecision::Allow,
+                    ApprovalDecision::AllowSession => {
+                        self.session_allowed.insert(tool_name.to_string());
+                        PermissionDecision::Allow
+                    }
+                    ApprovalDecision::Deny => PermissionDecision::Deny,
+                };
+            }
+            // Bridge failed — Zed probably crashed. Clear it and fall through to TTY.
+            tracing::warn!("approval bridge disconnected, falling back to TTY prompt");
+            self.bridge_client = None;
+        }
+
         let diff_section = compute_preview_diff(tool_name, args);
 
         let border_len = 40.max(tool_name.len() + 4);
@@ -363,5 +401,12 @@ mod tests {
     fn compute_preview_diff_unrelated_tool() {
         let args = json!({"command": "ls"});
         assert!(compute_preview_diff("bash", &args).is_none());
+    }
+
+    #[test]
+    fn bridge_fallback_to_tty() {
+        // When no socket exists, bridge_client should be None after resolve
+        let gate = ToolPermissionGate::resolve(Some(PermissionMode::Default));
+        assert!(gate.bridge_client.is_none());
     }
 }

@@ -51,6 +51,13 @@ use crate::skills::SkillRegistry;
 use crate::tools::{self, BuiltinTool};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolPermissionOutcome {
+    AllowOnce,
+    AllowSession,
+    Deny,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FinishReason {
     Stop,
     ToolCalls,
@@ -175,7 +182,6 @@ impl PrismAgent {
     }
 
     /// Ask the client for permission before executing a write tool.
-    /// Returns true if allowed, false if rejected/cancelled.
     async fn request_tool_permission(
         &self,
         session_id: &str,
@@ -183,14 +189,14 @@ impl PrismAgent {
         tool_call_id: &acp::ToolCallId,
         title: &str,
         args: &serde_json::Value,
-    ) -> bool {
+    ) -> ToolPermissionOutcome {
         // Check if already allowed for this session
         {
             let sessions = self.sessions.borrow();
             if let Some(session) = sessions.get(session_id)
                 && session.allowed_tools.contains(tool_name)
             {
-                return true;
+                return ToolPermissionOutcome::AllowOnce;
             }
         }
 
@@ -241,17 +247,62 @@ impl PrismAgent {
                         if let Some(session) = sessions.get_mut(session_id) {
                             session.allowed_tools.insert(tool_name.to_string());
                         }
+                        ToolPermissionOutcome::AllowSession
+                    } else if id == "allow-once" {
+                        ToolPermissionOutcome::AllowOnce
+                    } else {
+                        ToolPermissionOutcome::Deny
                     }
-                    id == "allow-once" || id == "allow-session"
                 }
-                acp::RequestPermissionOutcome::Cancelled => false,
-                _ => false,
+                acp::RequestPermissionOutcome::Cancelled => ToolPermissionOutcome::Deny,
+                _ => ToolPermissionOutcome::Deny,
             },
             Err(e) => {
                 tracing::warn!("permission request failed: {e:?}");
-                false
+                ToolPermissionOutcome::Deny
             }
         }
+    }
+
+    /// Handle a bridge approval request from a CLI session by routing it through Zed's UI.
+    pub async fn handle_bridge_approval(
+        &self,
+        req: crate::approval_bridge::ApprovalRequest,
+    ) -> crate::approval_bridge::ApprovalResponse {
+        use crate::approval_bridge::{ApprovalDecision, ApprovalResponse};
+
+        // Lazily create a synthetic bridge session for CLI requests
+        const BRIDGE_SESSION_ID: &str = "__cli_bridge__";
+        self.sessions
+            .borrow_mut()
+            .entry(BRIDGE_SESSION_ID.to_string())
+            .or_insert_with(|| AcpSession {
+                messages: Vec::new(),
+                cancelled: Arc::new(AtomicBool::new(false)),
+                allowed_tools: HashSet::new(),
+                model: None,
+                cwd: std::env::current_dir().unwrap_or_default(),
+            });
+
+        let tool_call_id = acp::ToolCallId::new("bridge_tc");
+
+        let outcome = self
+            .request_tool_permission(
+                BRIDGE_SESSION_ID,
+                &req.tool_name,
+                &tool_call_id,
+                &req.title,
+                &req.args,
+            )
+            .await;
+
+        let decision = match outcome {
+            ToolPermissionOutcome::AllowOnce => ApprovalDecision::AllowOnce,
+            ToolPermissionOutcome::AllowSession => ApprovalDecision::AllowSession,
+            ToolPermissionOutcome::Deny => ApprovalDecision::Deny,
+        };
+
+        ApprovalResponse { decision }
     }
 
     /// Evict oldest sessions when we exceed max_sessions.
@@ -483,7 +534,7 @@ impl PrismAgent {
 
                         // Request permission for write tools
                         if !crate::permissions::is_read_only(name) {
-                            let allowed = self
+                            let outcome = self
                                 .request_tool_permission(
                                     session_id,
                                     name,
@@ -492,7 +543,7 @@ impl PrismAgent {
                                     &args,
                                 )
                                 .await;
-                            if !allowed {
+                            if matches!(outcome, ToolPermissionOutcome::Deny) {
                                 // Emit rejection as a failed tool call
                                 self.send_update(
                                     session_id,
@@ -808,6 +859,17 @@ pub async fn run_acp_server(config: Config, mcp_registry: Option<Arc<McpRegistry
         });
 
     agent.set_connection(connection);
+
+    // Spawn approval bridge listener so CLI sessions can route prompts through Zed
+    let cwd = std::env::current_dir().unwrap_or_default();
+    if let Ok(listener) = crate::approval_bridge::ApprovalListener::bind(&cwd) {
+        let agent_clone = agent.clone();
+        tokio::task::spawn_local(async move {
+            listener
+                .serve(|req| agent_clone.handle_bridge_approval(req))
+                .await;
+        });
+    }
 
     io_task.await?;
 
