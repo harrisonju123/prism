@@ -83,21 +83,24 @@ pub fn tool_definitions() -> Vec<Tool> {
         ),
         make_tool(
             "glob_files",
-            "Find files by glob pattern (e.g. '**/*.rs'). Returns array of matching paths.",
+            "Find files by glob pattern (e.g. '**/*.rs'). Returns array of matching paths. Use sort_by='modified' to sort newest-first by mtime.",
             json!({ "type": "object", "properties": {
                 "pattern":     { "type": "string" },
                 "dir":         { "type": "string", "description": "root dir to search (default '.')" },
-                "max_results": { "type": "integer" }
+                "max_results": { "type": "integer" },
+                "sort_by":     { "type": "string", "description": "sort order: 'modified' for newest-first by mtime" }
             }, "required": ["pattern"] }),
         ),
         make_tool(
             "grep_files",
-            "Search file contents by regex. Returns [{path, line, text}] matches.",
+            "Search file contents by regex. output_mode: 'content' (default) returns [{path, line, text}], 'files' returns [path], 'count' returns [{path, count}]. Use context for surrounding lines in content mode.",
             json!({ "type": "object", "properties": {
                 "pattern":     { "type": "string", "description": "regex pattern" },
                 "dir":         { "type": "string", "description": "root dir (default '.')" },
                 "file_glob":   { "type": "string", "description": "optional glob to filter files, e.g. '*.rs'" },
-                "max_results": { "type": "integer" }
+                "max_results": { "type": "integer" },
+                "output_mode": { "type": "string", "description": "output mode: 'content' (default), 'files', or 'count'" },
+                "context":     { "type": "integer", "description": "lines of context before/after each match (content mode only)" }
             }, "required": ["pattern"] }),
         ),
         make_tool(
@@ -309,14 +312,17 @@ async fn dispatch_inner(name: &str, args: &serde_json::Value, session_cwd: Optio
             let pattern = args["pattern"].as_str().unwrap_or("");
             let dir = resolve_path(args["dir"].as_str(), session_cwd);
             let max_results = args["max_results"].as_u64().unwrap_or(100) as usize;
-            ToolResult::Text(search::glob_files(pattern, &dir, max_results))
+            let sort_by = args["sort_by"].as_str();
+            ToolResult::Text(search::glob_files(pattern, &dir, max_results, sort_by))
         }
         "grep_files" => {
             let pattern = args["pattern"].as_str().unwrap_or("");
             let dir = resolve_path(args["dir"].as_str(), session_cwd);
             let file_glob = args["file_glob"].as_str();
             let max_results = args["max_results"].as_u64().unwrap_or(50) as usize;
-            ToolResult::Text(search::grep_files(pattern, &dir, file_glob, max_results))
+            let output_mode = args["output_mode"].as_str();
+            let context_lines = args["context"].as_u64().map(|n| n as usize);
+            ToolResult::Text(search::grep_files(pattern, &dir, file_glob, max_results, output_mode, context_lines))
         }
         "web_fetch" => {
             let url = args["url"].as_str().unwrap_or("");
