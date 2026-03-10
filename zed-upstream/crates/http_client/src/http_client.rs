@@ -226,7 +226,7 @@ impl HttpClientWithUrl {
         )?)
     }
 
-    /// Builds a Zed Cloud URL using the given path.
+    /// Legacy: builds a Zed Cloud URL. Unreachable when server_url is not zed.dev.
     pub fn build_zed_cloud_url(&self, path: &str) -> Result<Url> {
         let base_url = self.base_url();
         let base_api_url = match base_url.as_ref() {
@@ -239,7 +239,7 @@ impl HttpClientWithUrl {
         Ok(Url::parse(&format!("{}{}", base_api_url, path))?)
     }
 
-    /// Builds a Zed Cloud URL using the given path and query params.
+    /// Legacy: builds a Zed Cloud URL with query params. Unreachable when server_url is not zed.dev.
     pub fn build_zed_cloud_url_with_query(&self, path: &str, query: impl Serialize) -> Result<Url> {
         let base_url = self.base_url();
         let base_api_url = match base_url.as_ref() {
@@ -252,7 +252,7 @@ impl HttpClientWithUrl {
         Ok(Url::parse(&format!("{}{}?{}", base_api_url, path, query))?)
     }
 
-    /// Builds a Zed LLM URL using the given path.
+    /// Legacy: builds a Zed LLM URL. Unreachable when server_url is not zed.dev.
     pub fn build_zed_llm_url(&self, path: &str, query: &[(&str, &str)]) -> Result<Url> {
         let base_url = self.base_url();
         let base_api_url = match base_url.as_ref() {

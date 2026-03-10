@@ -21,6 +21,18 @@ Apply order matters — patches must be applied in numeric order.
 | `crates/language_models/src/provider/open_ai.rs` | 0005 | Add `"length"` → `StopReason::MaxTokens` match arm | Medium — active file, upstream may add same mapping |
 | `crates/settings_content/src/settings_content.rs` | 0006 | `TelemetrySettingsContent::default()` → both fields false | Low |
 | `crates/telemetry/src/telemetry.rs` | 0006 | `send_event()` → no-op stub | Low |
+| `assets/settings/default.json` | 0012 | Change `default_model.provider` from `zed.dev` to `prism` | Medium — actively changed upstream |
+| `crates/language_model/src/registry.rs` | 0012 | Prioritize `prism` instead of `zed.dev` in `providers()` ordering | Low |
+| `crates/settings_content/src/agent.rs` | 0012 | Replace `zed.dev` with `prism` in provider enum list | Low |
+| `crates/auto_update/src/auto_update.rs` | 0013 | Disable auto-update polling unconditionally | Low |
+| `crates/client/src/client.rs` | 0014 | Make `SignIn` action a no-op | Low |
+| `assets/settings/default.json` | 0014 | Set `server_url` to empty string | Medium |
+| `crates/feedback/src/feedback.rs` | 0015 | Remove Zed feedback URLs, make actions no-ops | Low |
+| `crates/zed/src/zed/app_menus.rs` | 0015 | Remove Zed-specific Help menu items | Low |
+| `crates/edit_prediction_ui/src/edit_prediction_button.rs` | 0015 | Remove `billing-support@zed.dev` reference | Low |
+| `crates/ai_onboarding/src/young_account_banner.rs` | 0015 | Remove `billing-support@zed.dev` reference | Low |
+| `crates/cloud_llm_client/src/cloud_llm_client.rs` | 0016 | Mark Zed-specific headers as legacy | Low |
+| `crates/http_client/src/http_client.rs` | 0016 | Mark `build_zed_*_url()` functions as legacy | Low |
 
 ---
 
@@ -81,6 +93,56 @@ Adds `"length" => StopReason::MaxTokens` arm to a match expression. Upstream may
 Disables telemetry by default and stubs out `send_event()`. The `settings_content.rs` and `telemetry.rs` changes are minimal and unlikely to conflict. The `default.json` hunk may conflict with other upstream edits to that file.
 
 **Watch for:** Upstream re-enabling or restructuring telemetry settings; changes around the `telemetry` JSON block.
+
+---
+
+### 0012 — Make PrisM the default LLM provider, hide zed.dev
+**Files:** `assets/settings/default.json`, `crates/language_model/src/registry.rs`, `crates/settings_content/src/agent.rs`
+**Risk:** Medium (default.json), Low (others)
+
+Changes `default_model.provider` from `zed.dev` to `prism`, reorders provider list to show PrisM first, and replaces `zed.dev` with `prism` in the settings schema enum.
+
+**Watch for:** Upstream changes to default model settings or provider ordering logic.
+
+---
+
+### 0013 — Disable auto-update polling
+**File:** `crates/auto_update/src/auto_update.rs`
+**Risk:** Low
+
+Unconditionally disables auto-update polling so no background HTTP calls are made to Zed release servers.
+
+**Watch for:** Upstream restructuring of update init logic.
+
+---
+
+### 0014 — Disable Zed collaboration and sign-in
+**Files:** `crates/client/src/client.rs`, `assets/settings/default.json`
+**Risk:** Low-Medium
+
+Makes `SignIn` action a no-op and sets `server_url` to empty string. No WebSocket connections to collab.zed.dev.
+
+**Watch for:** Upstream changes to sign-in flow or `ClientSettings`.
+
+---
+
+### 0015 — Remove Zed feedback actions and documentation URLs
+**Files:** `crates/feedback/src/feedback.rs`, `crates/zed/src/zed/app_menus.rs`, `crates/edit_prediction_ui/src/edit_prediction_button.rs`, `crates/ai_onboarding/src/young_account_banner.rs`
+**Risk:** Low
+
+Removes Zed GitHub/email feedback actions (makes them no-ops), removes Help menu items pointing to zed.dev, and strips `billing-support@zed.dev` email references.
+
+**Watch for:** New menu items added upstream; changes to feedback action signatures.
+
+---
+
+### 0016 — Clean up cloud LLM client headers
+**Files:** `crates/cloud_llm_client/src/cloud_llm_client.rs`, `crates/http_client/src/http_client.rs`
+**Risk:** Low
+
+Marks Zed-specific `x-zed-*` header constants and `build_zed_*_url()` functions as legacy. These become unreachable when `server_url` is not `zed.dev`.
+
+**Watch for:** New header constants added upstream; changes to URL builder function signatures.
 
 ---
 

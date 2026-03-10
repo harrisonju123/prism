@@ -7,36 +7,10 @@ use zed_actions::feedback::{EmailZed, FileBugReport, RequestFeature};
 actions!(
     zed,
     [
-        /// Opens the Prism repository on GitHub.
+        /// No-op: Zed repository link removed in PrisM.
         OpenZedRepo,
     ]
 );
-
-const ZED_REPO_URL: &str = "https://github.com/harrisonju123/PrisM";
-
-const REQUEST_FEATURE_URL: &str = "https://github.com/harrisonju123/PrisM/discussions/new/choose";
-
-fn file_bug_report_url(specs: &SystemSpecs) -> String {
-    format!(
-        concat!(
-            "https://github.com/harrisonju123/PrisM/issues/new",
-            "?",
-            "environment={}"
-        ),
-        urlencoding::encode(&specs.to_string())
-    )
-}
-
-fn email_zed_url(specs: &SystemSpecs) -> String {
-    format!(
-        concat!(
-            "https://github.com/harrisonju123/PrisM/issues/new",
-            "?",
-            "body={}"
-        ),
-        urlencoding::encode(&format!("\n\nSystem Information:\n\n{}", specs))
-    )
-}
 
 pub fn init(cx: &mut App) {
     cx.observe_new(|workspace: &mut Workspace, _, _| {
@@ -62,34 +36,11 @@ pub fn init(cx: &mut App) {
                 })
                 .detach();
             })
-            .register_action(|_, _: &RequestFeature, _, cx| {
-                cx.open_url(REQUEST_FEATURE_URL);
-            })
-            .register_action(move |_, _: &FileBugReport, window, cx| {
-                let specs = SystemSpecs::new(window, cx);
-                cx.spawn_in(window, async move |_, cx| {
-                    let specs = specs.await;
-                    cx.update(|_, cx| {
-                        cx.open_url(&file_bug_report_url(&specs));
-                    })
-                    .log_err();
-                })
-                .detach();
-            })
-            .register_action(move |_, _: &EmailZed, window, cx| {
-                let specs = SystemSpecs::new(window, cx);
-                cx.spawn_in(window, async move |_, cx| {
-                    let specs = specs.await;
-                    cx.update(|_, cx| {
-                        cx.open_url(&email_zed_url(&specs));
-                    })
-                    .log_err();
-                })
-                .detach();
-            })
-            .register_action(move |_, _: &OpenZedRepo, _, cx| {
-                cx.open_url(ZED_REPO_URL);
-            });
+            // PrisM: feedback actions are no-ops — Zed.dev feedback channels removed
+            .register_action(|_, _: &RequestFeature, _, _cx| {})
+            .register_action(move |_, _: &FileBugReport, _window, _cx| {})
+            .register_action(move |_, _: &EmailZed, _window, _cx| {})
+            .register_action(move |_, _: &OpenZedRepo, _, _cx| {});
     })
     .detach();
 }

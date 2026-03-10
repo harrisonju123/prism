@@ -291,8 +291,8 @@ impl JsonSchema for LanguageModelProviderSetting {
                         "openrouter",
                         "vercel",
                         "vercel_ai_gateway",
-                        "x_ai",
-                        "zed.dev"
+                        "prism",
+                        "x_ai"
                     ]
                 },
                 {
