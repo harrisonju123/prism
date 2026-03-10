@@ -61,7 +61,7 @@ pub trait Store: Send + Sync {
     ) -> Result<Vec<Memory>>;
     async fn delete_memory(&self, workspace_id: Uuid, key: &str) -> Result<()>;
 
-    // --- Decision (2) ---
+    // --- Decision (5) ---
     async fn save_decision(
         &self,
         workspace_id: Uuid,
@@ -69,6 +69,7 @@ pub trait Store: Send + Sync {
         content: &str,
         thread_id: Option<Uuid>,
         tags: Vec<String>,
+        scope: DecisionScope,
     ) -> Result<Decision>;
     async fn list_decisions(
         &self,
@@ -76,8 +77,29 @@ pub trait Store: Send + Sync {
         thread_id: Option<Uuid>,
         tags: Option<Vec<String>>,
     ) -> Result<Vec<Decision>>;
+    async fn supersede_decision(
+        &self,
+        workspace_id: Uuid,
+        old_id: Uuid,
+        new_title: &str,
+        new_content: &str,
+        thread_id: Option<Uuid>,
+        tags: Vec<String>,
+    ) -> Result<Decision>;
+    async fn revoke_decision(&self, workspace_id: Uuid, id: Uuid) -> Result<Decision>;
+    async fn pending_decision_notifications(
+        &self,
+        workspace_id: Uuid,
+        agent_name: &str,
+    ) -> Result<Vec<Decision>>;
+    async fn acknowledge_decisions(
+        &self,
+        workspace_id: Uuid,
+        agent_name: &str,
+        decision_ids: Vec<Uuid>,
+    ) -> Result<()>;
 
-    // --- Agent (3) ---
+    // --- Agent (6) ---
     async fn checkin(
         &self,
         workspace_id: Uuid,
@@ -95,6 +117,14 @@ pub trait Store: Send + Sync {
         next_steps: Vec<String>,
     ) -> Result<AgentSession>;
     async fn list_agents(&self, workspace_id: Uuid) -> Result<Vec<AgentStatus>>;
+    async fn heartbeat(&self, workspace_id: Uuid, name: &str) -> Result<()>;
+    async fn set_agent_state(
+        &self,
+        workspace_id: Uuid,
+        name: &str,
+        state: AgentState,
+    ) -> Result<()>;
+    async fn reap_dead_agents(&self, workspace_id: Uuid, timeout_secs: i64) -> Result<Vec<String>>;
 
     // --- Context (2) ---
     async fn recall_thread(&self, workspace_id: Uuid, thread_name: &str) -> Result<ThreadContext>;
@@ -114,6 +144,56 @@ pub trait Store: Send + Sync {
 
     // --- Snapshot (1) ---
     async fn create_snapshot(&self, workspace_id: Uuid, label: &str) -> Result<Snapshot>;
+
+    // --- Handoff (4) ---
+    async fn create_handoff(
+        &self,
+        workspace_id: Uuid,
+        from_agent: &str,
+        task: &str,
+        thread_id: Option<Uuid>,
+        constraints: HandoffConstraints,
+        mode: HandoffMode,
+    ) -> Result<Handoff>;
+    async fn accept_handoff(
+        &self,
+        workspace_id: Uuid,
+        handoff_id: Uuid,
+        agent_name: &str,
+    ) -> Result<Handoff>;
+    async fn complete_handoff(
+        &self,
+        workspace_id: Uuid,
+        handoff_id: Uuid,
+        result: serde_json::Value,
+    ) -> Result<Handoff>;
+    async fn list_handoffs(
+        &self,
+        workspace_id: Uuid,
+        agent_name: Option<&str>,
+        status: Option<HandoffStatus>,
+    ) -> Result<Vec<Handoff>>;
+
+    // --- Guardrails (3) ---
+    async fn set_guardrails(
+        &self,
+        workspace_id: Uuid,
+        thread_name: &str,
+        guardrails: ThreadGuardrails,
+    ) -> Result<ThreadGuardrails>;
+    async fn get_guardrails(
+        &self,
+        workspace_id: Uuid,
+        thread_name: &str,
+    ) -> Result<Option<ThreadGuardrails>>;
+    async fn check_guardrail(
+        &self,
+        workspace_id: Uuid,
+        thread_name: &str,
+        agent_name: &str,
+        tool_name: &str,
+        file_path: Option<&str>,
+    ) -> Result<GuardrailCheck>;
 
     // --- Overview (1) ---
     async fn get_workspace_overview(&self, workspace_id: Uuid) -> Result<WorkspaceOverview>;

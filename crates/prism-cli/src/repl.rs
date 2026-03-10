@@ -54,11 +54,25 @@ pub async fn run_interactive(
                 &s.episode_id.to_string()[..8],
                 s.turns
             );
-            Agent::from_session(client, config, s, mcp_registry, memory, skill_registry.clone())
+            Agent::from_session(
+                client,
+                config,
+                s,
+                mcp_registry,
+                memory,
+                skill_registry.clone(),
+            )
         }
         None => {
             // Placeholder task — cleared immediately on first user input
-            Agent::new(client, config, "", mcp_registry, memory, skill_registry.clone())
+            Agent::new(
+                client,
+                config,
+                "",
+                mcp_registry,
+                memory,
+                skill_registry.clone(),
+            )
         }
     };
 
@@ -83,6 +97,9 @@ pub async fn run_interactive(
             eprintln!("\n[exit]");
             break;
         }
+
+        // Set agent state to Idle while waiting for input
+        agent.set_idle().await;
 
         // Show any background task completions before the prompt (non-consuming)
         for note in agent.poll_background_notifications() {

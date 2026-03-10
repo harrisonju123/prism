@@ -69,7 +69,10 @@ impl ConversationTree {
     /// Walk from root to active_leaf, returning messages in order.
     pub fn active_path(&self) -> Vec<Message> {
         let ancestors = self.ancestors(self.active_leaf);
-        ancestors.into_iter().map(|id| self.nodes[id as usize].message.clone()).collect()
+        ancestors
+            .into_iter()
+            .map(|id| self.nodes[id as usize].message.clone())
+            .collect()
     }
 
     /// Number of messages on the active path.
@@ -87,9 +90,9 @@ impl ConversationTree {
         }
 
         // Find the last assistant message on the active path
-        let ast_pos = path.iter().rposition(|&id| {
-            self.nodes[id as usize].message.role == MessageRole::Assistant
-        });
+        let ast_pos = path
+            .iter()
+            .rposition(|&id| self.nodes[id as usize].message.role == MessageRole::Assistant);
 
         let Some(pos) = ast_pos else { return 0 };
 
@@ -206,7 +209,8 @@ impl ConversationTree {
         // BFS to find the deepest child following the last-child path
         let mut current = node_id;
         loop {
-            let children: Vec<u32> = self.nodes
+            let children: Vec<u32> = self
+                .nodes
                 .iter()
                 .filter(|n| n.parent_id == Some(current))
                 .map(|n| n.id)
@@ -224,7 +228,8 @@ impl ConversationTree {
         let mut depth = 1;
         let mut current = node_id;
         loop {
-            let children: Vec<u32> = self.nodes
+            let children: Vec<u32> = self
+                .nodes
                 .iter()
                 .filter(|n| n.parent_id == Some(current))
                 .map(|n| n.id)
@@ -283,10 +288,8 @@ mod tests {
 
     #[test]
     fn push_extends_active_path() {
-        let mut tree = ConversationTree::from_messages(vec![
-            msg(MessageRole::System),
-            msg(MessageRole::User),
-        ]);
+        let mut tree =
+            ConversationTree::from_messages(vec![msg(MessageRole::System), msg(MessageRole::User)]);
         let id = tree.push(msg(MessageRole::Assistant));
         assert_eq!(id, 2);
         assert_eq!(tree.active_message_count(), 3);
@@ -323,10 +326,8 @@ mod tests {
 
     #[test]
     fn undo_no_assistant_returns_zero() {
-        let mut tree = ConversationTree::from_messages(vec![
-            msg(MessageRole::System),
-            msg(MessageRole::User),
-        ]);
+        let mut tree =
+            ConversationTree::from_messages(vec![msg(MessageRole::System), msg(MessageRole::User)]);
         let removed = tree.undo();
         assert_eq!(removed, 0);
         assert_eq!(tree.active_message_count(), 2);
@@ -406,10 +407,7 @@ mod tests {
         ]);
 
         // Simulate compression: replace with shorter sequence
-        let compressed = vec![
-            msg(MessageRole::System),
-            msg(MessageRole::User),
-        ];
+        let compressed = vec![msg(MessageRole::System), msg(MessageRole::User)];
         tree.replace_active_path(compressed);
         assert_eq!(tree.active_message_count(), 2);
         // Old nodes still exist in the tree

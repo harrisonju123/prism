@@ -248,6 +248,9 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
     ("008_hourly_task_stats", HOURLY_TASK_STATS_SCHEMA),
     ("009_daily_spend_by_key", DAILY_SPEND_BY_KEY_SCHEMA),
     ("010_hourly_error_rate", HOURLY_ERROR_RATE_SCHEMA),
-    ("011_inference_events_v3_thread_id", INFERENCE_EVENTS_MIGRATION_V3),
+    (
+        "011_inference_events_v3_thread_id",
+        INFERENCE_EVENTS_MIGRATION_V3,
+    ),
     ("012_daily_spend_by_thread", DAILY_SPEND_BY_THREAD_SCHEMA),
 ];

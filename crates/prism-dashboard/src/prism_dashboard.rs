@@ -2,7 +2,8 @@ mod panel;
 mod types;
 
 pub use panel::PrismDashboardPanel;
-use panel::{Toggle, ToggleFocus};
+use panel::Toggle;
+pub use panel::ToggleFocus;
 use workspace::Workspace;
 
 pub fn init(cx: &mut gpui::App) {

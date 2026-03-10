@@ -39,7 +39,10 @@ enum Commands {
         resume: Option<Option<String>>,
         #[arg(long, value_enum)]
         permission_mode: Option<PermissionMode>,
-        #[arg(long, help = "Undo last assistant turn before resuming (requires --resume)")]
+        #[arg(
+            long,
+            help = "Undo last assistant turn before resuming (requires --resume)"
+        )]
         undo: bool,
         #[arg(long, help = "Switch to branch N before resuming (requires --resume)")]
         branch: Option<u32>,
@@ -164,7 +167,8 @@ async fn run(cli: Cli) -> Result<()> {
             if let Some(resume_flag) = resume {
                 // Resume a previous session
                 let id_prefix = resume_flag.unwrap_or_else(|| "last".to_string());
-                let mut session = Session::load_by_id_prefix(&config.session.sessions_dir, &id_prefix)?;
+                let mut session =
+                    Session::load_by_id_prefix(&config.session.sessions_dir, &id_prefix)?;
 
                 if let Some(node_id) = branch {
                     session.switch_branch(node_id);
@@ -178,20 +182,37 @@ async fn run(cli: Cli) -> Result<()> {
 
                 if std::io::stdin().is_terminal() && task.is_none() {
                     // TTY + resume + no explicit task → interactive mode
-                    repl::run_interactive(client, config, Some(session), mcp_registry, memory, skill_registry).await?;
+                    repl::run_interactive(
+                        client,
+                        config,
+                        Some(session),
+                        mcp_registry,
+                        memory,
+                        skill_registry,
+                    )
+                    .await?;
                 } else {
                     eprintln!(
                         "[resume] episode {}  {} turns so far",
                         &session.episode_id.to_string()[..8],
                         session.turns
                     );
-                    let mut agent = Agent::from_session(client, config, session, mcp_registry, memory, skill_registry);
+                    let mut agent = Agent::from_session(
+                        client,
+                        config,
+                        session,
+                        mcp_registry,
+                        memory,
+                        skill_registry,
+                    );
                     let task_str = task.as_deref().unwrap_or("");
                     agent.resume(task_str).await?;
                 }
             } else if let Some(task_str) = task {
                 // Explicit task → single-shot (expand skill if needed)
-                let task_str = if let Some((skill_name, skill_args)) = prism_cli::skills::parse_skill_invocation(&task_str) {
+                let task_str = if let Some((skill_name, skill_args)) =
+                    prism_cli::skills::parse_skill_invocation(&task_str)
+                {
                     match skill_registry.get(skill_name) {
                         Some(skill) => {
                             if !skill.user_invocable {
@@ -201,18 +222,29 @@ async fn run(cli: Cli) -> Result<()> {
                             skill.expand(skill_args)
                         }
                         None => {
-                            anyhow::bail!("unknown skill: '{skill_name}'. Available: {:?}", skill_registry.names());
+                            anyhow::bail!(
+                                "unknown skill: '{skill_name}'. Available: {:?}",
+                                skill_registry.names()
+                            );
                         }
                     }
                 } else {
                     task_str
                 };
 
-                let mut agent = Agent::new(client, config, &task_str, mcp_registry, memory, skill_registry);
+                let mut agent = Agent::new(
+                    client,
+                    config,
+                    &task_str,
+                    mcp_registry,
+                    memory,
+                    skill_registry,
+                );
                 agent.run(&task_str).await?;
             } else if std::io::stdin().is_terminal() {
                 // No task, TTY → interactive mode
-                repl::run_interactive(client, config, None, mcp_registry, memory, skill_registry).await?;
+                repl::run_interactive(client, config, None, mcp_registry, memory, skill_registry)
+                    .await?;
             } else {
                 anyhow::bail!("task is required when stdin is not a terminal");
             }
@@ -249,6 +281,9 @@ async fn run(cli: Cli) -> Result<()> {
                 cost_cap,
                 tools: None,
                 timeout_secs: timeout,
+                thread: None,
+                constraints: None,
+                handoff_mode: None,
             };
             let result = prism_cli::agent::spawn::spawn_agent(
                 spawn_config,
@@ -291,17 +326,21 @@ async fn run(cli: Cli) -> Result<()> {
                 }
                 SessionsCmd::Branches { id_prefix } => {
                     let session = Session::load_by_id_prefix(&sessions_dir, &id_prefix)?;
-                    let tree = session.tree.as_ref()
-                        .ok_or_else(|| anyhow::anyhow!("session has no conversation tree (v1 format)"))?;
+                    let tree = session.tree.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("session has no conversation tree (v1 format)")
+                    })?;
                     let points = tree.branch_points();
                     if points.is_empty() {
                         eprintln!("no branch points in session");
                     } else {
                         eprintln!("{:<10} {}", "NODE", "BRANCHES");
                         for (parent_id, branches) in &points {
-                            let branch_desc: Vec<String> = branches.iter().map(|b| {
-                                format!("node {} ({}, depth {})", b.node_id, b.role, b.depth)
-                            }).collect();
+                            let branch_desc: Vec<String> = branches
+                                .iter()
+                                .map(|b| {
+                                    format!("node {} ({}, depth {})", b.node_id, b.role, b.depth)
+                                })
+                                .collect();
                             eprintln!("{:<10} {}", parent_id, branch_desc.join(" | "));
                         }
                     }

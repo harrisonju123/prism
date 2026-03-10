@@ -4,6 +4,8 @@ mod activity;
 mod agent;
 mod context;
 mod decision;
+mod guardrail;
+mod handoff;
 mod memory;
 mod migrate;
 mod snapshot;
@@ -135,8 +137,9 @@ impl Store for SqliteStore {
         content: &str,
         thread_id: Option<Uuid>,
         tags: Vec<String>,
+        scope: DecisionScope,
     ) -> Result<Decision> {
-        self.save_decision_impl(workspace_id, title, content, thread_id, tags)
+        self.save_decision_impl(workspace_id, title, content, thread_id, tags, scope)
             .await
     }
 
@@ -147,6 +150,49 @@ impl Store for SqliteStore {
         tags: Option<Vec<String>>,
     ) -> Result<Vec<Decision>> {
         self.list_decisions_impl(workspace_id, thread_id, tags)
+            .await
+    }
+
+    async fn supersede_decision(
+        &self,
+        workspace_id: Uuid,
+        old_id: Uuid,
+        new_title: &str,
+        new_content: &str,
+        thread_id: Option<Uuid>,
+        tags: Vec<String>,
+    ) -> Result<Decision> {
+        self.supersede_decision_impl(
+            workspace_id,
+            old_id,
+            new_title,
+            new_content,
+            thread_id,
+            tags,
+        )
+        .await
+    }
+
+    async fn revoke_decision(&self, workspace_id: Uuid, id: Uuid) -> Result<Decision> {
+        self.revoke_decision_impl(workspace_id, id).await
+    }
+
+    async fn pending_decision_notifications(
+        &self,
+        workspace_id: Uuid,
+        agent_name: &str,
+    ) -> Result<Vec<Decision>> {
+        self.pending_decision_notifications_impl(workspace_id, agent_name)
+            .await
+    }
+
+    async fn acknowledge_decisions(
+        &self,
+        workspace_id: Uuid,
+        agent_name: &str,
+        decision_ids: Vec<Uuid>,
+    ) -> Result<()> {
+        self.acknowledge_decisions_impl(workspace_id, agent_name, decision_ids)
             .await
     }
 
@@ -185,6 +231,23 @@ impl Store for SqliteStore {
         self.list_agents_impl(workspace_id).await
     }
 
+    async fn heartbeat(&self, workspace_id: Uuid, name: &str) -> Result<()> {
+        self.heartbeat_impl(workspace_id, name).await
+    }
+
+    async fn set_agent_state(
+        &self,
+        workspace_id: Uuid,
+        name: &str,
+        state: AgentState,
+    ) -> Result<()> {
+        self.set_agent_state_impl(workspace_id, name, state).await
+    }
+
+    async fn reap_dead_agents(&self, workspace_id: Uuid, timeout_secs: i64) -> Result<Vec<String>> {
+        self.reap_dead_agents_impl(workspace_id, timeout_secs).await
+    }
+
     async fn recall_thread(&self, workspace_id: Uuid, thread_name: &str) -> Result<ThreadContext> {
         self.recall_thread_impl(workspace_id, thread_name).await
     }
@@ -208,6 +271,79 @@ impl Store for SqliteStore {
 
     async fn create_snapshot(&self, workspace_id: Uuid, label: &str) -> Result<Snapshot> {
         self.create_snapshot_impl(workspace_id, label).await
+    }
+
+    async fn create_handoff(
+        &self,
+        workspace_id: Uuid,
+        from_agent: &str,
+        task: &str,
+        thread_id: Option<Uuid>,
+        constraints: HandoffConstraints,
+        mode: HandoffMode,
+    ) -> Result<Handoff> {
+        self.create_handoff_impl(workspace_id, from_agent, task, thread_id, constraints, mode)
+            .await
+    }
+
+    async fn accept_handoff(
+        &self,
+        workspace_id: Uuid,
+        handoff_id: Uuid,
+        agent_name: &str,
+    ) -> Result<Handoff> {
+        self.accept_handoff_impl(workspace_id, handoff_id, agent_name)
+            .await
+    }
+
+    async fn complete_handoff(
+        &self,
+        workspace_id: Uuid,
+        handoff_id: Uuid,
+        result: serde_json::Value,
+    ) -> Result<Handoff> {
+        self.complete_handoff_impl(workspace_id, handoff_id, result)
+            .await
+    }
+
+    async fn list_handoffs(
+        &self,
+        workspace_id: Uuid,
+        agent_name: Option<&str>,
+        status: Option<HandoffStatus>,
+    ) -> Result<Vec<Handoff>> {
+        self.list_handoffs_impl(workspace_id, agent_name, status)
+            .await
+    }
+
+    async fn set_guardrails(
+        &self,
+        workspace_id: Uuid,
+        thread_name: &str,
+        guardrails: ThreadGuardrails,
+    ) -> Result<ThreadGuardrails> {
+        self.set_guardrails_impl(workspace_id, thread_name, guardrails)
+            .await
+    }
+
+    async fn get_guardrails(
+        &self,
+        workspace_id: Uuid,
+        thread_name: &str,
+    ) -> Result<Option<ThreadGuardrails>> {
+        self.get_guardrails_impl(workspace_id, thread_name).await
+    }
+
+    async fn check_guardrail(
+        &self,
+        workspace_id: Uuid,
+        thread_name: &str,
+        agent_name: &str,
+        tool_name: &str,
+        file_path: Option<&str>,
+    ) -> Result<GuardrailCheck> {
+        self.check_guardrail_impl(workspace_id, thread_name, agent_name, tool_name, file_path)
+            .await
     }
 
     async fn get_workspace_overview(&self, workspace_id: Uuid) -> Result<WorkspaceOverview> {

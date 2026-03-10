@@ -1413,16 +1413,26 @@ fn build_routing_headers(
 ) -> HeaderMap {
     let mut headers = HeaderMap::new();
     match requested_model.parse() {
-        Ok(v) => { headers.insert(HEADER_REQUESTED_MODEL, v); }
-        Err(e) => tracing::debug!(requested_model, error = %e, "invalid header value for requested model"),
+        Ok(v) => {
+            headers.insert(HEADER_REQUESTED_MODEL, v);
+        }
+        Err(e) => {
+            tracing::debug!(requested_model, error = %e, "invalid header value for requested model")
+        }
     }
     match model.parse() {
-        Ok(v) => { headers.insert(HEADER_ROUTED_MODEL, v); }
+        Ok(v) => {
+            headers.insert(HEADER_ROUTED_MODEL, v);
+        }
         Err(e) => tracing::debug!(model, error = %e, "invalid header value for routed model"),
     }
     match provider_name.parse() {
-        Ok(v) => { headers.insert(HEADER_ROUTED_PROVIDER, v); }
-        Err(e) => tracing::debug!(provider_name, error = %e, "invalid header value for routed provider"),
+        Ok(v) => {
+            headers.insert(HEADER_ROUTED_PROVIDER, v);
+        }
+        Err(e) => {
+            tracing::debug!(provider_name, error = %e, "invalid header value for routed provider")
+        }
     }
     if let Some(d) = decision {
         headers.insert(
@@ -1690,7 +1700,10 @@ mod tests {
             "claude-sonnet-4",
         );
 
-        assert_eq!(headers.get(HEADER_ROUTED_MODEL).unwrap(), "claude-sonnet-4-6");
+        assert_eq!(
+            headers.get(HEADER_ROUTED_MODEL).unwrap(),
+            "claude-sonnet-4-6"
+        );
         assert_eq!(headers.get(HEADER_ROUTED_PROVIDER).unwrap(), "bedrock");
         assert_eq!(headers.get(HEADER_WAS_OVERRIDDEN).unwrap(), "true");
         assert_eq!(
@@ -1698,18 +1711,30 @@ mod tests {
             "criteria=CheapestAboveQuality, quality=0.78"
         );
         assert_eq!(headers.get(HEADER_TASK_TYPE).unwrap(), "code_generation");
-        assert_eq!(headers.get(HEADER_REQUESTED_MODEL).unwrap(), "claude-sonnet-4");
+        assert_eq!(
+            headers.get(HEADER_REQUESTED_MODEL).unwrap(),
+            "claude-sonnet-4"
+        );
     }
 
     #[test]
     fn build_routing_headers_without_decision() {
-        let headers = build_routing_headers("anthropic", "claude-sonnet-4", None, None, "claude-sonnet-4");
+        let headers = build_routing_headers(
+            "anthropic",
+            "claude-sonnet-4",
+            None,
+            None,
+            "claude-sonnet-4",
+        );
 
         assert_eq!(headers.get(HEADER_ROUTED_MODEL).unwrap(), "claude-sonnet-4");
         assert_eq!(headers.get(HEADER_ROUTED_PROVIDER).unwrap(), "anthropic");
         assert_eq!(headers.get(HEADER_WAS_OVERRIDDEN).unwrap(), "false");
         assert!(headers.get(HEADER_ROUTING_REASON).is_none());
         assert!(headers.get(HEADER_TASK_TYPE).is_none());
-        assert_eq!(headers.get(HEADER_REQUESTED_MODEL).unwrap(), "claude-sonnet-4");
+        assert_eq!(
+            headers.get(HEADER_REQUESTED_MODEL).unwrap(),
+            "claude-sonnet-4"
+        );
     }
 }

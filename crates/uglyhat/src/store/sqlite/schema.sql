@@ -42,15 +42,19 @@ CREATE INDEX IF NOT EXISTS idx_memories_thread ON memories(thread_id)
 
 -- Decisions (why a choice was made)
 CREATE TABLE IF NOT EXISTS decisions (
-    id            TEXT PRIMARY KEY,
-    workspace_id  TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    thread_id     TEXT REFERENCES threads(id) ON DELETE SET NULL,
-    title         TEXT NOT NULL,
-    content       TEXT NOT NULL DEFAULT '',
-    status        TEXT NOT NULL DEFAULT 'active',
-    tags          TEXT NOT NULL DEFAULT '[]',
-    created_at    TEXT NOT NULL,
-    updated_at    TEXT NOT NULL
+    id              TEXT PRIMARY KEY,
+    workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    thread_id       TEXT REFERENCES threads(id) ON DELETE SET NULL,
+    title           TEXT NOT NULL,
+    content         TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'active',
+    scope           TEXT NOT NULL DEFAULT 'thread'
+        CHECK(scope IN ('thread','workspace')),
+    superseded_by   TEXT,
+    supersedes      TEXT,
+    tags            TEXT NOT NULL DEFAULT '[]',
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_workspace ON decisions(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_decisions_thread ON decisions(thread_id)
@@ -61,9 +65,12 @@ CREATE TABLE IF NOT EXISTS agents (
     id                TEXT PRIMARY KEY,
     workspace_id      TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     name              TEXT NOT NULL,
+    state             TEXT NOT NULL DEFAULT 'idle',
     capabilities      TEXT NOT NULL DEFAULT '[]',
     current_thread_id TEXT REFERENCES threads(id) ON DELETE SET NULL,
     last_checkin      TEXT,
+    last_heartbeat    TEXT,
+    parent_agent_id   TEXT REFERENCES agents(id) ON DELETE SET NULL,
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL,
     UNIQUE(workspace_id, name)
@@ -103,6 +110,50 @@ CREATE TABLE IF NOT EXISTS activity_log (
 CREATE INDEX IF NOT EXISTS idx_activity_log_workspace_time ON activity_log(workspace_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_activity_log_actor ON activity_log(workspace_id, actor)
     WHERE actor != '';
+
+-- Decision notifications (propagation queue)
+CREATE TABLE IF NOT EXISTS decision_notifications (
+    id            TEXT PRIMARY KEY,
+    decision_id   TEXT NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
+    agent_id      TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    notified_at   TEXT NOT NULL,
+    acknowledged  INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(decision_id, agent_id)
+);
+
+-- Handoffs (structured task delegation)
+CREATE TABLE IF NOT EXISTS handoffs (
+    id              TEXT PRIMARY KEY,
+    workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    from_agent_id   TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    to_agent_id     TEXT REFERENCES agents(id) ON DELETE SET NULL,
+    thread_id       TEXT REFERENCES threads(id) ON DELETE SET NULL,
+    task            TEXT NOT NULL,
+    constraints     TEXT NOT NULL DEFAULT '{}',
+    mode            TEXT NOT NULL DEFAULT 'delegate_and_await',
+    status          TEXT NOT NULL DEFAULT 'pending',
+    result          TEXT,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_handoffs_workspace ON handoffs(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_handoffs_status ON handoffs(workspace_id, status);
+
+-- Thread guardrails (ownership, locking, restrictions)
+CREATE TABLE IF NOT EXISTS thread_guardrails (
+    id              TEXT PRIMARY KEY,
+    thread_id       TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+    workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    owner_agent_id  TEXT REFERENCES agents(id) ON DELETE SET NULL,
+    locked          INTEGER NOT NULL DEFAULT 0,
+    allowed_files   TEXT NOT NULL DEFAULT '[]',
+    allowed_tools   TEXT NOT NULL DEFAULT '[]',
+    cost_budget_usd REAL,
+    cost_spent_usd  REAL NOT NULL DEFAULT 0.0,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    UNIQUE(thread_id)
+);
 
 -- Snapshots
 CREATE TABLE IF NOT EXISTS snapshots (

@@ -104,7 +104,11 @@ pub struct PrismAgent {
 }
 
 impl PrismAgent {
-    pub fn new(config: Config, mcp_registry: Option<Arc<McpRegistry>>, skill_registry: SkillRegistry) -> Self {
+    pub fn new(
+        config: Config,
+        mcp_registry: Option<Arc<McpRegistry>>,
+        skill_registry: SkillRegistry,
+    ) -> Self {
         let memory = MemoryManager::new(None, None);
         let hook_runner = config.build_hook_runner();
         let compressor = config.build_compressor();
@@ -845,7 +849,11 @@ impl acp::Agent for PrismAgent {
     }
 }
 
-pub async fn run_acp_server(config: Config, mcp_registry: Option<Arc<McpRegistry>>, skill_registry: SkillRegistry) -> Result<()> {
+pub async fn run_acp_server(
+    config: Config,
+    mcp_registry: Option<Arc<McpRegistry>>,
+    skill_registry: SkillRegistry,
+) -> Result<()> {
     let agent = Rc::new(PrismAgent::new(config, mcp_registry, skill_registry));
 
     use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};

@@ -89,9 +89,8 @@ impl PrismDashboardPanel {
             let gateway_url = std::env::var("PRISM_GATEWAY_URL").ok();
             let api_key = std::env::var("PRISM_API_KEY").ok();
 
-            let prism_subscription =
-                language_models::provider::prism::prism_state_entity(cx)
-                    .map(|state| cx.observe(&state, |_, _, cx| cx.notify()));
+            let prism_subscription = language_models::provider::prism::prism_state_entity(cx)
+                .map(|state| cx.observe(&state, |_, _, cx| cx.notify()));
 
             let mut panel = Self {
                 focus_handle: cx.focus_handle(),
@@ -509,9 +508,7 @@ impl PrismDashboardPanel {
                 cx,
             ))
             .when(live_routing_expanded, |this| {
-                if let Some(info) =
-                    language_models::provider::prism::prism_last_routing_info(cx)
-                {
+                if let Some(info) = language_models::provider::prism::prism_last_routing_info(cx) {
                     let override_color = if info.was_overridden {
                         Color::Error
                     } else {
@@ -573,8 +570,7 @@ impl PrismDashboardPanel {
                                                     .bg(override_color.color(cx)),
                                             )
                                             .child(
-                                                Label::new(override_label)
-                                                    .size(LabelSize::Small),
+                                                Label::new(override_label).size(LabelSize::Small),
                                             ),
                                     ),
                             )

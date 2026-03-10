@@ -114,7 +114,13 @@ pub struct Agent {
     background: BackgroundTaskManager,
     // Shared interrupt flag — set by ctrl-c handler (owned by REPL) or per-run handler
     pub interrupted: Arc<AtomicBool>,
+    /// Current thread name (from UH_THREAD env or handoff)
+    current_thread: Option<String>,
 }
+
+const UH_AGENT_NAME_ENV: &str = "UH_AGENT_NAME";
+const UH_AGENT_NAME_DEFAULT: &str = "claude";
+const UH_THREAD_ENV: &str = "UH_THREAD";
 
 impl Agent {
     pub fn new(
@@ -130,6 +136,7 @@ impl Agent {
         let permission_gate = ToolPermissionGate::resolve(config.extensions.permission_mode);
         let hook_runner = config.build_hook_runner();
         let compressor = config.build_compressor();
+        let current_thread = std::env::var(UH_THREAD_ENV).ok();
         Self {
             client,
             config,
@@ -142,6 +149,7 @@ impl Agent {
             compressor,
             background: BackgroundTaskManager::new(),
             interrupted: Arc::new(AtomicBool::new(false)),
+            current_thread,
         }
     }
 
@@ -156,6 +164,7 @@ impl Agent {
         let permission_gate = ToolPermissionGate::resolve(config.extensions.permission_mode);
         let hook_runner = config.build_hook_runner();
         let compressor = config.build_compressor();
+        let current_thread = std::env::var(UH_THREAD_ENV).ok();
         Self {
             client,
             config,
@@ -168,6 +177,7 @@ impl Agent {
             compressor,
             background: BackgroundTaskManager::new(),
             interrupted: Arc::new(AtomicBool::new(false)),
+            current_thread,
         }
     }
 
@@ -194,7 +204,8 @@ impl Agent {
     /// Reset conversation to just the system message (rebuilds system prompt to pick up latest context).
     pub async fn clear_conversation(&mut self) {
         let full_system = self.build_full_system_prompt().await;
-        self.session.set_active_messages(vec![common::system_message(full_system)]);
+        self.session
+            .set_active_messages(vec![common::system_message(full_system)]);
         self.session.updated_at = chrono::Utc::now().to_rfc3339();
         if let Err(e) = self.session.save(&self.config.session.sessions_dir) {
             tracing::warn!("failed to save session after clear: {e}");
@@ -224,7 +235,10 @@ impl Agent {
         } else {
             let mut msgs = active;
             compression::trim_messages_fifo(&mut msgs, max);
-            eprintln!("[compact] trimmed to {} messages (no compression model configured)", msgs.len());
+            eprintln!(
+                "[compact] trimmed to {} messages (no compression model configured)",
+                msgs.len()
+            );
             self.session.set_active_messages(msgs);
         }
 
@@ -317,6 +331,12 @@ impl Agent {
                 break;
             }
 
+            // Heartbeat + state transition to Working
+            self.send_heartbeat_and_set_working().await;
+
+            // Poll for workspace-scoped decisions from other agents
+            self.poll_and_inject_decisions().await;
+
             // Inject completed background tasks as user messages
             let completed = self.background.take_pending();
             for task in &completed {
@@ -332,9 +352,11 @@ impl Agent {
                     task.task_id,
                     task.description,
                     task.elapsed_secs,
-                    serde_json::to_string(&task.result).unwrap_or_else(|_| task.result.summary.clone()),
+                    serde_json::to_string(&task.result)
+                        .unwrap_or_else(|_| task.result.summary.clone()),
                 );
-                self.session.push_message(common::user_message(notification));
+                self.session
+                    .push_message(common::user_message(notification));
             }
 
             let req = ChatCompletionRequest {
@@ -444,10 +466,8 @@ impl Agent {
             // Context compression (or FIFO fallback)
             let active = self.session.active_messages();
             if let Some(ref compressor) = self.compressor
-                && compressor.should_compress(
-                    active.len(),
-                    self.config.session.max_session_messages,
-                )
+                && compressor
+                    .should_compress(active.len(), self.config.session.max_session_messages)
             {
                 if let Some(compressed) = compressor
                     .compress(
@@ -478,7 +498,9 @@ impl Agent {
             if let Some(cap) = self.config.model.max_cost_usd
                 && total_cost_usd >= cap
             {
-                self.permission_gate.renderer().cost_cap_notice(total_cost_usd, cap);
+                self.permission_gate
+                    .renderer()
+                    .cost_cap_notice(total_cost_usd, cap);
                 stop_reason = Some(AgentStopReason::CostCap);
                 break;
             }
@@ -522,9 +544,10 @@ impl Agent {
                             PreToolAction::Allow => {}
                         }
 
-                        let args_preview =
-                            common::truncate_with_ellipsis(&args.to_string(), 120);
-                        self.permission_gate.renderer().tool_start(&name, &args_preview);
+                        let args_preview = common::truncate_with_ellipsis(&args.to_string(), 120);
+                        self.permission_gate
+                            .renderer()
+                            .tool_start(&name, &args_preview);
 
                         // Permission check — blocks on TTY read when prompting,
                         // which is intentional (we're waiting for user input)
@@ -540,7 +563,23 @@ impl Agent {
                             continue;
                         }
 
-                        prepared.push(PreparedToolCall { index, id, name, args });
+                        // Guardrail check: enforce thread-scoped restrictions
+                        if let Some(denial) = self.check_guardrails(&name, &args).await {
+                            self.permission_gate.renderer().tool_denied(&name);
+                            outcomes.push(ToolOutcome::Denied {
+                                index,
+                                id,
+                                message: denial,
+                            });
+                            continue;
+                        }
+
+                        prepared.push(PreparedToolCall {
+                            index,
+                            id,
+                            name,
+                            args,
+                        });
                     }
 
                     // --- Phase 2: Parallel execution ---
@@ -577,15 +616,12 @@ impl Agent {
                                 });
                             }
                             Some(BuiltinTool::SaveMemory) => {
-                                let key =
-                                    ptc.args["key"].as_str().unwrap_or("note").to_string();
-                                let value =
-                                    ptc.args["value"].as_str().unwrap_or("").to_string();
+                                let key = ptc.args["key"].as_str().unwrap_or("note").to_string();
+                                let value = ptc.args["value"].as_str().unwrap_or("").to_string();
                                 let t0 = std::time::Instant::now();
                                 let result = match self.memory.save(&key, &value).await {
                                     Ok(_) => {
-                                        serde_json::json!({"saved": true, "key": key})
-                                            .to_string()
+                                        serde_json::json!({"saved": true, "key": key}).to_string()
                                     }
                                     Err(e) => {
                                         self.memory.append(key.clone(), value);
@@ -620,13 +656,18 @@ impl Agent {
                                 for task in &completed {
                                     total_cost_usd += task.result.cost;
                                 }
-                                let active: Vec<serde_json::Value> = self.background.active_tasks().iter().map(|t| {
-                                    json!({
-                                        "task_id": t.task_id,
-                                        "description": t.description,
-                                        "running_secs": t.started_at.elapsed().as_secs_f64(),
+                                let active: Vec<serde_json::Value> = self
+                                    .background
+                                    .active_tasks()
+                                    .iter()
+                                    .map(|t| {
+                                        json!({
+                                            "task_id": t.task_id,
+                                            "description": t.description,
+                                            "running_secs": t.started_at.elapsed().as_secs_f64(),
+                                        })
                                     })
-                                }).collect();
+                                    .collect();
                                 let completed_json: Vec<serde_json::Value> = completed.iter().map(|t| {
                                     json!({
                                         "task_id": t.task_id,
@@ -638,7 +679,8 @@ impl Agent {
                                 let result = json!({
                                     "active": active,
                                     "completed": completed_json,
-                                }).to_string();
+                                })
+                                .to_string();
                                 outcomes.push(ToolOutcome::Result {
                                     index: ptc.index,
                                     id: ptc.id,
@@ -649,14 +691,17 @@ impl Agent {
                                 });
                             }
                             Some(BuiltinTool::SpawnAgent) => {
-                                let run_in_background = ptc.args["run_in_background"].as_bool().unwrap_or(false);
+                                let run_in_background =
+                                    ptc.args["run_in_background"].as_bool().unwrap_or(false);
                                 let task_str = ptc.args["task"].as_str().unwrap_or("").to_string();
 
                                 if run_in_background {
-                                    let task_id = format!("bg_{}", &Uuid::new_v4().to_string()[..8]);
+                                    let task_id =
+                                        format!("bg_{}", &Uuid::new_v4().to_string()[..8]);
                                     let url = gateway_url.clone();
                                     let key = gateway_key.clone();
-                                    let spawn_cfg = spawn::SpawnConfig::from_args(&ptc.args, task_str.clone());
+                                    let spawn_cfg =
+                                        spawn::SpawnConfig::from_args(&ptc.args, task_str.clone());
 
                                     match self.background.spawn_task(
                                         task_id.clone(),
@@ -674,7 +719,9 @@ impl Agent {
                                         },
                                     ) {
                                         Ok(()) => {
-                                            self.permission_gate.renderer().background_task_spawned(&task_id, &task_str);
+                                            self.permission_gate
+                                                .renderer()
+                                                .background_task_spawned(&task_id, &task_str);
                                             outcomes.push(ToolOutcome::Result {
                                                 index: ptc.index,
                                                 id: ptc.id,
@@ -695,7 +742,8 @@ impl Agent {
                                                 id: ptc.id,
                                                 name: ptc.name,
                                                 args: ptc.args,
-                                                result: json!({"status": "error", "summary": msg}).to_string(),
+                                                result: json!({"status": "error", "summary": msg})
+                                                    .to_string(),
                                                 elapsed_ms: 0,
                                             });
                                         }
@@ -711,9 +759,7 @@ impl Agent {
                                     joinset.spawn(async move {
                                         let t0 = std::time::Instant::now();
                                         let result =
-                                            match spawn::spawn_agent(spawn_cfg, &url, &key)
-                                                .await
-                                            {
+                                            match spawn::spawn_agent(spawn_cfg, &url, &key).await {
                                                 Ok(r) => serde_json::to_string(&r)
                                                     .unwrap_or_else(|_| r.summary.clone()),
                                                 Err(e) => serde_json::json!({
@@ -742,8 +788,7 @@ impl Agent {
                                 joinset.spawn(async move {
                                     let t0 = std::time::Instant::now();
                                     let result =
-                                        tools::dispatch(&name, &args, None, mcp.as_deref())
-                                            .await;
+                                        tools::dispatch(&name, &args, None, mcp.as_deref()).await;
                                     ToolOutcome::Result {
                                         index,
                                         id,
@@ -790,12 +835,9 @@ impl Agent {
                                 elapsed_ms,
                                 ..
                             } => {
+                                let result = truncate_tool_output(&name, &result, max_tool_output);
                                 let result =
-                                    truncate_tool_output(&name, &result, max_tool_output);
-                                let result = self
-                                    .hook_runner
-                                    .run_post_hooks(&name, &args, &result)
-                                    .await;
+                                    self.hook_runner.run_post_hooks(&name, &args, &result).await;
                                 let result_preview =
                                     common::truncate_with_ellipsis(result.trim_start(), 80);
                                 self.permission_gate.renderer().tool_result(
@@ -818,7 +860,8 @@ impl Agent {
 
                     // Inject skill content as user messages after tool results
                     for skill_content in pending_skill_messages {
-                        self.session.push_message(common::user_message(skill_content));
+                        self.session
+                            .push_message(common::user_message(skill_content));
                     }
                 }
             }
@@ -857,6 +900,98 @@ impl Agent {
             anyhow::bail!("exceeded max_turns ({})", self.config.model.max_turns);
         }
         Ok(())
+    }
+
+    /// Returns (store, workspace_id, agent_name) if uglyhat is configured.
+    fn uh_context(&self) -> Option<(&dyn uglyhat::store::Store, uuid::Uuid, String)> {
+        let store = self.memory.store()?;
+        let ws_id = self.memory.workspace_id()?;
+        let agent_name = std::env::var(UH_AGENT_NAME_ENV)
+            .unwrap_or_else(|_| UH_AGENT_NAME_DEFAULT.to_string());
+        Some((store.as_ref(), ws_id, agent_name))
+    }
+
+    /// Send heartbeat and set agent state to Working via uglyhat store.
+    async fn send_heartbeat_and_set_working(&self) {
+        use uglyhat::model::AgentState;
+
+        let Some((store, ws_id, agent_name)) = self.uh_context() else {
+            return;
+        };
+
+        let _ = store.heartbeat(ws_id, &agent_name).await;
+        let _ = store
+            .set_agent_state(ws_id, &agent_name, AgentState::Working)
+            .await;
+    }
+
+    /// Poll for pending decision notifications and inject them as a system message.
+    async fn poll_and_inject_decisions(&mut self) {
+        use uglyhat::store::Store;
+
+        // Need an owned store clone because we later mutably borrow self.session
+        let Some(store) = self.memory.store().cloned() else {
+            return;
+        };
+        let Some(ws_id) = self.memory.workspace_id() else {
+            return;
+        };
+        let agent_name = std::env::var(UH_AGENT_NAME_ENV)
+            .unwrap_or_else(|_| UH_AGENT_NAME_DEFAULT.to_string());
+
+        let decisions = match store
+            .pending_decision_notifications(ws_id, &agent_name)
+            .await
+        {
+            Ok(d) if !d.is_empty() => d,
+            _ => return,
+        };
+
+        let mut msg =
+            String::from("NEW DECISIONS FROM OTHER AGENTS (acknowledge and incorporate):\n");
+        let mut ids = Vec::new();
+        for d in &decisions {
+            msg.push_str(&format!("- [{}] {}: {}\n", d.scope, d.title, d.content));
+            ids.push(d.id);
+        }
+
+        self.session.push_message(common::user_message(msg));
+
+        // Auto-acknowledge
+        let _ = store.acknowledge_decisions(ws_id, &agent_name, ids).await;
+    }
+
+    /// Check thread-scoped guardrails. Returns Some(denial_message) if denied.
+    async fn check_guardrails(&self, tool_name: &str, args: &serde_json::Value) -> Option<String> {
+        let thread_name = self.current_thread.as_deref()?;
+        let (store, ws_id, agent_name) = self.uh_context()?;
+
+        // Extract file path from tool args (covers read_file, write_file, edit_file, bash)
+        let file_path = args["path"].as_str();
+
+        match store
+            .check_guardrail(ws_id, thread_name, &agent_name, tool_name, file_path)
+            .await
+        {
+            Ok(check) if !check.allowed => Some(format!(
+                "Guardrail violation: {}",
+                check.reason.unwrap_or_else(|| "access denied".to_string())
+            )),
+            _ => None,
+        }
+    }
+
+    /// Set agent state to Idle (called from REPL at prompt).
+    pub async fn set_idle(&self) {
+        use uglyhat::model::AgentState;
+
+        let Some((store, ws_id, agent_name)) = self.uh_context() else {
+            return;
+        };
+
+        let _ = store
+            .set_agent_state(ws_id, &agent_name, AgentState::Idle)
+            .await;
     }
 
     /// Handle the `recall` tool — loads context from uglyhat store.

@@ -73,7 +73,10 @@ impl SkillRegistry {
             discover_skills_in(&skills_dir, &mut skills);
         }
 
-        let mut registry = Self { skills, cached_prompt_section: String::new() };
+        let mut registry = Self {
+            skills,
+            cached_prompt_section: String::new(),
+        };
         registry.cached_prompt_section = registry.build_prompt_section();
         registry
     }
@@ -94,14 +97,16 @@ impl SkillRegistry {
                     "status": "ok",
                     "skill": name,
                     "note": "Skill content has been injected as a follow-up message."
-                }).to_string(),
+                })
+                .to_string(),
                 injection: Some(skill.expand(args)),
             },
             None => SkillExecution {
                 tool_result: serde_json::json!({
                     "error": format!("unknown skill: {name}"),
                     "available_skills": self.names()
-                }).to_string(),
+                })
+                .to_string(),
                 injection: None,
             },
         }
@@ -122,17 +127,27 @@ impl SkillRegistry {
             return String::new();
         }
 
-        let mut out = String::from("\n\n## Skills\n\nAvailable skills (invoke via the `skill` tool):\n");
+        let mut out =
+            String::from("\n\n## Skills\n\nAvailable skills (invoke via the `skill` tool):\n");
         let mut names: Vec<&String> = self.skills.keys().collect();
         names.sort();
         for name in names {
             let skill = &self.skills[name];
-            let invocable_marker = if skill.user_invocable { " [user-invocable]" } else { "" };
-            out.push_str(&format!("- **{}**: {}{}\n", name, skill.description, invocable_marker));
+            let invocable_marker = if skill.user_invocable {
+                " [user-invocable]"
+            } else {
+                ""
+            };
+            out.push_str(&format!(
+                "- **{}**: {}{}\n",
+                name, skill.description, invocable_marker
+            ));
         }
 
         if has_invocable {
-            out.push_str("\nUser-invocable skills can also be triggered by the user with `/<skill-name>`.\n");
+            out.push_str(
+                "\nUser-invocable skills can also be triggered by the user with `/<skill-name>`.\n",
+            );
         }
 
         out

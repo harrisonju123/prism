@@ -45,9 +45,7 @@ pub struct ApprovalResponse {
 /// Deterministic per-project socket path: `~/.prism/run/approval-<hash>.sock`
 /// where `<hash>` is the first 12 hex chars of SHA-256(canonical cwd).
 pub fn socket_path(cwd: &Path) -> PathBuf {
-    let canonical = cwd
-        .canonicalize()
-        .unwrap_or_else(|_| cwd.to_path_buf());
+    let canonical = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
     let mut hasher = Sha256::new();
     hasher.update(canonical.to_string_lossy().as_bytes());
     let digest = hasher.finalize();
@@ -73,14 +71,20 @@ fn read_frame(reader: &mut impl Read) -> io::Result<Vec<u8>> {
     reader.read_exact(&mut len_buf)?;
     let len = u32::from_be_bytes(len_buf) as usize;
     if len > 10 * 1024 * 1024 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "frame too large"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "frame too large",
+        ));
     }
     let mut buf = vec![0u8; len];
     reader.read_exact(&mut buf)?;
     Ok(buf)
 }
 
-async fn async_write_frame(writer: &mut (impl AsyncWriteExt + Unpin), data: &[u8]) -> io::Result<()> {
+async fn async_write_frame(
+    writer: &mut (impl AsyncWriteExt + Unpin),
+    data: &[u8],
+) -> io::Result<()> {
     let len = (data.len() as u32).to_be_bytes();
     writer.write_all(&len).await?;
     writer.write_all(data).await?;
@@ -92,7 +96,10 @@ async fn async_read_frame(reader: &mut (impl AsyncReadExt + Unpin)) -> io::Resul
     reader.read_exact(&mut len_buf).await?;
     let len = u32::from_be_bytes(len_buf) as usize;
     if len > 10 * 1024 * 1024 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "frame too large"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "frame too large",
+        ));
     }
     let mut buf = vec![0u8; len];
     reader.read_exact(&mut buf).await?;

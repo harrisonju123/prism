@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
+use uglyhat::model::{HandoffConstraints, HandoffMode};
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SpawnConfig {
     pub task: String,
@@ -10,17 +12,37 @@ pub struct SpawnConfig {
     pub cost_cap: Option<f64>,
     pub tools: Option<Vec<String>>,
     pub timeout_secs: Option<u64>,
+    /// Thread to assign the child agent to
+    #[serde(default)]
+    pub thread: Option<String>,
+    /// Handoff constraints forwarded from the parent
+    #[serde(default)]
+    pub constraints: Option<HandoffConstraints>,
+    /// Handoff mode (delegate-and-await vs fire-and-forget)
+    #[serde(default)]
+    pub handoff_mode: Option<HandoffMode>,
 }
 
 impl SpawnConfig {
     /// Build from tool call args JSON, using the given task string.
     pub fn from_args(args: &serde_json::Value, task: String) -> Self {
+        let constraints = if args["constraints"].is_object() {
+            serde_json::from_value(args["constraints"].clone()).ok()
+        } else {
+            None
+        };
+        let handoff_mode = args["handoff_mode"]
+            .as_str()
+            .and_then(HandoffMode::from_str);
         Self {
             task,
             model: args["model"].as_str().map(str::to_string),
             cost_cap: args["cost_cap"].as_f64(),
             tools: None,
             timeout_secs: args["timeout_secs"].as_u64(),
+            thread: args["thread"].as_str().map(str::to_string),
+            constraints,
+            handoff_mode,
         }
     }
 }
@@ -51,6 +73,16 @@ pub async fn spawn_agent(
     }
     if let Some(cap) = config.cost_cap {
         cmd.arg("--cost-cap").arg(cap.to_string());
+    }
+
+    // Forward thread and handoff context to the child
+    if let Some(ref thread) = config.thread {
+        cmd.env(super::UH_THREAD_ENV, thread);
+    }
+    if let Some(ref constraints) = config.constraints
+        && let Ok(json) = serde_json::to_string(constraints)
+    {
+        cmd.env("UH_CONSTRAINTS", json);
     }
 
     let timeout = std::time::Duration::from_secs(config.timeout_secs.unwrap_or(300));
