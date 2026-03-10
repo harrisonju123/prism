@@ -24,6 +24,7 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -78,6 +79,8 @@ struct AcpSession {
     allowed_tools: HashSet<String>,
     /// Per-session model override (set via `session/set_model`)
     model: Option<String>,
+    /// Working directory for this session (from Zed's project root)
+    cwd: PathBuf,
 }
 
 // SAFETY: PrismAgent uses RefCell because the ACP Agent trait is !Send and runs
@@ -137,7 +140,7 @@ impl PrismAgent {
         .await;
     }
 
-    fn build_system_message(&self) -> Message {
+    fn build_system_message(&self, cwd: Option<&Path>) -> Message {
         let base_system_prompt = self
             .config
             .system_prompt
@@ -145,10 +148,21 @@ impl PrismAgent {
             .unwrap_or(SYSTEM_PROMPT);
 
         let memory_content = self.memory.borrow().load();
+        let cwd_section = cwd
+            .map(|p| {
+                format!(
+                    "\n\n## Working Directory\n\nYou are working in: {}\n\
+                     All relative paths in tool calls should be relative to this directory.\n\
+                     Use this as the default `dir` for glob_files and grep_files, and `cwd` for bash/run_command.",
+                    p.display()
+                )
+            })
+            .unwrap_or_default();
+
         let full_system = if memory_content.is_empty() {
-            base_system_prompt.to_string()
+            format!("{base_system_prompt}{cwd_section}")
         } else {
-            format!("## Persistent Memory\n{memory_content}\n\n---\n\n{base_system_prompt}")
+            format!("## Persistent Memory\n{memory_content}\n\n---\n\n{base_system_prompt}{cwd_section}")
         };
 
         Message {
@@ -276,6 +290,15 @@ impl PrismAgent {
         let client = PrismClient::new(&self.config.prism_url)
             .with_api_key(&self.config.prism_api_key);
         let model_fallback = self.config.prism_model.clone();
+
+        // cwd is set once at session creation and never changes
+        let session_cwd = {
+            let sessions = self.sessions.borrow();
+            match sessions.get(session_id) {
+                Some(s) => s.cwd.clone(),
+                None => return acp::StopReason::EndTurn,
+            }
+        };
 
         let mut tool_call_counter: u32 = 0;
 
@@ -520,7 +543,7 @@ impl PrismAgent {
                             self.memory.borrow_mut().append(key.clone(), value);
                             json!({"saved": true, "key": key}).to_string()
                         } else {
-                            tools::dispatch(name, &args).await
+                            tools::dispatch(name, &args, Some(&session_cwd)).await
                         };
                         let result = truncate_tool_output(
                             name,
@@ -713,12 +736,13 @@ impl acp::Agent for PrismAgent {
 
     async fn new_session(
         &self,
-        _args: acp::NewSessionRequest,
+        args: acp::NewSessionRequest,
     ) -> acp::Result<acp::NewSessionResponse> {
         self.evict_sessions_if_needed();
 
         let session_id = Uuid::new_v4().to_string();
-        let messages = vec![self.build_system_message()];
+        let cwd = args.cwd;
+        let messages = vec![self.build_system_message(Some(&cwd))];
 
         self.sessions.borrow_mut().insert(
             session_id.clone(),
@@ -727,6 +751,7 @@ impl acp::Agent for PrismAgent {
                 cancelled: Arc::new(AtomicBool::new(false)),
                 allowed_tools: HashSet::new(),
                 model: None,
+                cwd,
             },
         );
 
@@ -803,7 +828,8 @@ impl acp::Agent for PrismAgent {
             .map_err(|e| acp::Error::invalid_params().data(json!(format!("{e}"))))?;
 
         // Rebuild messages: system prompt + saved conversation history
-        let mut messages = vec![self.build_system_message()];
+        let cwd = args.cwd;
+        let mut messages = vec![self.build_system_message(Some(&cwd))];
         messages.extend(session.messages);
         Self::trim_messages(&mut messages, self.config.max_session_messages);
 
@@ -814,6 +840,7 @@ impl acp::Agent for PrismAgent {
                 cancelled: Arc::new(AtomicBool::new(false)),
                 allowed_tools: HashSet::new(),
                 model: Some(session.model),
+                cwd,
             },
         );
 

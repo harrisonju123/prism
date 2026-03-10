@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS inference_events (
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (timestamp, provider, model)
-TTL timestamp + INTERVAL 90 DAY
+TTL toDateTime(timestamp) + INTERVAL 90 DAY
 "#;
 
 /// Materialized view for hourly model stats.
@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS feedback_events (
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (timestamp, metric_name)
-TTL timestamp + INTERVAL 90 DAY
+TTL toDateTime(timestamp) + INTERVAL 90 DAY
 "#;
 
 /// ClickHouse table for benchmark events.
@@ -119,7 +119,7 @@ CREATE TABLE IF NOT EXISTS benchmark_events (
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (timestamp, task_type, benchmark_model)
-TTL timestamp + INTERVAL 90 DAY
+TTL toDateTime(timestamp) + INTERVAL 90 DAY
 "#;
 
 /// ALTER TABLE migrations for existing inference_events tables.
@@ -157,7 +157,7 @@ CREATE TABLE IF NOT EXISTS mcp_calls (
 ) ENGINE = MergeTree()
 PARTITION BY toYYYYMM(timestamp)
 ORDER BY (timestamp, server, method)
-TTL timestamp + INTERVAL 90 DAY
+TTL toDateTime(timestamp) + INTERVAL 90 DAY
 "#;
 
 /// Materialized view for hourly task type stats.

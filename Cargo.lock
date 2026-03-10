@@ -10119,6 +10119,7 @@ dependencies = [
  "shellexpand 2.1.2",
  "smallvec",
  "smol",
+ "stacker",
  "streaming-iterator",
  "strsim",
  "sum_tree",
