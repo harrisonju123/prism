@@ -2,12 +2,15 @@ use crate::service::get_uglyhat_handle;
 use crate::types::SessionEntry;
 use anyhow::Result;
 use db::kvp::KEY_VALUE_STORE;
+use futures::AsyncReadExt as _;
 use gpui::{
     actions, px, Action, App, AsyncWindowContext, Context, ElementId, Entity, EventEmitter,
     FocusHandle, Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Task, WeakEntity,
     Window,
 };
+use http_client::{AsyncBody, HttpClient};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::Duration;
 use ui::{h_flex, prelude::*, v_flex, Color, IconButton, IconName, Label, LabelSize, Tooltip};
 use util::{ResultExt, TryFutureExt};
@@ -17,6 +20,21 @@ use workspace::{
 };
 
 const PANEL_KEY: &str = "SessionHistoryPanel";
+
+fn urlencoding(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(byte as char);
+            }
+            _ => {
+                result.push_str(&format!("%{byte:02X}"));
+            }
+        }
+    }
+    result
+}
 const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(120);
 
 actions!(
@@ -28,18 +46,6 @@ actions!(
         ToggleFocus
     ]
 );
-
-#[derive(Clone, Debug, Deserialize)]
-struct ThreadCost {
-    #[serde(default)]
-    total_cost_usd: f64,
-    #[serde(default)]
-    request_count: u64,
-    #[serde(default)]
-    total_input_tokens: u64,
-    #[serde(default)]
-    total_output_tokens: u64,
-}
 
 #[derive(Default)]
 enum ViewState {
@@ -60,10 +66,11 @@ pub struct SessionHistoryPanel {
     refresh_task: Option<Task<()>>,
     _auto_refresh: Task<()>,
     pending_serialization: Task<Option<()>>,
-    thread_cost: Option<ThreadCost>,
+    thread_cost: Option<prism_types::ThreadCostResponse>,
     cost_task: Option<Task<()>>,
     prism_api_url: Option<String>,
     prism_api_key: Option<String>,
+    http_client: Arc<dyn HttpClient>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -84,6 +91,7 @@ impl SessionHistoryPanel {
         _window: &mut Window,
         cx: &mut Context<Workspace>,
     ) -> Entity<Self> {
+        let http_client = cx.http_client();
         cx.new(|cx| {
             let mut panel = Self {
                 focus_handle: cx.focus_handle(),
@@ -103,6 +111,7 @@ impl SessionHistoryPanel {
                     .ok()
                     .or_else(|| Some("http://localhost:3000".to_string())),
                 prism_api_key: std::env::var("PRISM_API_KEY").ok(),
+                http_client,
             };
 
             let auto_refresh = cx.spawn(async move |this, cx| loop {
@@ -192,6 +201,7 @@ impl SessionHistoryPanel {
                                 date,
                                 task_name: Some(entity_name),
                                 task_id: None,
+                                thread_id: Some(a.entity_id.to_string()),
                                 action: a.action.clone(),
                                 summary: summary_text,
                             }
@@ -252,27 +262,29 @@ impl SessionHistoryPanel {
         let Some(api_key) = self.prism_api_key.clone() else {
             return;
         };
-        // Use the session's task_name as a proxy for thread_id
-        let Some(thread_id) = session.task_name.clone() else {
+        let Some(thread_id) = session.thread_id.clone() else {
             return;
         };
 
+        let http_client = self.http_client.clone();
         self.cost_task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let url = format!("{api_url}/v1/costs?thread_id={thread_id}");
-                    let output = std::process::Command::new("curl")
-                        .args([
-                            "-s",
-                            "-H",
-                            &format!("Authorization: Bearer {api_key}"),
-                            &url,
-                        ])
-                        .output()?;
-                    if !output.status.success() {
-                        anyhow::bail!("cost fetch failed");
+                    let url = format!(
+                        "{api_url}/v1/costs?thread_id={thread_id}",
+                        thread_id = urlencoding(&thread_id),
+                    );
+                    let request = http_client::http::Request::builder()
+                        .uri(&url)
+                        .header("Authorization", format!("Bearer {api_key}"))
+                        .body(AsyncBody::empty())?;
+                    let mut response = http_client.send(request).await?;
+                    let mut body = Vec::new();
+                    response.body_mut().read_to_end(&mut body).await?;
+                    if !response.status().is_success() {
+                        anyhow::bail!("cost fetch failed: {}", response.status());
                     }
-                    let cost = serde_json::from_slice::<ThreadCost>(&output.stdout)?;
+                    let cost = serde_json::from_slice::<prism_types::ThreadCostResponse>(&body)?;
                     anyhow::Ok(cost)
                 })
                 .await;

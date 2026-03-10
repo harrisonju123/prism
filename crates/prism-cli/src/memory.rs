@@ -124,36 +124,20 @@ pub async fn open_context_store(
     }
 }
 
-/// Walk up from cwd looking for `.uglyhat.db` and `.uglyhat.json` in one pass.
+/// Discover uglyhat config and database path from the current directory.
 fn discover_uglyhat() -> (Option<std::path::PathBuf>, Option<Uuid>) {
-    let mut dir = match std::env::current_dir() {
+    let cwd = match std::env::current_dir() {
         Ok(d) => d,
         Err(_) => return (None, None),
     };
-    let mut db_path = None;
-    let mut ws_id = None;
-    loop {
-        if db_path.is_none() {
-            let db = dir.join(".uglyhat.db");
-            if db.exists() {
-                db_path = Some(db);
-            }
-        }
-        if ws_id.is_none() {
-            let config_path = dir.join(".uglyhat.json");
-            if config_path.exists()
-                && let Ok(data) = std::fs::read_to_string(&config_path)
-                && let Ok(config) = serde_json::from_str::<serde_json::Value>(&data)
-            {
-                ws_id = config["workspace_id"].as_str().and_then(|s| s.parse().ok());
-            }
-        }
-        if db_path.is_some() && ws_id.is_some() {
-            break;
-        }
-        if !dir.pop() {
-            break;
-        }
-    }
-    (db_path, ws_id)
+    let Some(config_path) = uglyhat::config::find_config(&cwd) else {
+        return (None, None);
+    };
+    let config = match uglyhat::config::load_config(&config_path) {
+        Ok(c) => c,
+        Err(_) => return (None, None),
+    };
+    let db_path = uglyhat::config::resolve_db_path(&config_path, &config);
+    let ws_id = config.workspace_id.parse().ok();
+    (Some(db_path), ws_id)
 }
