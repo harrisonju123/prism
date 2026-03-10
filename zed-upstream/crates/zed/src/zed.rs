@@ -362,7 +362,7 @@ pub struct PrismRoutingIndicator {
     _subscription: Option<gpui::Subscription>,
     _poll_task: Option<gpui::Task<()>>,
     cached_info: Option<language_models::provider::prism::RoutingInfo>,
-    cached_history: VecDeque<language_models::provider::prism::TimestampedRoutingInfo>,
+    cached_history: Vec<String>,
     popover_menu_handle: PopoverMenuHandle<ContextMenu>,
 }
 
@@ -379,14 +379,27 @@ impl PrismRoutingIndicator {
                     .await;
                 let should_notify = this
                     .update(cx, |indicator, cx| {
-                        let current =
-                            language_models::provider::prism::prism_last_routing_info(cx);
                         let history =
                             language_models::provider::prism::prism_routing_history(cx);
-                        let changed = current != indicator.cached_info;
+                        let current = history.first().map(|t| t.info.clone());
+                        if current == indicator.cached_info {
+                            return false;
+                        }
                         indicator.cached_info = current;
-                        indicator.cached_history = VecDeque::from(history);
-                        changed
+                        indicator.cached_history = history
+                            .iter()
+                            .skip(1)
+                            .take(5)
+                            .map(|entry| {
+                                format!(
+                                    "{}/{} — {}",
+                                    entry.info.routed_provider,
+                                    entry.info.routed_model,
+                                    format_elapsed(entry.timestamp),
+                                )
+                            })
+                            .collect();
+                        true
                     })
                     .unwrap_or(false);
                 if should_notify {
@@ -399,7 +412,7 @@ impl PrismRoutingIndicator {
             _subscription: subscription,
             _poll_task: Some(poll_task),
             cached_info: None,
-            cached_history: VecDeque::new(),
+            cached_history: Vec::new(),
             popover_menu_handle: PopoverMenuHandle::default(),
         }
     }
@@ -417,9 +430,18 @@ fn format_elapsed(instant: std::time::Instant) -> String {
     }
 }
 
+fn muted_info_row(text: String) -> impl Fn(&mut gpui::Window, &mut gpui::App) -> gpui::AnyElement + 'static {
+    move |_, _| {
+        ui::Label::new(text.clone())
+            .size(ui::LabelSize::Small)
+            .color(ui::Color::Muted)
+            .into_any_element()
+    }
+}
+
 impl Render for PrismRoutingIndicator {
-    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
-        let Some(info) = language_models::provider::prism::prism_last_routing_info(cx) else {
+    fn render(&mut self, _window: &mut gpui::Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        let Some(ref info) = self.cached_info else {
             return gpui::div();
         };
 
@@ -435,103 +457,47 @@ impl Render for PrismRoutingIndicator {
             ui::Color::Muted
         };
 
-        let requested_model = info.requested_model.clone();
-        let routed_provider = info.routed_provider.clone();
-        let routed_model = info.routed_model.clone();
-        let routing_reason = info.routing_reason.clone();
-        let task_type = info.task_type.clone();
-        let history: Vec<language_models::provider::prism::TimestampedRoutingInfo> =
-            self.cached_history.iter().skip(1).take(5).cloned().collect();
+        let requested = info.requested_model.as_deref().unwrap_or("unknown").to_string();
+        let routed = format!("{} / {}", info.routed_provider, info.routed_model);
+        let reason = if info.routing_reason.is_empty() {
+            "none".to_string()
+        } else {
+            info.routing_reason.clone()
+        };
+        let task = info.task_type.as_deref().unwrap_or("unknown").to_string();
+        let history = self.cached_history.clone();
 
         gpui::div().child(
             PopoverMenu::new("prism-routing-popover")
                 .anchor(gpui::Corner::BottomLeft)
                 .menu(move |window, cx| {
-                    let requested_model = requested_model.clone();
-                    let routed_provider = routed_provider.clone();
-                    let routed_model = routed_model.clone();
-                    let routing_reason = routing_reason.clone();
-                    let task_type = task_type.clone();
+                    let requested = requested.clone();
+                    let routed = routed.clone();
+                    let reason = reason.clone();
+                    let task = task.clone();
                     let history = history.clone();
 
                     Some(ContextMenu::build(window, cx, move |menu, _, _| {
                         let mut menu = menu
                             .header("Routing Details")
                             .separator()
-                            .custom_row({
-                                let requested = requested_model
-                                    .clone()
-                                    .unwrap_or_else(|| "unknown".to_string());
-                                move |_, _| {
-                                    gpui::div()
-                                        .child(ui::Label::new(format!("Requested: {}", requested))
-                                            .size(ui::LabelSize::Small)
-                                            .color(ui::Color::Muted))
-                                        .into_any_element()
-                                }
-                            })
-                            .custom_row({
-                                let provider = routed_provider.clone();
-                                let model = routed_model.clone();
-                                move |_, _| {
-                                    gpui::div()
-                                        .child(ui::Label::new(format!("Routed to: {} / {}", provider, model))
-                                            .size(ui::LabelSize::Small)
-                                            .color(ui::Color::Muted))
-                                        .into_any_element()
-                                }
-                            })
-                            .custom_row({
-                                let reason = routing_reason.clone();
-                                move |_, _| {
-                                    let display = if reason.is_empty() { "none" } else { &reason };
-                                    gpui::div()
-                                        .child(ui::Label::new(format!("Reason: {}", display))
-                                            .size(ui::LabelSize::Small)
-                                            .color(ui::Color::Muted))
-                                        .into_any_element()
-                                }
-                            })
-                            .custom_row({
-                                let task = task_type.clone();
-                                move |_, _| {
-                                    gpui::div()
-                                        .child(ui::Label::new(format!("Task: {}", task.as_deref().unwrap_or("unknown")))
-                                            .size(ui::LabelSize::Small)
-                                            .color(ui::Color::Muted))
-                                        .into_any_element()
-                                }
-                            });
+                            .custom_row(muted_info_row(format!("Requested: {}", requested)))
+                            .custom_row(muted_info_row(format!("Routed to: {}", routed)))
+                            .custom_row(muted_info_row(format!("Reason: {}", reason)))
+                            .custom_row(muted_info_row(format!("Task: {}", task)));
 
                         if !history.is_empty() {
                             menu = menu.separator().header("Recent");
-                            for entry in &history {
-                                let label = format!(
-                                    "{}/{} — {}",
-                                    entry.info.routed_provider,
-                                    entry.info.routed_model,
-                                    format_elapsed(entry.timestamp),
-                                );
-                                menu = menu.custom_row({
-                                    let label = label;
-                                    move |_, _| {
-                                        gpui::div()
-                                            .child(ui::Label::new(label.clone())
-                                                .size(ui::LabelSize::Small)
-                                                .color(ui::Color::Muted))
-                                            .into_any_element()
-                                    }
-                                });
+                            for entry_label in &history {
+                                menu = menu.custom_row(muted_info_row(entry_label.clone()));
                             }
                         }
 
-                        menu = menu
-                            .separator()
+                        menu.separator()
                             .custom_entry(
                                 |_, _| {
-                                    gpui::div()
-                                        .child(ui::Label::new("Open PrisM Dashboard")
-                                            .size(ui::LabelSize::Small))
+                                    ui::Label::new("Open PrisM Dashboard")
+                                        .size(ui::LabelSize::Small)
                                         .into_any_element()
                                 },
                                 |window, cx| {
@@ -540,9 +506,7 @@ impl Render for PrismRoutingIndicator {
                                         cx,
                                     );
                                 },
-                            );
-
-                        menu
+                            )
                     }))
                 })
                 .trigger(

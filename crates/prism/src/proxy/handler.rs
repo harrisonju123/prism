@@ -764,6 +764,7 @@ pub async fn chat_completions(
                 &request.model,
                 routing_decision.as_ref(),
                 task_type,
+                &request_model,
             );
             resp.headers_mut().extend(routing_headers);
             if let Some(ref ctx) = auth_ctx {
@@ -793,6 +794,7 @@ pub async fn chat_completions(
             let session_id_owned = session_id.clone();
             let thread_id_owned = thread_id.clone();
             let session_cost_usd = state.session_cost_usd.clone();
+            let request_model_for_headers = request_model.clone();
 
             // Spawn a task to capture the final result after stream completes
             tokio::spawn(async move {
@@ -956,6 +958,7 @@ pub async fn chat_completions(
                 &request.model,
                 routing_decision.as_ref(),
                 task_type,
+                &request_model_for_headers,
             );
             sse_resp.headers_mut().extend(routing_headers);
             if let Some(ref ctx) = auth_ctx {
@@ -1398,6 +1401,7 @@ const HEADER_ROUTED_PROVIDER: &str = "x-prism-routed-provider";
 const HEADER_WAS_OVERRIDDEN: &str = "x-prism-was-overridden";
 const HEADER_ROUTING_REASON: &str = "x-prism-routing-reason";
 const HEADER_TASK_TYPE: &str = "x-prism-task-type";
+const HEADER_REQUESTED_MODEL: &str = "x-prism-requested-model";
 
 /// Build `x-prism-routed-*` headers exposing the routing decision to clients.
 fn build_routing_headers(
@@ -1405,8 +1409,13 @@ fn build_routing_headers(
     model: &str,
     decision: Option<&crate::routing::types::RoutingDecision>,
     task_type: Option<TaskType>,
+    requested_model: &str,
 ) -> HeaderMap {
     let mut headers = HeaderMap::new();
+    match requested_model.parse() {
+        Ok(v) => { headers.insert(HEADER_REQUESTED_MODEL, v); }
+        Err(e) => tracing::debug!(requested_model, error = %e, "invalid header value for requested model"),
+    }
     match model.parse() {
         Ok(v) => { headers.insert(HEADER_ROUTED_MODEL, v); }
         Err(e) => tracing::debug!(model, error = %e, "invalid header value for routed model"),
@@ -1678,6 +1687,7 @@ mod tests {
             "claude-sonnet-4-6",
             Some(&decision),
             Some(TaskType::CodeGeneration),
+            "claude-sonnet-4",
         );
 
         assert_eq!(headers.get(HEADER_ROUTED_MODEL).unwrap(), "claude-sonnet-4-6");
@@ -1688,16 +1698,18 @@ mod tests {
             "criteria=CheapestAboveQuality, quality=0.78"
         );
         assert_eq!(headers.get(HEADER_TASK_TYPE).unwrap(), "code_generation");
+        assert_eq!(headers.get(HEADER_REQUESTED_MODEL).unwrap(), "claude-sonnet-4");
     }
 
     #[test]
     fn build_routing_headers_without_decision() {
-        let headers = build_routing_headers("anthropic", "claude-sonnet-4", None, None);
+        let headers = build_routing_headers("anthropic", "claude-sonnet-4", None, None, "claude-sonnet-4");
 
         assert_eq!(headers.get(HEADER_ROUTED_MODEL).unwrap(), "claude-sonnet-4");
         assert_eq!(headers.get(HEADER_ROUTED_PROVIDER).unwrap(), "anthropic");
         assert_eq!(headers.get(HEADER_WAS_OVERRIDDEN).unwrap(), "false");
         assert!(headers.get(HEADER_ROUTING_REASON).is_none());
         assert!(headers.get(HEADER_TASK_TYPE).is_none());
+        assert_eq!(headers.get(HEADER_REQUESTED_MODEL).unwrap(), "claude-sonnet-4");
     }
 }

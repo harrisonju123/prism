@@ -60,13 +60,23 @@ pub struct RoutingInfo {
     pub was_overridden: bool,
     pub routing_reason: String,
     pub task_type: Option<String>,
+    pub requested_model: Option<String>,
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimestampedRoutingInfo {
+    pub info: RoutingInfo,
+    pub timestamp: std::time::Instant,
+}
+
+const MAX_ROUTING_HISTORY: usize = 10;
 
 const HEADER_ROUTED_MODEL: &str = "x-prism-routed-model";
 const HEADER_ROUTED_PROVIDER: &str = "x-prism-routed-provider";
 const HEADER_WAS_OVERRIDDEN: &str = "x-prism-was-overridden";
 const HEADER_ROUTING_REASON: &str = "x-prism-routing-reason";
 const HEADER_TASK_TYPE: &str = "x-prism-task-type";
+const HEADER_REQUESTED_MODEL: &str = "x-prism-requested-model";
 const HEADER_THREAD_ID: &str = "x-uglyhat-thread-id";
 
 impl RoutingInfo {
@@ -94,12 +104,17 @@ impl RoutingInfo {
             .get(HEADER_TASK_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
+        let requested_model = headers
+            .get(HEADER_REQUESTED_MODEL)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
         Some(Self {
             routed_model,
             routed_provider,
             was_overridden,
             routing_reason,
             task_type,
+            requested_model,
         })
     }
 }
@@ -119,11 +134,43 @@ pub fn prism_api_key_and_url(cx: &App) -> Option<(Arc<str>, String)> {
 
 pub fn prism_last_routing_info(cx: &App) -> Option<RoutingInfo> {
     let state = cx.try_global::<GlobalPrismState>()?.0.upgrade()?;
-    state.read(cx).last_routing_info.lock().ok()?.clone()
+    state
+        .read(cx)
+        .last_routing_info
+        .lock()
+        .ok()?
+        .front()
+        .map(|t| t.info.clone())
+}
+
+pub fn prism_routing_history(cx: &App) -> Vec<TimestampedRoutingInfo> {
+    let Some(state) = cx.try_global::<GlobalPrismState>().and_then(|g| g.0.upgrade()) else {
+        return Vec::new();
+    };
+    state
+        .read(cx)
+        .last_routing_info
+        .lock()
+        .map(|deque| deque.iter().cloned().collect())
+        .unwrap_or_default()
 }
 
 pub fn prism_state_entity(cx: &App) -> Option<Entity<State>> {
     cx.try_global::<GlobalPrismState>()?.0.upgrade()
+}
+
+/// Returns the current session cost in USD. Uses the embedded atomic counter
+/// when running in embedded mode, falling back to the last value from response headers.
+pub fn prism_session_cost_usd(cx: &App) -> f64 {
+    let Some(state) = prism_state_entity(cx) else {
+        return 0.0;
+    };
+    let state = state.read(cx);
+    state
+        .embedded_session_cost
+        .as_ref()
+        .map(|arc| arc.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0)
+        .unwrap_or(state.session_cost_usd)
 }
 
 pub struct PrismLanguageModelProvider {
@@ -148,7 +195,7 @@ pub struct State {
     sidecar_status: SidecarStatus,
     session_cost_usd: f64,
     embedded_session_cost: Option<Arc<std::sync::atomic::AtomicU64>>,
-    pub last_routing_info: Arc<std::sync::Mutex<Option<RoutingInfo>>>,
+    pub last_routing_info: Arc<std::sync::Mutex<std::collections::VecDeque<TimestampedRoutingInfo>>>,
 }
 
 impl State {
@@ -362,7 +409,7 @@ impl PrismLanguageModelProvider {
                     sidecar_status: SidecarStatus::Unknown,
                     session_cost_usd: 0.0,
                     embedded_session_cost: None,
-                    last_routing_info: Arc::new(std::sync::Mutex::new(None)),
+                    last_routing_info: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
                 };
                 state.start_embedded_if_needed(cx);
                 state
@@ -540,8 +587,12 @@ impl PrismLanguageModel {
             .await?;
 
             if let Some(info) = RoutingInfo::from_headers(&headers) {
-                if let Ok(mut slot) = routing_info_slot.lock() {
-                    *slot = Some(info);
+                if let Ok(mut deque) = routing_info_slot.lock() {
+                    deque.push_front(TimestampedRoutingInfo {
+                        info,
+                        timestamp: std::time::Instant::now(),
+                    });
+                    deque.truncate(MAX_ROUTING_HISTORY);
                 }
             }
 
