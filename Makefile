@@ -1,5 +1,5 @@
 .PHONY: build run check test lint dev fmt ci clean \
-        run-prism run-uh install-uh install-prism-cli \
+        run-prism run-uh run-acp install-uh install-prism-cli \
         docker-up docker-down docker-build docker-logs docker-deps \
         health models uh-health \
         dev-setup dev dev-min \
@@ -37,6 +37,10 @@ run-prism:
 
 run-uh:
 	cargo run -p uglyhat --bin uglyhat
+
+# Run prism-cli in ACP agent server mode (stdio JSON-RPC for Zed)
+run-acp:
+	cargo run -p prism-cli -- acp
 
 # Install the uh CLI
 install-uh:

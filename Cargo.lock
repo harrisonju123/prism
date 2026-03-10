@@ -14025,7 +14025,9 @@ dependencies = [
 name = "prism-cli"
 version = "0.1.0"
 dependencies = [
+ "agent-client-protocol",
  "anyhow",
+ "async-trait",
  "chrono",
  "clap",
  "dirs 4.0.0",
@@ -14039,6 +14041,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
  "uuid",
