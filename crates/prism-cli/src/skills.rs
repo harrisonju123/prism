@@ -28,9 +28,18 @@ impl Skill {
     }
 }
 
+/// Result of executing a skill tool call.
+pub struct SkillExecution {
+    /// JSON result to return as the tool response.
+    pub tool_result: String,
+    /// Skill content to inject as a user message (None if skill not found).
+    pub injection: Option<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SkillRegistry {
     skills: HashMap<String, Skill>,
+    cached_prompt_section: String,
 }
 
 impl SkillRegistry {
@@ -64,22 +73,52 @@ impl SkillRegistry {
             discover_skills_in(&skills_dir, &mut skills);
         }
 
-        Self { skills }
+        let mut registry = Self { skills, cached_prompt_section: String::new() };
+        registry.cached_prompt_section = registry.build_prompt_section();
+        registry
     }
 
     pub fn get(&self, name: &str) -> Option<&Skill> {
         self.skills.get(name)
     }
 
-    /// Generate a system prompt section listing available skills.
-    pub fn system_prompt_section(&self) -> String {
-        let invocable: Vec<&Skill> = self
-            .skills
-            .values()
-            .filter(|s| s.user_invocable)
-            .collect();
+    pub fn system_prompt_section(&self) -> &str {
+        &self.cached_prompt_section
+    }
 
-        if invocable.is_empty() && self.skills.is_empty() {
+    /// Execute a skill tool call. Shared by both Agent and ACP paths.
+    pub fn execute(&self, name: &str, args: &str) -> SkillExecution {
+        match self.get(name) {
+            Some(skill) => SkillExecution {
+                tool_result: serde_json::json!({
+                    "status": "ok",
+                    "skill": name,
+                    "note": "Skill content has been injected as a follow-up message."
+                }).to_string(),
+                injection: Some(skill.expand(args)),
+            },
+            None => SkillExecution {
+                tool_result: serde_json::json!({
+                    "error": format!("unknown skill: {name}"),
+                    "available_skills": self.names()
+                }).to_string(),
+                injection: None,
+            },
+        }
+    }
+
+    pub fn names(&self) -> Vec<&str> {
+        self.skills.keys().map(|s| s.as_str()).collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.skills.is_empty()
+    }
+
+    fn build_prompt_section(&self) -> String {
+        let has_invocable = self.skills.values().any(|s| s.user_invocable);
+
+        if self.skills.is_empty() {
             return String::new();
         }
 
@@ -92,19 +131,11 @@ impl SkillRegistry {
             out.push_str(&format!("- **{}**: {}{}\n", name, skill.description, invocable_marker));
         }
 
-        if !invocable.is_empty() {
+        if has_invocable {
             out.push_str("\nUser-invocable skills can also be triggered by the user with `/<skill-name>`.\n");
         }
 
         out
-    }
-
-    pub fn names(&self) -> Vec<&str> {
-        self.skills.keys().map(|s| s.as_str()).collect()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.skills.is_empty()
     }
 }
 

@@ -531,24 +531,12 @@ impl PrismAgent {
                                 json!({"saved": true, "key": key}).to_string()
                             }
                             Some(BuiltinTool::Skill) => {
-                                let skill_name = args["name"].as_str().unwrap_or("");
-                                let skill_args = args["args"].as_str().unwrap_or("");
-                                match self.skill_registry.get(skill_name) {
-                                    Some(skill) => {
-                                        skill_injection = Some(skill.expand(skill_args));
-                                        json!({
-                                            "status": "ok",
-                                            "skill": skill_name,
-                                            "note": "Skill content has been injected as a follow-up message."
-                                        }).to_string()
-                                    }
-                                    None => {
-                                        json!({
-                                            "error": format!("unknown skill: {skill_name}"),
-                                            "available_skills": self.skill_registry.names()
-                                        }).to_string()
-                                    }
-                                }
+                                let exec = self.skill_registry.execute(
+                                    args["name"].as_str().unwrap_or(""),
+                                    args["args"].as_str().unwrap_or(""),
+                                );
+                                skill_injection = exec.injection;
+                                exec.tool_result
                             }
                             _ => {
                                 tools::dispatch(
@@ -590,14 +578,7 @@ impl PrismAgent {
 
                         // Inject skill content as a user message after the tool result
                         if let Some(content) = skill_injection {
-                            messages.push(Message {
-                                role: MessageRole::User,
-                                content: Some(json!(content)),
-                                name: None,
-                                tool_calls: None,
-                                tool_call_id: None,
-                                extra: Default::default(),
-                            });
+                            messages.push(common::user_message(content));
                         }
                     }
                 }
