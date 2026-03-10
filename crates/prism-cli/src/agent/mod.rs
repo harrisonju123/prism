@@ -134,10 +134,11 @@ impl Agent {
 
         let cwd = std::env::current_dir().unwrap_or_default();
         let instructions_section = crate::instructions::load_project_instructions(&cwd);
+        let git_section = crate::git::gather_git_context(&cwd);
         let full_system = build_system_prompt(
             self.config.model.system_prompt.as_deref(),
             &memory_content,
-            &instructions_section,
+            &format!("{instructions_section}{git_section}"),
             mcp_section,
         );
 
