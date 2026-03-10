@@ -17,6 +17,9 @@ gpui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 settings.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+uglyhat.workspace = true
 ui.workspace = true
 util.workspace = true
+uuid = { workspace = true }
 workspace.workspace = true

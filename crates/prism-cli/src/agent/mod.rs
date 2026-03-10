@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::io::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 use crate::common::{
@@ -24,6 +25,7 @@ use crate::mcp::McpRegistry;
 use crate::memory::MemoryManager;
 use crate::permissions::{self, PermissionDecision, ToolPermissionGate};
 use crate::session::Session;
+use crate::skills::SkillRegistry;
 use crate::tools::{self, BuiltinTool};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,12 +66,45 @@ impl AgentStopReason {
     }
 }
 
+struct PreparedToolCall {
+    index: usize,
+    id: String,
+    name: String,
+    args: serde_json::Value,
+}
+
+enum ToolOutcome {
+    Result {
+        index: usize,
+        id: String,
+        name: String,
+        args: serde_json::Value,
+        result: String,
+        elapsed_ms: u128,
+    },
+    Denied {
+        index: usize,
+        id: String,
+        message: String,
+    },
+}
+
+impl ToolOutcome {
+    fn index(&self) -> usize {
+        match self {
+            Self::Result { index, .. } => *index,
+            Self::Denied { index, .. } => *index,
+        }
+    }
+}
+
 pub struct Agent {
     client: PrismClient,
     config: Config,
     session: Session,
     memory: MemoryManager,
-    mcp_registry: Option<McpRegistry>,
+    mcp_registry: Option<Arc<McpRegistry>>,
+    skill_registry: SkillRegistry,
     permission_gate: ToolPermissionGate,
     hook_runner: HookRunner,
     compressor: Option<ContextCompressor>,
@@ -80,8 +115,9 @@ impl Agent {
         client: PrismClient,
         config: Config,
         task: &str,
-        mcp_registry: Option<McpRegistry>,
+        mcp_registry: Option<Arc<McpRegistry>>,
         memory: MemoryManager,
+        skill_registry: SkillRegistry,
     ) -> Self {
         let episode_id = Uuid::new_v4();
         let session = Session::new(episode_id, task, &config.model.model);
@@ -94,6 +130,7 @@ impl Agent {
             session,
             memory,
             mcp_registry,
+            skill_registry,
             permission_gate,
             hook_runner,
             compressor,
@@ -104,8 +141,9 @@ impl Agent {
         client: PrismClient,
         config: Config,
         session: Session,
-        mcp_registry: Option<McpRegistry>,
+        mcp_registry: Option<Arc<McpRegistry>>,
         memory: MemoryManager,
+        skill_registry: SkillRegistry,
     ) -> Self {
         let permission_gate = ToolPermissionGate::resolve(config.extensions.permission_mode);
         let hook_runner = config.build_hook_runner();
@@ -116,6 +154,7 @@ impl Agent {
             session,
             memory,
             mcp_registry,
+            skill_registry,
             permission_gate,
             hook_runner,
             compressor,
@@ -128,17 +167,18 @@ impl Agent {
         let memory_content = self.memory.load().await;
         let mcp_section = self
             .mcp_registry
-            .as_ref()
+            .as_deref()
             .map(|r| r.system_prompt_section())
             .unwrap_or("");
 
         let cwd = std::env::current_dir().unwrap_or_default();
         let instructions_section = crate::instructions::load_project_instructions(&cwd);
         let git_section = crate::git::gather_git_context(&cwd);
+        let skills_section = self.skill_registry.system_prompt_section();
         let full_system = build_system_prompt(
             self.config.model.system_prompt.as_deref(),
             &memory_content,
-            &format!("{instructions_section}{git_section}"),
+            &format!("{instructions_section}{git_section}{skills_section}"),
             mcp_section,
         );
 
@@ -202,7 +242,7 @@ impl Agent {
         let mut turns: u32 = 0;
         let model_name = self.config.model.model.clone();
         let mut stop_reason: Option<AgentStopReason> = None;
-        let tool_defs = tools::all_tool_definitions(self.mcp_registry.as_ref());
+        let tool_defs = tools::all_tool_definitions(self.mcp_registry.as_deref());
 
         for _turn in 0..self.config.model.max_turns {
             if interrupt_count.load(Ordering::Relaxed) > 0 {
@@ -379,25 +419,27 @@ impl Agent {
                     break;
                 }
                 Some(FinishReason::ToolCalls) => {
-                    for tc in tool_calls_vec.unwrap_or_default() {
+                    let raw_tool_calls = tool_calls_vec.unwrap_or_default();
+
+                    // --- Phase 1: Sequential gate — pre-hooks + permission checks ---
+                    let mut prepared: Vec<PreparedToolCall> = Vec::new();
+                    let mut outcomes: Vec<ToolOutcome> = Vec::new();
+
+                    for (index, tc) in raw_tool_calls.iter().enumerate() {
                         let id = tc["id"].as_str().unwrap_or("").to_string();
-                        let name = tc["function"]["name"].as_str().unwrap_or("");
+                        let name = tc["function"]["name"].as_str().unwrap_or("").to_string();
                         let mut args: serde_json::Value = tc["function"]["arguments"]
                             .as_str()
                             .and_then(|s| serde_json::from_str(s).ok())
                             .unwrap_or(json!({}));
 
-                        // Pre-tool-use hooks (run before permission check)
-                        match self.hook_runner.run_pre_hooks(name, &args).await {
+                        match self.hook_runner.run_pre_hooks(&name, &args).await {
                             PreToolAction::Deny { message } => {
                                 eprintln!("[hook] {name}  denied: {message}");
-                                self.session.messages.push(Message {
-                                    role: MessageRole::Tool,
-                                    content: Some(json!(format!("Hook denied: {message}"))),
-                                    name: None,
-                                    tool_calls: None,
-                                    tool_call_id: Some(id),
-                                    extra: Default::default(),
+                                outcomes.push(ToolOutcome::Denied {
+                                    index,
+                                    id,
+                                    message: format!("Hook denied: {message}"),
                                 });
                                 continue;
                             }
@@ -407,123 +449,250 @@ impl Agent {
                             PreToolAction::Allow => {}
                         }
 
-                        let args_preview = common::truncate_with_ellipsis(&args.to_string(), 120);
+                        let args_preview =
+                            common::truncate_with_ellipsis(&args.to_string(), 120);
                         eprintln!("[tool] {name}  args={args_preview}");
 
                         // Permission check — blocks on TTY read when prompting,
                         // which is intentional (we're waiting for user input)
-                        let decision = self.permission_gate.check_permission(name, &args);
+                        let decision = self.permission_gate.check_permission(&name, &args);
 
                         if decision == PermissionDecision::Deny {
                             eprintln!("[tool] {name}  permission denied");
-                            self.session.messages.push(Message {
-                                role: MessageRole::Tool,
-                                content: Some(json!(permissions::PERMISSION_DENIED_MSG)),
-                                name: None,
-                                tool_calls: None,
-                                tool_call_id: Some(id),
-                                extra: Default::default(),
+                            outcomes.push(ToolOutcome::Denied {
+                                index,
+                                id,
+                                message: permissions::PERMISSION_DENIED_MSG.to_string(),
                             });
                             continue;
                         }
 
-                        let t0 = std::time::Instant::now();
-                        // Execute the tool; save_memory, recall, and spawn_agent are intercepted here
-                        let (tool_content, byte_len) = match BuiltinTool::from_str(name) {
+                        prepared.push(PreparedToolCall { index, id, name, args });
+                    }
+
+                    // --- Phase 2: Parallel execution ---
+                    // Agent-context tools (SaveMemory, Recall, Skill) run inline since they need
+                    // &mut self. Everything else spawns into a JoinSet.
+                    let mcp_arc = self.mcp_registry.clone();
+                    // Arc<str> so each spawned task gets a cheap pointer clone, not a heap alloc
+                    let gateway_url: Arc<str> = Arc::from(self.config.gateway.url.as_str());
+                    let gateway_key: Arc<str> = Arc::from(self.config.gateway.api_key.as_str());
+                    let max_tool_output = self.config.model.max_tool_output;
+                    // Clone config for sandbox checks inside spawned tasks
+                    let task_config = self.config.clone();
+
+                    let mut joinset: JoinSet<ToolOutcome> = JoinSet::new();
+
+                    let mut pending_skill_messages: Vec<String> = Vec::new();
+
+                    for ptc in prepared {
+                        match BuiltinTool::from_str(&ptc.name) {
+                            Some(BuiltinTool::Skill) => {
+                                let skill_name = ptc.args["name"].as_str().unwrap_or("").to_string();
+                                let skill_args = ptc.args["args"].as_str().unwrap_or("");
+                                let t0 = std::time::Instant::now();
+                                let result = match self.skill_registry.get(&skill_name) {
+                                    Some(skill) => {
+                                        let expanded = skill.expand(skill_args);
+                                        pending_skill_messages.push(expanded);
+                                        serde_json::json!({
+                                            "status": "ok",
+                                            "skill": skill_name,
+                                            "note": "Skill content has been injected as a follow-up message."
+                                        }).to_string()
+                                    }
+                                    None => {
+                                        let available = self.skill_registry.names();
+                                        serde_json::json!({
+                                            "error": format!("unknown skill: {skill_name}"),
+                                            "available_skills": available
+                                        }).to_string()
+                                    }
+                                };
+                                outcomes.push(ToolOutcome::Result {
+                                    index: ptc.index,
+                                    id: ptc.id,
+                                    name: ptc.name,
+                                    args: ptc.args,
+                                    result,
+                                    elapsed_ms: t0.elapsed().as_millis(),
+                                });
+                            }
                             Some(BuiltinTool::SaveMemory) => {
-                                let key = args["key"].as_str().unwrap_or("note").to_string();
-                                let value = args["value"].as_str().unwrap_or("").to_string();
-                                let s = match self.memory.save(&key, &value).await {
+                                let key =
+                                    ptc.args["key"].as_str().unwrap_or("note").to_string();
+                                let value =
+                                    ptc.args["value"].as_str().unwrap_or("").to_string();
+                                let t0 = std::time::Instant::now();
+                                let result = match self.memory.save(&key, &value).await {
                                     Ok(_) => {
-                                        serde_json::json!({"saved": true, "key": key}).to_string()
+                                        serde_json::json!({"saved": true, "key": key})
+                                            .to_string()
                                     }
                                     Err(e) => {
-                                        // Fall back to in-memory buffer
                                         self.memory.append(key.clone(), value);
                                         serde_json::json!({"saved": true, "key": key, "note": format!("buffered: {e}")}).to_string()
                                     }
                                 };
-                                let len = s.len();
-                                (json!(s), len)
+                                outcomes.push(ToolOutcome::Result {
+                                    index: ptc.index,
+                                    id: ptc.id,
+                                    name: ptc.name,
+                                    args: ptc.args,
+                                    result,
+                                    elapsed_ms: t0.elapsed().as_millis(),
+                                });
                             }
                             Some(BuiltinTool::Recall) => {
-                                let s = self.handle_recall(&args).await;
-                                let len = s.len();
-                                (json!(s), len)
+                                let t0 = std::time::Instant::now();
+                                let result = self.handle_recall(&ptc.args).await;
+                                outcomes.push(ToolOutcome::Result {
+                                    index: ptc.index,
+                                    id: ptc.id,
+                                    name: ptc.name,
+                                    args: ptc.args,
+                                    result,
+                                    elapsed_ms: t0.elapsed().as_millis(),
+                                });
                             }
                             Some(BuiltinTool::SpawnAgent) => {
-                                let task = args["task"].as_str().unwrap_or("").to_string();
-                                let model = args["model"].as_str().map(str::to_string);
-                                let cost_cap = args["cost_cap"].as_f64();
-                                let timeout_secs = args["timeout_secs"].as_u64();
-                                let spawn_config = spawn::SpawnConfig {
-                                    task,
-                                    model,
-                                    cost_cap,
-                                    tools: None,
-                                    timeout_secs,
-                                };
-                                let s = match spawn::spawn_agent(
-                                    spawn_config,
-                                    &self.config.gateway.url,
-                                    &self.config.gateway.api_key,
-                                )
-                                .await
-                                {
-                                    Ok(r) => serde_json::to_string(&r)
-                                        .unwrap_or_else(|_| r.summary.clone()),
-                                    Err(e) => {
-                                        format!("{{\"status\":\"error\",\"summary\":\"{e}\"}}")
+                                let args = ptc.args;
+                                let index = ptc.index;
+                                let id = ptc.id;
+                                let name = ptc.name;
+                                let url = gateway_url.clone();
+                                let key = gateway_key.clone();
+                                joinset.spawn(async move {
+                                    let t0 = std::time::Instant::now();
+                                    let task =
+                                        args["task"].as_str().unwrap_or("").to_string();
+                                    let model =
+                                        args["model"].as_str().map(str::to_string);
+                                    let cost_cap = args["cost_cap"].as_f64();
+                                    let timeout_secs = args["timeout_secs"].as_u64();
+                                    let spawn_config = spawn::SpawnConfig {
+                                        task,
+                                        model,
+                                        cost_cap,
+                                        tools: None,
+                                        timeout_secs,
+                                    };
+                                    let result =
+                                        match spawn::spawn_agent(spawn_config, &url, &key)
+                                            .await
+                                        {
+                                            Ok(r) => serde_json::to_string(&r)
+                                                .unwrap_or_else(|_| r.summary.clone()),
+                                            Err(e) => serde_json::json!({
+                                                "status": "error",
+                                                "summary": e.to_string()
+                                            })
+                                            .to_string(),
+                                        };
+                                    ToolOutcome::Result {
+                                        index,
+                                        id,
+                                        name,
+                                        args,
+                                        result,
+                                        elapsed_ms: t0.elapsed().as_millis(),
                                     }
-                                };
-                                let len = s.len();
-                                (json!(s), len)
+                                });
                             }
                             _ => {
-                                match tools::dispatch(name, &args, &self.config, None, self.mcp_registry.as_ref()).await {
-                                    tools::ToolResult::Text(s) => {
-                                        let s = truncate_tool_output(name, &s, self.config.model.max_tool_output);
-                                        let len = s.len();
-                                        (json!(s), len)
+                                let name = ptc.name;
+                                let args = ptc.args;
+                                let index = ptc.index;
+                                let id = ptc.id;
+                                let mcp = mcp_arc.clone();
+                                let cfg = task_config.clone();
+                                joinset.spawn(async move {
+                                    let t0 = std::time::Instant::now();
+                                    let tool_result =
+                                        tools::dispatch(&name, &args, &cfg, None, mcp.as_deref())
+                                            .await;
+                                    let result = match tool_result {
+                                        tools::ToolResult::Text(s) => s,
+                                        tools::ToolResult::Multimodal(v) => v.to_string(),
+                                    };
+                                    ToolOutcome::Result {
+                                        index,
+                                        id,
+                                        name,
+                                        args,
+                                        result,
+                                        elapsed_ms: t0.elapsed().as_millis(),
                                     }
-                                    tools::ToolResult::Multimodal(v) => {
-                                        let len = v.to_string().len();
-                                        (v, len)
-                                    }
-                                }
+                                });
                             }
-                        };
+                        }
+                    }
 
-                        // Post-tool-use hooks
-                        let tool_content = {
-                            let text = tool_content.0.as_str().map(|s| s.to_string()).unwrap_or_else(|| tool_content.0.to_string());
-                            let hooked = self.hook_runner.run_post_hooks(name, &args, &text).await;
-                            if hooked != text {
-                                let len = hooked.len();
-                                (json!(hooked), len)
-                            } else {
-                                tool_content
+                    // Collect all parallel results
+                    while let Some(join_result) = joinset.join_next().await {
+                        match join_result {
+                            Ok(outcome) => outcomes.push(outcome),
+                            Err(e) => {
+                                tracing::warn!("tool task panicked: {e}");
                             }
-                        };
+                        }
+                    }
 
-                        let elapsed_ms = t0.elapsed().as_millis();
+                    // --- Phase 3: Sequential assembly — sort, post-hooks, push messages ---
+                    outcomes.sort_by_key(|o| o.index());
 
-                        let result_preview = {
-                            let s = tool_content.0.to_string();
-                            common::truncate_with_ellipsis(s.trim_start(), 80)
-                        };
-                        eprintln!(
-                            "[tool] {name}  {}ms  {} bytes  {result_preview}",
-                            elapsed_ms,
-                            byte_len
-                        );
+                    for outcome in outcomes {
+                        match outcome {
+                            ToolOutcome::Denied { id, message, .. } => {
+                                self.session.messages.push(Message {
+                                    role: MessageRole::Tool,
+                                    content: Some(json!(message)),
+                                    name: None,
+                                    tool_calls: None,
+                                    tool_call_id: Some(id),
+                                    extra: Default::default(),
+                                });
+                            }
+                            ToolOutcome::Result {
+                                id,
+                                name,
+                                args,
+                                result,
+                                elapsed_ms,
+                                ..
+                            } => {
+                                let result =
+                                    truncate_tool_output(&name, &result, max_tool_output);
+                                let result = self
+                                    .hook_runner
+                                    .run_post_hooks(&name, &args, &result)
+                                    .await;
+                                let result_preview =
+                                    common::truncate_with_ellipsis(result.trim_start(), 80);
+                                eprintln!(
+                                    "[tool] {name}  {elapsed_ms}ms  {} bytes  {result_preview}",
+                                    result.len()
+                                );
+                                self.session.messages.push(Message {
+                                    role: MessageRole::Tool,
+                                    content: Some(json!(result)),
+                                    name: None,
+                                    tool_calls: None,
+                                    tool_call_id: Some(id),
+                                    extra: Default::default(),
+                                });
+                            }
+                        }
+                    }
 
+                    // Inject skill content as user messages after tool results
+                    for skill_content in pending_skill_messages {
                         self.session.messages.push(Message {
-                            role: MessageRole::Tool,
-                            content: Some(tool_content.0),
+                            role: MessageRole::User,
+                            content: Some(json!(skill_content)),
                             name: None,
                             tool_calls: None,
-                            tool_call_id: Some(id),
+                            tool_call_id: None,
                             extra: Default::default(),
                         });
                     }

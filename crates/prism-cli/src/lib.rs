@@ -11,4 +11,5 @@ pub mod memory;
 pub mod permissions;
 pub mod persona;
 pub mod session;
+pub mod skills;
 pub mod tools;

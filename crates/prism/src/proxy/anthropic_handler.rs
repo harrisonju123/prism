@@ -117,6 +117,10 @@ pub async fn anthropic_messages(
         .get("x-session-id")
         .and_then(|v| v.to_str().ok())
         .map(String::from);
+    let thread_id = headers
+        .get("x-uglyhat-thread-id")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from);
     let episode_id = headers
         .get("x-episode-id")
         .and_then(|v| v.to_str().ok())
@@ -259,6 +263,7 @@ pub async fn anthropic_messages(
             let trace_id_owned = trace_id.clone();
             let span_id_owned = span_id.clone();
             let session_id_owned = session_id.clone();
+            let thread_id_owned = thread_id.clone();
             let session_cost_usd = state.session_cost_usd.clone();
             let start_clone = start;
             // Build prompt hash from request messages
@@ -332,6 +337,7 @@ pub async fn anthropic_messages(
                         tool_calls_json: None,
                         ttft_ms: stream_result.ttft_ms,
                         session_id: session_id_owned,
+                        thread_id: thread_id_owned,
                         provider_attempted: None,
                     };
 
@@ -462,6 +468,7 @@ pub async fn anthropic_messages(
         tool_calls_json,
         ttft_ms: None,
         session_id,
+        thread_id,
         provider_attempted: None,
     };
 

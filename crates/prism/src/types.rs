@@ -339,6 +339,7 @@ pub struct InferenceEvent {
     pub tool_calls_json: Option<String>,
     pub ttft_ms: Option<u32>,
     pub session_id: Option<String>,
+    pub thread_id: Option<String>,
     pub provider_attempted: Option<String>,
 }
 

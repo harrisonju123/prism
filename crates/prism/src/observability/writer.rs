@@ -498,6 +498,7 @@ struct ClickHouseEvent {
     tool_calls_json: Option<String>,
     ttft_ms: Option<u32>,
     session_id: Option<String>,
+    thread_id: Option<String>,
     provider_attempted: Option<String>,
 }
 
@@ -651,6 +652,7 @@ impl From<&InferenceEvent> for ClickHouseEvent {
             tool_calls_json: e.tool_calls_json.clone(),
             ttft_ms: e.ttft_ms,
             session_id: e.session_id.clone(),
+            thread_id: e.thread_id.clone(),
             provider_attempted: e.provider_attempted.clone(),
         }
     }

@@ -333,6 +333,19 @@ pub struct AgentMetricsResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Thread cost types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ThreadCostResponse {
+    pub thread_id: String,
+    pub total_cost_usd: f64,
+    pub request_count: u64,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+}
+
+// ---------------------------------------------------------------------------
 // Routing types (shared between server and client)
 // ---------------------------------------------------------------------------
 

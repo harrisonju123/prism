@@ -358,6 +358,102 @@ pub fn build_window_options(display_uuid: Option<Uuid>, cx: &mut App) -> WindowO
     }
 }
 
+pub struct PrismRoutingIndicator {
+    _subscription: Option<gpui::Subscription>,
+    _poll_task: Option<gpui::Task<()>>,
+    cached_info: Option<language_models::provider::prism::RoutingInfo>,
+}
+
+impl PrismRoutingIndicator {
+    pub fn new(cx: &mut Context<Self>) -> Self {
+        let subscription =
+            language_models::provider::prism::prism_state_entity(cx)
+                .map(|state| cx.observe(&state, |_, _, cx| cx.notify()));
+
+        // Poll for routing info changes from the background Arc<Mutex>,
+        // since the write happens outside GPUI's entity update mechanism.
+        let poll_task = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_secs(2))
+                    .await;
+                let should_notify = this
+                    .update(cx, |indicator, _cx| {
+                        let current =
+                            language_models::provider::prism::prism_last_routing_info(_cx);
+                        if current != indicator.cached_info {
+                            indicator.cached_info = current;
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false);
+                if should_notify {
+                    this.update(cx, |_, cx| cx.notify()).ok();
+                }
+            }
+        });
+
+        Self {
+            _subscription: subscription,
+            _poll_task: Some(poll_task),
+            cached_info: None,
+        }
+    }
+}
+
+impl Render for PrismRoutingIndicator {
+    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        let Some(info) = language_models::provider::prism::prism_last_routing_info(cx) else {
+            return gpui::div();
+        };
+
+        let label = if info.was_overridden {
+            format!("-> {}/{}", info.routed_provider, info.routed_model)
+        } else {
+            info.routed_provider.clone()
+        };
+
+        let tooltip_text: SharedString = format!(
+            "Provider: {}\nModel: {}\nOverridden: {}\nReason: {}\nTask: {}",
+            info.routed_provider,
+            info.routed_model,
+            info.was_overridden,
+            if info.routing_reason.is_empty() {
+                "none"
+            } else {
+                &info.routing_reason
+            },
+            info.task_type.as_deref().unwrap_or("unknown"),
+        )
+        .into();
+
+        let color = if info.was_overridden {
+            ui::Color::Warning
+        } else {
+            ui::Color::Muted
+        };
+
+        gpui::div().child(
+            ui::Button::new("prism-routing-indicator", label)
+                .label_size(ui::LabelSize::Small)
+                .color(color)
+                .tooltip(ui::Tooltip::text(tooltip_text)),
+        )
+    }
+}
+
+impl workspace::StatusItemView for PrismRoutingIndicator {
+    fn set_active_pane_item(
+        &mut self,
+        _active_pane_item: Option<&dyn workspace::item::ItemHandle>,
+        _window: &mut gpui::Window,
+        _cx: &mut Context<Self>,
+    ) {
+    }
+}
+
 pub fn initialize_workspace(
     app_state: Arc<AppState>,
     prompt_builder: Arc<PromptBuilder>,
@@ -483,11 +579,13 @@ pub fn initialize_workspace(
             cx.new(|_| go_to_line::cursor_position::CursorPosition::new(workspace));
         let line_ending_indicator =
             cx.new(|_| line_ending_selector::LineEndingIndicator::default());
+        let routing_indicator = cx.new(|cx| PrismRoutingIndicator::new(cx));
         workspace.status_bar().update(cx, |status_bar, cx| {
             status_bar.add_left_item(search_button, window, cx);
             status_bar.add_left_item(lsp_button, window, cx);
             status_bar.add_left_item(diagnostic_summary, window, cx);
             status_bar.add_left_item(activity_indicator, window, cx);
+            status_bar.add_left_item(routing_indicator, window, cx);
             status_bar.add_right_item(edit_prediction_ui, window, cx);
             status_bar.add_right_item(active_buffer_encoding, window, cx);
             status_bar.add_right_item(active_buffer_language, window, cx);

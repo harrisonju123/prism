@@ -1,4 +1,5 @@
-use crate::types::{uh_binary, ActivityEntry, SessionEntry};
+use crate::service::UglyhatService;
+use crate::types::SessionEntry;
 use anyhow::Result;
 use db::kvp::KEY_VALUE_STORE;
 use gpui::{
@@ -144,40 +145,35 @@ impl SessionHistoryPanel {
         cx.notify();
 
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
-            let result = cx
+            let handle = this.update(cx, |_, cx| {
+                cx.try_global::<UglyhatService>().map(|svc| svc.handle())
+            }).ok().flatten();
+
+            let result: anyhow::Result<Vec<SessionEntry>> = cx
                 .background_spawn(async move {
-                    // Pull from uglyhat activity log — checkout events represent session ends
-                    let output = std::process::Command::new(uh_binary())
-                        .args(["activity", "--limit", "50"])
-                        .output()?;
-                    if !output.status.success() {
-                        anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr));
-                    }
-                    let activities = serde_json::from_slice::<Vec<ActivityEntry>>(&output.stdout)
-                        .unwrap_or_default();
+                    let Some(handle) = handle else {
+                        anyhow::bail!("uglyhat service not available");
+                    };
+                    let activities = handle.list_activity(uglyhat::store::ActivityFilters {
+                        limit: 50,
+                        ..Default::default()
+                    })?;
 
                     let sessions: Vec<SessionEntry> = activities
                         .into_iter()
                         .enumerate()
                         .map(|(i, a)| {
-                            let date = a
-                                .created_at
-                                .split('T')
-                                .next()
-                                .unwrap_or(&a.created_at)
-                                .to_string();
-                            let summary = match a.entity_name.as_deref() {
-                                Some(name) => format!("{} {name}", a.action),
-                                None => a.action.clone(),
-                            };
+                            let date = a.created_at.format("%Y-%m-%d").to_string();
+                            let entity_name = a.summary.clone();
+                            let summary_text = format!("{} {}", a.action, &entity_name);
                             SessionEntry {
                                 id: format!("activity-{i}"),
                                 agent_name: a.actor.clone(),
                                 date,
-                                task_name: a.entity_name.clone(),
+                                task_name: Some(entity_name),
                                 task_id: None,
-                                action: a.action,
-                                summary,
+                                action: a.action.clone(),
+                                summary: summary_text,
                             }
                         })
                         .collect();

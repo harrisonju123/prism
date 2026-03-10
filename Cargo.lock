@@ -20042,8 +20042,11 @@ dependencies = [
  "serde",
  "serde_json",
  "settings",
+ "tokio",
+ "uglyhat",
  "ui",
  "util",
+ "uuid",
  "workspace",
 ]
 

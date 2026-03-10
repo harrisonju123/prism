@@ -44,6 +44,7 @@ pub enum BuiltinTool {
     SaveMemory,
     SpawnAgent,
     Recall,
+    Skill,
 }
 
 impl BuiltinTool {
@@ -62,6 +63,7 @@ impl BuiltinTool {
             "save_memory" => Some(Self::SaveMemory),
             "spawn_agent" => Some(Self::SpawnAgent),
             "recall" => Some(Self::Recall),
+            "skill" => Some(Self::Skill),
             _ => None,
         }
     }
@@ -80,6 +82,7 @@ impl BuiltinTool {
             Self::SaveMemory => "save_memory",
             Self::SpawnAgent => "spawn_agent",
             Self::Recall => "recall",
+            Self::Skill => "skill",
         }
     }
 }
@@ -191,6 +194,14 @@ pub fn tool_definitions() -> Vec<Tool> {
                 "tags":   { "type": "array", "items": { "type": "string" }, "description": "Tags to search for (returns matching memories + decisions)" },
                 "since":  { "type": "string", "description": "Duration like '2h', '30m', '1d' — returns everything since that time" }
             } }),
+        ),
+        make_tool(
+            "skill",
+            "Execute a skill by name. Skills are specialized prompt templates discovered from .prism/skills/ directories.",
+            json!({ "type": "object", "properties": {
+                "name": { "type": "string", "description": "Skill name to execute (e.g. 'commit', 'review-pr')" },
+                "args": { "type": "string", "description": "Optional arguments to pass to the skill" }
+            }, "required": ["name"] }),
         ),
     ]
 }
@@ -462,7 +473,7 @@ async fn dispatch_inner(name: &str, args: &serde_json::Value, session_cwd: Optio
             let url = args["url"].as_str().unwrap_or("");
             ToolResult::Text(web::web_fetch(url).await)
         }
-        Some(BuiltinTool::SaveMemory | BuiltinTool::SpawnAgent | BuiltinTool::Recall) => {
+        Some(BuiltinTool::SaveMemory | BuiltinTool::SpawnAgent | BuiltinTool::Recall | BuiltinTool::Skill) => {
             // Intercepted before dispatch() in the agent loop; reaching here means
             // the caller invoked dispatch() directly without agent context.
             ToolResult::Text(format!("{{\"error\": \"tool '{name}' requires agent loop context\"}}"))
