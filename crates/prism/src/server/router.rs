@@ -134,6 +134,7 @@ fn build_management_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/api/v1/stats/waste-score", get(api::stats::waste_score))
         .route("/api/v1/stats/task-types", get(api::stats::task_type_stats))
         .route("/api/v1/stats/agents", get(api::stats::agent_metrics))
+        .route("/v1/costs", get(api::costs::thread_costs))
         .route("/api/v1/alerts/rules", get(api::alerts::list_rules))
         .route("/api/v1/mcp/trace", get(api::mcp::mcp_trace))
         .route("/api/v1/routing/dry-run", post(api::routing::dry_run))

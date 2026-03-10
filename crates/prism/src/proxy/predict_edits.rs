@@ -193,6 +193,7 @@ pub async fn predict_edits(
         tool_calls_json: None,
         ttft_ms: None,
         session_id: None,
+        thread_id: None,
         provider_attempted: None,
     };
     let event = build_event(

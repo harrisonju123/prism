@@ -16,6 +16,8 @@ pub mod budgets;
 #[cfg(feature = "full")]
 pub mod config_reload;
 #[cfg(feature = "full")]
+pub mod costs;
+#[cfg(feature = "full")]
 pub mod interop;
 #[cfg(feature = "full")]
 pub mod keys;

@@ -1,11 +1,13 @@
 mod agent_roster_panel;
 mod approval_gate;
+mod service;
 mod session_history_panel;
 mod task_board_panel;
 mod types;
 
 pub use agent_roster_panel::AgentRosterPanel;
 pub use approval_gate::{ApprovalDecision, ApprovalGate};
+pub use service::UglyhatService;
 pub use session_history_panel::SessionHistoryPanel;
 pub use task_board_panel::TaskBoardPanel;
 
@@ -19,7 +21,21 @@ use task_board_panel::{Toggle, ToggleFocus};
 use workspace::Workspace;
 
 pub fn init(cx: &mut App) {
-    cx.observe_new(|workspace: &mut Workspace, _, _| {
+    cx.observe_new(|workspace: &mut Workspace, _, cx| {
+        // Initialize UglyhatService from workspace root (best-effort)
+        if cx.try_global::<UglyhatService>().is_none() {
+            let root = workspace
+                .project()
+                .read(cx)
+                .visible_worktrees(cx)
+                .next()
+                .map(|wt| wt.read(cx).abs_path().to_path_buf());
+            if let Some(root) = root {
+                if let Err(e) = UglyhatService::init(&root, cx) {
+                    eprintln!("uglyhat service init failed: {e}");
+                }
+            }
+        }
         workspace.register_action(|workspace, _: &ToggleFocus, window, cx| {
             workspace.toggle_panel_focus::<TaskBoardPanel>(window, cx);
         });

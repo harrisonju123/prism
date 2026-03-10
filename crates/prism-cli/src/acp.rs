@@ -47,6 +47,7 @@ use crate::hooks::HookRunner;
 use crate::hooks::config::PreToolAction;
 use crate::mcp::McpRegistry;
 use crate::memory::MemoryManager;
+use crate::skills::SkillRegistry;
 use crate::tools::{self, BuiltinTool};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,13 +90,14 @@ pub struct PrismAgent {
     connection: RefCell<Option<Rc<acp::AgentSideConnection>>>,
     config: Config,
     memory: RefCell<MemoryManager>,
-    mcp_registry: Option<McpRegistry>,
+    mcp_registry: Option<Arc<McpRegistry>>,
+    skill_registry: SkillRegistry,
     hook_runner: HookRunner,
     compressor: Option<ContextCompressor>,
 }
 
 impl PrismAgent {
-    pub fn new(config: Config, mcp_registry: Option<McpRegistry>) -> Self {
+    pub fn new(config: Config, mcp_registry: Option<Arc<McpRegistry>>, skill_registry: SkillRegistry) -> Self {
         let memory = MemoryManager::new(None, None);
         let hook_runner = config.build_hook_runner();
         let compressor = config.build_compressor();
@@ -105,6 +107,7 @@ impl PrismAgent {
             config,
             memory: RefCell::new(memory),
             mcp_registry,
+            skill_registry,
             hook_runner,
             compressor,
         }
@@ -143,6 +146,7 @@ impl PrismAgent {
     #[allow(clippy::await_holding_refcell_ref)]
     async fn build_system_message(&self, cwd: Option<&Path>) -> Message {
         let memory_content = self.memory.borrow().load().await;
+        let skills_section = self.skill_registry.system_prompt_section();
         let cwd_section = cwd
             .map(|p| {
                 format!(
@@ -156,14 +160,14 @@ impl PrismAgent {
 
         let mcp_section = self
             .mcp_registry
-            .as_ref()
+            .as_deref()
             .map(|r| r.system_prompt_section())
             .unwrap_or("");
 
         let full_system = build_system_prompt(
             self.config.model.system_prompt.as_deref(),
             &memory_content,
-            &cwd_section,
+            &format!("{cwd_section}{skills_section}"),
             mcp_section,
         );
 
@@ -279,7 +283,7 @@ impl PrismAgent {
         };
 
         let mut tool_call_counter: u32 = 0;
-        let tool_defs = tools::all_tool_definitions(self.mcp_registry.as_ref());
+        let tool_defs = tools::all_tool_definitions(self.mcp_registry.as_deref());
 
         for _turn in 0..self.config.model.max_turns {
             // Take messages out of RefCell to avoid clone. We'll put them back after
@@ -518,6 +522,7 @@ impl PrismAgent {
                             }
                         }
 
+                        let mut skill_injection: Option<String> = None;
                         let result = match bt {
                             Some(BuiltinTool::SaveMemory) => {
                                 let key = args["key"].as_str().unwrap_or("note").to_string();
@@ -525,12 +530,32 @@ impl PrismAgent {
                                 self.memory.borrow_mut().append(key.clone(), value);
                                 json!({"saved": true, "key": key}).to_string()
                             }
+                            Some(BuiltinTool::Skill) => {
+                                let skill_name = args["name"].as_str().unwrap_or("");
+                                let skill_args = args["args"].as_str().unwrap_or("");
+                                match self.skill_registry.get(skill_name) {
+                                    Some(skill) => {
+                                        skill_injection = Some(skill.expand(skill_args));
+                                        json!({
+                                            "status": "ok",
+                                            "skill": skill_name,
+                                            "note": "Skill content has been injected as a follow-up message."
+                                        }).to_string()
+                                    }
+                                    None => {
+                                        json!({
+                                            "error": format!("unknown skill: {skill_name}"),
+                                            "available_skills": self.skill_registry.names()
+                                        }).to_string()
+                                    }
+                                }
+                            }
                             _ => {
                                 tools::dispatch(
                                     name,
                                     &args,
                                     Some(&session_cwd),
-                                    self.mcp_registry.as_ref(),
+                                    self.mcp_registry.as_deref(),
                                 )
                                 .await
                             }
@@ -562,6 +587,18 @@ impl PrismAgent {
                             )),
                         )
                         .await;
+
+                        // Inject skill content as a user message after the tool result
+                        if let Some(content) = skill_injection {
+                            messages.push(Message {
+                                role: MessageRole::User,
+                                content: Some(json!(content)),
+                                name: None,
+                                tool_calls: None,
+                                tool_call_id: None,
+                                extra: Default::default(),
+                            });
+                        }
                     }
                 }
             }
@@ -620,6 +657,9 @@ fn tool_title(bt: Option<BuiltinTool>, name: &str, args: &serde_json::Value) -> 
         }
         Some(BuiltinTool::Recall) => {
             format!("Recall: {}", args["query"].as_str().unwrap_or("memory"))
+        }
+        Some(BuiltinTool::Skill) => {
+            format!("Skill: {}", args["name"].as_str().unwrap_or("skill"))
         }
         None => name.to_string(),
     }
@@ -772,8 +812,8 @@ impl acp::Agent for PrismAgent {
     }
 }
 
-pub async fn run_acp_server(config: Config, mcp_registry: Option<McpRegistry>) -> Result<()> {
-    let agent = Rc::new(PrismAgent::new(config, mcp_registry));
+pub async fn run_acp_server(config: Config, mcp_registry: Option<Arc<McpRegistry>>, skill_registry: SkillRegistry) -> Result<()> {
+    let agent = Rc::new(PrismAgent::new(config, mcp_registry, skill_registry));
 
     use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
     let stdin = tokio::io::stdin().compat();

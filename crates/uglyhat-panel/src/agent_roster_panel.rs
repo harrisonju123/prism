@@ -1,4 +1,5 @@
-use crate::types::{prism_binary, uh_binary, AgentStatus, WorkspaceContext};
+use crate::service::UglyhatService;
+use crate::types::{prism_binary, uh_binary, AgentStatus};
 use anyhow::Result;
 use db::kvp::KEY_VALUE_STORE;
 use gpui::{
@@ -203,16 +204,27 @@ impl AgentRosterPanel {
         cx.notify();
 
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
+            let handle = this.update(cx, |_, cx| {
+                cx.try_global::<UglyhatService>().map(|svc| svc.handle())
+            }).ok().flatten();
+
             let result = cx
                 .background_spawn(async move {
-                    let output = std::process::Command::new(uh_binary())
-                        .arg("context")
-                        .output()?;
-                    if !output.status.success() {
-                        anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr));
-                    }
-                    let ctx = serde_json::from_slice::<WorkspaceContext>(&output.stdout)?;
-                    anyhow::Ok(ctx.active_agents)
+                    let Some(handle) = handle else {
+                        anyhow::bail!("uglyhat service not available");
+                    };
+                    let agents = handle.list_agents()?;
+                    let panel_agents: Vec<AgentStatus> = agents
+                        .into_iter()
+                        .map(|a| AgentStatus {
+                            name: a.name,
+                            session_open: a.session_open,
+                            current_task_name: a.current_thread.clone(),
+                            current_task_id: None,
+                            last_checkin: a.last_checkin.map(|t| t.to_rfc3339()),
+                        })
+                        .collect();
+                    anyhow::Ok(panel_agents)
                 })
                 .await;
 
@@ -273,24 +285,17 @@ impl AgentRosterPanel {
 
         let title = format!("Message to {}", agent.name);
         let content = compose_text.trim().to_string();
-        let task_id_arg = if task_id.is_empty() {
-            None
-        } else {
-            Some(task_id.clone())
-        };
 
         self.send_task = Some(cx.spawn(async move |this, cx| {
+            let handle = this.update(cx, |_, cx| {
+                cx.try_global::<UglyhatService>().map(|svc| svc.handle())
+            }).ok().flatten();
             let result = cx
                 .background_spawn(async move {
-                    let mut cmd = std::process::Command::new(uh_binary());
-                    cmd.args(["note", &title, "--content", &content]);
-                    if let Some(tid) = task_id_arg {
-                        cmd.args(["--task-id", &tid]);
-                    }
-                    let output = cmd.output()?;
-                    if !output.status.success() {
-                        anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr));
-                    }
+                    let Some(handle) = handle else {
+                        anyhow::bail!("uglyhat service not available");
+                    };
+                    handle.save_memory(&title, &content, None, vec!["note".to_string()])?;
                     anyhow::Ok(())
                 })
                 .await;

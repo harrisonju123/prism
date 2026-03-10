@@ -36,7 +36,7 @@ use crate::routing::FitnessCache;
 use crate::routing::types::RoutingPolicy;
 use crate::types::{
     ChatCompletionRequest, ChatCompletionResponse, EmbeddingRequest, EventStatus, InferenceEvent,
-    MessageRole, ProviderResponse, Usage,
+    MessageRole, ProviderResponse, TaskType, Usage,
 };
 
 /// POST /v1/chat/completions
@@ -80,6 +80,12 @@ pub async fn chat_completions(
     // Session tracking header
     let session_id = headers
         .get("x-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    // uglyhat thread attribution
+    let thread_id = headers
+        .get("x-uglyhat-thread-id")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
@@ -139,7 +145,7 @@ pub async fn chat_completions(
     }
 
     // --- Classification + Routing ---
-    let (task_type, routing_decision_str) = if state.config.routing.enabled {
+    let (task_type, routing_decision, routing_decision_str) = if state.config.routing.enabled {
         let input = build_classifier_input(&request);
         let mut classification = RulesClassifier::classify(&input);
 
@@ -223,9 +229,9 @@ pub async fn chat_completions(
             .as_ref()
             .map(|d| serde_json::to_string(d).unwrap_or_else(|_| format!("{:?}", d)));
 
-        (Some(classification.task_type), decision_str)
+        (Some(classification.task_type), decision, decision_str)
     } else {
-        (None, None)
+        (None, None, None)
     };
 
     // --- Session tracking ---
@@ -388,6 +394,7 @@ pub async fn chat_completions(
                 tool_calls_json: tool_calls_json.clone(),
                 ttft_ms: None,
                 session_id: session_id.clone(),
+                thread_id: thread_id.clone(),
                 provider_attempted: None,
             };
             let event = build_event(
@@ -653,6 +660,7 @@ pub async fn chat_completions(
                 tool_calls_json: tool_calls_json.clone(),
                 ttft_ms: None, // non-streaming: no TTFT
                 session_id: session_id.clone(),
+                thread_id: thread_id.clone(),
                 provider_attempted,
             };
             let event = build_event(
@@ -751,6 +759,13 @@ pub async fn chat_completions(
             let mut resp = Json(response).into_response();
             resp.headers_mut()
                 .insert("x-cache", "MISS".parse().unwrap());
+            let routing_headers = build_routing_headers(
+                &provider_name,
+                &request.model,
+                routing_decision.as_ref(),
+                task_type,
+            );
+            resp.headers_mut().extend(routing_headers);
             if let Some(ref ctx) = auth_ctx {
                 let rl_headers = build_rate_limit_headers(ctx, &state);
                 resp.headers_mut().extend(rl_headers);
@@ -776,6 +791,7 @@ pub async fn chat_completions(
             let agent_framework_owned = agent_framework.clone();
             let tool_calls_json_owned = tool_calls_json.clone();
             let session_id_owned = session_id.clone();
+            let thread_id_owned = thread_id.clone();
             let session_cost_usd = state.session_cost_usd.clone();
 
             // Spawn a task to capture the final result after stream completes
@@ -824,6 +840,7 @@ pub async fn chat_completions(
                         tool_calls_json: tool_calls_json_owned,
                         ttft_ms: result.ttft_ms,
                         session_id: session_id_owned,
+                        thread_id: thread_id_owned,
                         provider_attempted: None,
                     };
                     let event = build_event(
@@ -934,6 +951,13 @@ pub async fn chat_completions(
             let mut sse_resp = Sse::new(sse_stream)
                 .keep_alive(KeepAlive::default())
                 .into_response();
+            let routing_headers = build_routing_headers(
+                &provider_name,
+                &request.model,
+                routing_decision.as_ref(),
+                task_type,
+            );
+            sse_resp.headers_mut().extend(routing_headers);
             if let Some(ref ctx) = auth_ctx {
                 let rl_headers = build_rate_limit_headers(ctx, &state);
                 sse_resp.headers_mut().extend(rl_headers);
@@ -1127,6 +1151,7 @@ pub(crate) struct EventContext {
     pub(crate) tool_calls_json: Option<String>,
     pub(crate) ttft_ms: Option<u32>,
     pub(crate) session_id: Option<String>,
+    pub(crate) thread_id: Option<String>,
     pub(crate) provider_attempted: Option<String>,
 }
 
@@ -1178,6 +1203,7 @@ pub(crate) fn build_event(
         tool_calls_json: ctx.tool_calls_json.clone(),
         ttft_ms: ctx.ttft_ms,
         session_id: ctx.session_id.clone(),
+        thread_id: ctx.thread_id.clone(),
         provider_attempted: ctx.provider_attempted.clone(),
     }
 }
@@ -1362,6 +1388,49 @@ fn build_rate_limit_headers(ctx: &AuthContext, state: &Arc<AppState>) -> HeaderM
             headers.insert("x-ratelimit-limit-tokens", limit_val);
             headers.insert("x-ratelimit-remaining-tokens", rem_val);
             headers.insert("x-ratelimit-reset-tokens", "60".parse().unwrap());
+        }
+    }
+    headers
+}
+
+const HEADER_ROUTED_MODEL: &str = "x-prism-routed-model";
+const HEADER_ROUTED_PROVIDER: &str = "x-prism-routed-provider";
+const HEADER_WAS_OVERRIDDEN: &str = "x-prism-was-overridden";
+const HEADER_ROUTING_REASON: &str = "x-prism-routing-reason";
+const HEADER_TASK_TYPE: &str = "x-prism-task-type";
+
+/// Build `x-prism-routed-*` headers exposing the routing decision to clients.
+fn build_routing_headers(
+    provider_name: &str,
+    model: &str,
+    decision: Option<&crate::routing::types::RoutingDecision>,
+    task_type: Option<TaskType>,
+) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    match model.parse() {
+        Ok(v) => { headers.insert(HEADER_ROUTED_MODEL, v); }
+        Err(e) => tracing::debug!(model, error = %e, "invalid header value for routed model"),
+    }
+    match provider_name.parse() {
+        Ok(v) => { headers.insert(HEADER_ROUTED_PROVIDER, v); }
+        Err(e) => tracing::debug!(provider_name, error = %e, "invalid header value for routed provider"),
+    }
+    if let Some(d) = decision {
+        headers.insert(
+            HEADER_WAS_OVERRIDDEN,
+            if d.was_overridden { "true" } else { "false" }
+                .parse()
+                .unwrap(),
+        );
+        if let Ok(v) = d.reason.parse() {
+            headers.insert(HEADER_ROUTING_REASON, v);
+        }
+    } else {
+        headers.insert(HEADER_WAS_OVERRIDDEN, "false".parse().unwrap());
+    }
+    if let Some(tt) = task_type {
+        if let Ok(v) = tt.to_string().parse() {
+            headers.insert(HEADER_TASK_TYPE, v);
         }
     }
     headers
@@ -1588,5 +1657,47 @@ mod tests {
         // Model not in config.models, falls through to catalog/inference
         let (_, _, fallbacks) = resolve_model_with_fallbacks(&config, "gpt-4o-mini").unwrap();
         assert!(fallbacks.is_empty());
+    }
+
+    #[test]
+    fn build_routing_headers_with_decision() {
+        use crate::routing::types::RoutingDecision;
+
+        let decision = RoutingDecision {
+            selected_model: "claude-sonnet-4-6".to_string(),
+            reason: "criteria=CheapestAboveQuality, quality=0.78".to_string(),
+            was_overridden: true,
+            policy_rule_id: Some(0),
+            task_type: TaskType::CodeGeneration,
+            confidence: 0.85,
+            fallback_chain: vec![],
+        };
+
+        let headers = build_routing_headers(
+            "bedrock",
+            "claude-sonnet-4-6",
+            Some(&decision),
+            Some(TaskType::CodeGeneration),
+        );
+
+        assert_eq!(headers.get(HEADER_ROUTED_MODEL).unwrap(), "claude-sonnet-4-6");
+        assert_eq!(headers.get(HEADER_ROUTED_PROVIDER).unwrap(), "bedrock");
+        assert_eq!(headers.get(HEADER_WAS_OVERRIDDEN).unwrap(), "true");
+        assert_eq!(
+            headers.get(HEADER_ROUTING_REASON).unwrap(),
+            "criteria=CheapestAboveQuality, quality=0.78"
+        );
+        assert_eq!(headers.get(HEADER_TASK_TYPE).unwrap(), "code_generation");
+    }
+
+    #[test]
+    fn build_routing_headers_without_decision() {
+        let headers = build_routing_headers("anthropic", "claude-sonnet-4", None, None);
+
+        assert_eq!(headers.get(HEADER_ROUTED_MODEL).unwrap(), "claude-sonnet-4");
+        assert_eq!(headers.get(HEADER_ROUTED_PROVIDER).unwrap(), "anthropic");
+        assert_eq!(headers.get(HEADER_WAS_OVERRIDDEN).unwrap(), "false");
+        assert!(headers.get(HEADER_ROUTING_REASON).is_none());
+        assert!(headers.get(HEADER_TASK_TYPE).is_none());
     }
 }

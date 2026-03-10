@@ -167,6 +167,7 @@ pub async fn text_completions(
         tool_calls_json: None,
         ttft_ms: None,
         session_id: None,
+        thread_id: None,
         provider_attempted: None,
     };
     let _ = state.event_tx.try_send(event);

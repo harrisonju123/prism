@@ -212,6 +212,30 @@ FROM inference_events
 GROUP BY hour, model
 "#;
 
+/// Add thread_id column for uglyhat thread attribution.
+pub const INFERENCE_EVENTS_MIGRATION_V3: &str = r#"
+ALTER TABLE inference_events
+    ADD COLUMN IF NOT EXISTS thread_id Nullable(String)
+"#;
+
+/// Materialized view for daily spend by uglyhat thread.
+pub const DAILY_SPEND_BY_THREAD_SCHEMA: &str = r#"
+CREATE MATERIALIZED VIEW IF NOT EXISTS daily_spend_by_thread
+ENGINE = SummingMergeTree()
+PARTITION BY toYYYYMM(day)
+ORDER BY (day, thread_id)
+AS SELECT
+    toStartOfDay(timestamp) AS day,
+    thread_id,
+    count() AS request_count,
+    sum(estimated_cost_usd) AS total_cost_usd,
+    sum(input_tokens) AS total_input_tokens,
+    sum(output_tokens) AS total_output_tokens
+FROM inference_events
+WHERE thread_id IS NOT NULL AND thread_id != ''
+GROUP BY day, thread_id
+"#;
+
 /// Versioned migrations: (version_name, ddl). Applied in order, skipping already-applied ones.
 pub const MIGRATIONS: &[(&str, &str)] = &[
     ("001_inference_events", INFERENCE_EVENTS_SCHEMA),
@@ -224,4 +248,6 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
     ("008_hourly_task_stats", HOURLY_TASK_STATS_SCHEMA),
     ("009_daily_spend_by_key", DAILY_SPEND_BY_KEY_SCHEMA),
     ("010_hourly_error_rate", HOURLY_ERROR_RATE_SCHEMA),
+    ("011_inference_events_v3_thread_id", INFERENCE_EVENTS_MIGRATION_V3),
+    ("012_daily_spend_by_thread", DAILY_SPEND_BY_THREAD_SCHEMA),
 ];

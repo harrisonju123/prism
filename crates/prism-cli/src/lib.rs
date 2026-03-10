@@ -10,4 +10,5 @@ pub mod mcp;
 pub mod memory;
 pub mod permissions;
 pub mod session;
+pub mod skills;
 pub mod tools;

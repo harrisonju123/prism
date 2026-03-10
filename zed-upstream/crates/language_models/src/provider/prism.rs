@@ -20,7 +20,7 @@ use language_model::{
 use open_ai::{
     ResponseStreamEvent,
     responses::{Request as ResponseRequest, StreamEvent as ResponsesStreamEvent, stream_response},
-    stream_completion,
+    stream_completion_with_headers,
 };
 use settings::{Settings, SettingsStore, update_settings_file};
 use std::collections::HashMap;
@@ -53,6 +53,56 @@ pub struct PrismSettings {
     pub available_models: Vec<AvailableModel>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct RoutingInfo {
+    pub routed_model: String,
+    pub routed_provider: String,
+    pub was_overridden: bool,
+    pub routing_reason: String,
+    pub task_type: Option<String>,
+}
+
+const HEADER_ROUTED_MODEL: &str = "x-prism-routed-model";
+const HEADER_ROUTED_PROVIDER: &str = "x-prism-routed-provider";
+const HEADER_WAS_OVERRIDDEN: &str = "x-prism-was-overridden";
+const HEADER_ROUTING_REASON: &str = "x-prism-routing-reason";
+const HEADER_TASK_TYPE: &str = "x-prism-task-type";
+
+impl RoutingInfo {
+    fn from_headers(headers: &http_client::http::HeaderMap) -> Option<Self> {
+        let routed_model = headers
+            .get(HEADER_ROUTED_MODEL)?
+            .to_str()
+            .ok()?
+            .to_string();
+        let routed_provider = headers
+            .get(HEADER_ROUTED_PROVIDER)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("unknown")
+            .to_string();
+        let was_overridden = headers
+            .get(HEADER_WAS_OVERRIDDEN)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v == "true");
+        let routing_reason = headers
+            .get(HEADER_ROUTING_REASON)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let task_type = headers
+            .get(HEADER_TASK_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        Some(Self {
+            routed_model,
+            routed_provider,
+            was_overridden,
+            routing_reason,
+            task_type,
+        })
+    }
+}
+
 struct GlobalPrismState(WeakEntity<State>);
 
 impl Global for GlobalPrismState {}
@@ -64,6 +114,15 @@ pub fn prism_api_key_and_url(cx: &App) -> Option<(Arc<str>, String)> {
     let state = state.read(cx);
     let key = state.effective_api_key()?;
     Some((key, state.settings.api_url.clone()))
+}
+
+pub fn prism_last_routing_info(cx: &App) -> Option<RoutingInfo> {
+    let state = cx.try_global::<GlobalPrismState>()?.0.upgrade()?;
+    state.read(cx).last_routing_info.lock().ok()?.clone()
+}
+
+pub fn prism_state_entity(cx: &App) -> Option<Entity<State>> {
+    cx.try_global::<GlobalPrismState>()?.0.upgrade()
 }
 
 pub struct PrismLanguageModelProvider {
@@ -88,6 +147,7 @@ pub struct State {
     sidecar_status: SidecarStatus,
     session_cost_usd: f64,
     embedded_session_cost: Option<Arc<std::sync::atomic::AtomicU64>>,
+    pub last_routing_info: Arc<std::sync::Mutex<Option<RoutingInfo>>>,
 }
 
 impl State {
@@ -301,6 +361,7 @@ impl PrismLanguageModelProvider {
                     sidecar_status: SidecarStatus::Unknown,
                     session_cost_usd: 0.0,
                     embedded_session_cost: None,
+                    last_routing_info: Arc::new(std::sync::Mutex::new(None)),
                 };
                 state.start_embedded_if_needed(cx);
                 state
@@ -453,6 +514,9 @@ impl PrismLanguageModel {
         >,
     > {
         let http_client = self.http_client.clone();
+        let routing_info_slot = self.state.read_with(cx, |state, _cx| {
+            state.last_routing_info.clone()
+        });
 
         let (api_key, api_url) = self.state.read_with(cx, |state, _cx| {
             (state.effective_api_key(), state.settings.api_url.clone())
@@ -463,7 +527,7 @@ impl PrismLanguageModel {
             let Some(api_key) = api_key else {
                 return Err(LanguageModelCompletionError::NoApiKey { provider });
             };
-            let response = stream_completion(
+            let (headers, stream) = stream_completion_with_headers(
                 http_client.as_ref(),
                 provider.0.as_str(),
                 &api_url,
@@ -471,7 +535,14 @@ impl PrismLanguageModel {
                 request,
             )
             .await?;
-            Ok(response)
+
+            if let Some(info) = RoutingInfo::from_headers(&headers) {
+                if let Ok(mut slot) = routing_info_slot.lock() {
+                    *slot = Some(info);
+                }
+            }
+
+            Ok(stream)
         });
 
         async move { Ok(future.await?.boxed()) }.boxed()

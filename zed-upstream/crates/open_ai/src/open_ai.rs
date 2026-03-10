@@ -577,6 +577,18 @@ pub async fn stream_completion(
     api_key: &str,
     request: Request,
 ) -> Result<BoxStream<'static, Result<ResponseStreamEvent>>, RequestError> {
+    let (_headers, stream) =
+        stream_completion_with_headers(client, provider_name, api_url, api_key, request).await?;
+    Ok(stream)
+}
+
+pub async fn stream_completion_with_headers(
+    client: &dyn HttpClient,
+    provider_name: &str,
+    api_url: &str,
+    api_key: &str,
+    request: Request,
+) -> Result<(HeaderMap, BoxStream<'static, Result<ResponseStreamEvent>>), RequestError> {
     let uri = format!("{api_url}/chat/completions");
     let request_builder = HttpRequest::builder()
         .method(Method::POST)
@@ -584,16 +596,17 @@ pub async fn stream_completion(
         .header("Content-Type", "application/json")
         .header("Authorization", format!("Bearer {}", api_key.trim()));
 
-    let request = request_builder
+    let http_request = request_builder
         .body(AsyncBody::from(
             serde_json::to_string(&request).map_err(|e| RequestError::Other(e.into()))?,
         ))
         .map_err(|e| RequestError::Other(e.into()))?;
 
-    let mut response = client.send(request).await?;
+    let mut response = client.send(http_request).await?;
     if response.status().is_success() {
+        let response_headers = response.headers().clone();
         let reader = BufReader::new(response.into_body());
-        Ok(reader
+        let stream = reader
             .lines()
             .filter_map(|line| async move {
                 match line {
@@ -622,7 +635,8 @@ pub async fn stream_completion(
                     Err(error) => Some(Err(anyhow!(error))),
                 }
             })
-            .boxed())
+            .boxed();
+        Ok((response_headers, stream))
     } else {
         let mut body = String::new();
         response

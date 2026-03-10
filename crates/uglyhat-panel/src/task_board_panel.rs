@@ -1,3 +1,4 @@
+use crate::service::UglyhatService;
 use crate::types::{
     uh_binary, AgentStatus, DependencyInfo, StatusCount, TaskContext, TaskSummary, WorkspaceContext,
 };
@@ -179,19 +180,44 @@ impl TaskBoardPanel {
         cx.notify();
 
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
+            let handle = this.update(cx, |_, cx| {
+                cx.try_global::<UglyhatService>().map(|svc| svc.handle())
+            }).ok().flatten();
+
             let context_result = cx
-                .background_spawn(async move {
-                    let output = std::process::Command::new(uh_binary())
-                        .arg("context")
-                        .output()?;
-                    if !output.status.success() {
-                        anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr));
+                .background_spawn({
+                    let handle = handle.clone();
+                    async move {
+                        let Some(handle) = handle else {
+                            anyhow::bail!("uglyhat service not available");
+                        };
+                        let overview = handle.get_workspace_overview()?;
+                        // Map WorkspaceOverview → WorkspaceContext for panel compatibility
+                        let ctx = WorkspaceContext {
+                            workspace: crate::types::WorkspaceInfo {
+                                name: overview.workspace.name.clone(),
+                            },
+                            active_tasks: Vec::new(),
+                            tasks_by_status: Vec::new(),
+                            active_agents: overview
+                                .active_agents
+                                .into_iter()
+                                .map(|a| AgentStatus {
+                                    name: a.name,
+                                    session_open: a.session_open,
+                                    current_task_name: a.current_thread.clone(),
+                                    current_task_id: None,
+                                    last_checkin: a.last_checkin.map(|t| t.to_rfc3339()),
+                                })
+                                .collect(),
+                            stale_tasks: Vec::new(),
+                        };
+                        anyhow::Ok(ctx)
                     }
-                    serde_json::from_slice::<WorkspaceContext>(&output.stdout)
-                        .map_err(anyhow::Error::from)
                 })
                 .await;
 
+            // `uh next` stays as CLI — task querying not in Store trait
             let next_result = cx
                 .background_spawn(async move {
                     let output = std::process::Command::new(uh_binary())
@@ -268,14 +294,15 @@ impl TaskBoardPanel {
             return;
         };
         self.checkin_task = Some(cx.spawn(async move |this, cx| {
+            let handle = this.update(cx, |_, cx| {
+                cx.try_global::<UglyhatService>().map(|svc| svc.handle())
+            }).ok().flatten();
             let result = cx
                 .background_spawn(async move {
-                    let output = std::process::Command::new(uh_binary())
-                        .args(["checkin", "--name", &name, "--capabilities", "zed"])
-                        .output()?;
-                    if !output.status.success() {
-                        anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr));
-                    }
+                    let Some(handle) = handle else {
+                        anyhow::bail!("uglyhat service not available");
+                    };
+                    handle.checkin(&name, vec!["zed".to_string()], None)?;
                     anyhow::Ok(())
                 })
                 .await;
@@ -297,20 +324,21 @@ impl TaskBoardPanel {
             return;
         };
         self.checkin_task = Some(cx.spawn(async move |this, cx| {
+            let handle = this.update(cx, |_, cx| {
+                cx.try_global::<UglyhatService>().map(|svc| svc.handle())
+            }).ok().flatten();
             let result = cx
                 .background_spawn(async move {
-                    let output = std::process::Command::new(uh_binary())
-                        .args([
-                            "checkout",
-                            "--name",
-                            &name,
-                            "--summary",
-                            "Zed session ended",
-                        ])
-                        .output()?;
-                    if !output.status.success() {
-                        anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr));
-                    }
+                    let Some(handle) = handle else {
+                        anyhow::bail!("uglyhat service not available");
+                    };
+                    handle.checkout(
+                        &name,
+                        "Zed session ended",
+                        Vec::new(),
+                        Vec::new(),
+                        Vec::new(),
+                    )?;
                     anyhow::Ok(())
                 })
                 .await;

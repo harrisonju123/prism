@@ -2,8 +2,10 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use prism_cli::{
     acp, agent::Agent, config::Config, mcp, memory, permissions::PermissionMode, session::Session,
+    skills::SkillRegistry,
 };
 use prism_client::PrismClient;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(
@@ -110,7 +112,9 @@ async fn run(cli: Cli) -> Result<()> {
                 config.model.model = m;
             }
             let mcp_registry = load_mcp_registry(&config).await;
-            acp::run_acp_server(config, mcp_registry).await?;
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let skill_registry = SkillRegistry::discover(&cwd);
+            acp::run_acp_server(config, mcp_registry, skill_registry).await?;
         }
         Commands::Run {
             task,
@@ -141,6 +145,8 @@ async fn run(cli: Cli) -> Result<()> {
                 PrismClient::new(&config.gateway.url).with_api_key(&config.gateway.api_key);
             let mcp_registry = load_mcp_registry(&config).await;
             let memory = load_memory().await;
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let skill_registry = SkillRegistry::discover(&cwd);
 
             if let Some(resume_flag) = resume {
                 // Resume a previous session
@@ -151,14 +157,33 @@ async fn run(cli: Cli) -> Result<()> {
                     session.episode_id.to_string()[..8].to_string(),
                     session.turns
                 );
-                let mut agent = Agent::from_session(client, config, session, mcp_registry, memory);
+                let mut agent = Agent::from_session(client, config, session, mcp_registry, memory, skill_registry);
                 let task_str = task.as_deref().unwrap_or("");
                 agent.resume(task_str).await?;
             } else {
                 // New session
                 let task_str =
                     task.ok_or_else(|| anyhow::anyhow!("task is required for new sessions"))?;
-                let mut agent = Agent::new(client, config, &task_str, mcp_registry, memory);
+
+                // Check for skill invocation via /prefix
+                let task_str = if let Some((skill_name, skill_args)) = prism_cli::skills::parse_skill_invocation(&task_str) {
+                    match skill_registry.get(skill_name) {
+                        Some(skill) => {
+                            if !skill.user_invocable {
+                                anyhow::bail!("skill '{skill_name}' is not user-invocable");
+                            }
+                            eprintln!("[skill] expanding /{skill_name}");
+                            skill.expand(skill_args)
+                        }
+                        None => {
+                            anyhow::bail!("unknown skill: '{skill_name}'. Available: {:?}", skill_registry.names());
+                        }
+                    }
+                } else {
+                    task_str
+                };
+
+                let mut agent = Agent::new(client, config, &task_str, mcp_registry, memory, skill_registry);
                 agent.run(&task_str).await?;
             }
         }
@@ -254,14 +279,14 @@ async fn load_memory() -> memory::MemoryManager {
     memory::MemoryManager::new(store, workspace_id)
 }
 
-async fn load_mcp_registry(config: &Config) -> Option<mcp::McpRegistry> {
+async fn load_mcp_registry(config: &Config) -> Option<Arc<mcp::McpRegistry>> {
     match mcp::config::load_mcp_config(&config.extensions.mcp_config_path) {
         Ok(mcp_config) if !mcp_config.mcp_servers.is_empty() => {
             let registry = mcp::McpRegistry::connect_all(&mcp_config).await;
             if registry.is_empty() {
                 None
             } else {
-                Some(registry)
+                Some(Arc::new(registry))
             }
         }
         Ok(_) => None,
