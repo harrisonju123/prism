@@ -1,3 +1,4 @@
+pub mod background;
 pub mod spawn;
 
 use anyhow::{Result, anyhow};
@@ -12,6 +13,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::task::JoinSet;
 use uuid::Uuid;
+
+use background::BackgroundTaskManager;
 
 use crate::common::{
     self, ToolCallBuilder, accumulate_tool_call_deltas, build_system_prompt,
@@ -108,6 +111,7 @@ pub struct Agent {
     permission_gate: ToolPermissionGate,
     hook_runner: HookRunner,
     compressor: Option<ContextCompressor>,
+    background: BackgroundTaskManager,
     // Shared interrupt flag — set by ctrl-c handler (owned by REPL) or per-run handler
     pub interrupted: Arc<AtomicBool>,
 }
@@ -136,6 +140,7 @@ impl Agent {
             permission_gate,
             hook_runner,
             compressor,
+            background: BackgroundTaskManager::new(),
             interrupted: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -161,6 +166,7 @@ impl Agent {
             permission_gate,
             hook_runner,
             compressor,
+            background: BackgroundTaskManager::new(),
             interrupted: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -226,6 +232,21 @@ impl Agent {
         if let Err(e) = self.session.save(&self.config.session.sessions_dir) {
             tracing::warn!("failed to save session after compact: {e}");
         }
+    }
+
+    /// Poll for newly completed background tasks and return notification strings.
+    /// Does NOT consume them — they remain buffered for injection at next turn start.
+    pub fn poll_background_notifications(&mut self) -> Vec<String> {
+        self.background
+            .poll_completed()
+            .iter()
+            .map(|t| {
+                format!(
+                    "[bg] task {} \"{}\" completed in {:.1}s — {}",
+                    t.task_id, t.description, t.elapsed_secs, t.result.summary,
+                )
+            })
+            .collect()
     }
 
     pub async fn run(&mut self, task: &str) -> Result<()> {
@@ -294,6 +315,26 @@ impl Agent {
                 self.permission_gate.renderer().interrupt_notice();
                 stop_reason = Some(AgentStopReason::Interrupt);
                 break;
+            }
+
+            // Inject completed background tasks as user messages
+            let completed = self.background.take_pending();
+            for task in &completed {
+                self.permission_gate.renderer().background_task_complete(
+                    &task.task_id,
+                    &task.description,
+                    task.elapsed_secs,
+                );
+                total_cost_usd += task.result.cost;
+                let notification = format!(
+                    "[Background task completed] task_id={} description=\"{}\" elapsed={:.1}s\n\
+                     Result: {}",
+                    task.task_id,
+                    task.description,
+                    task.elapsed_secs,
+                    serde_json::to_string(&task.result).unwrap_or_else(|_| task.result.summary.clone()),
+                );
+                self.session.push_message(common::user_message(notification));
             }
 
             let req = ChatCompletionRequest {
@@ -572,49 +613,125 @@ impl Agent {
                                     elapsed_ms: t0.elapsed().as_millis(),
                                 });
                             }
-                            Some(BuiltinTool::SpawnAgent) => {
-                                let args = ptc.args;
-                                let index = ptc.index;
-                                let id = ptc.id;
-                                let name = ptc.name;
-                                let url = gateway_url.clone();
-                                let key = gateway_key.clone();
-                                joinset.spawn(async move {
-                                    let t0 = std::time::Instant::now();
-                                    let task =
-                                        args["task"].as_str().unwrap_or("").to_string();
-                                    let model =
-                                        args["model"].as_str().map(str::to_string);
-                                    let cost_cap = args["cost_cap"].as_f64();
-                                    let timeout_secs = args["timeout_secs"].as_u64();
-                                    let spawn_config = spawn::SpawnConfig {
-                                        task,
-                                        model,
-                                        cost_cap,
-                                        tools: None,
-                                        timeout_secs,
-                                    };
-                                    let result =
-                                        match spawn::spawn_agent(spawn_config, &url, &key)
-                                            .await
-                                        {
-                                            Ok(r) => serde_json::to_string(&r)
-                                                .unwrap_or_else(|_| r.summary.clone()),
-                                            Err(e) => serde_json::json!({
-                                                "status": "error",
-                                                "summary": e.to_string()
-                                            })
-                                            .to_string(),
-                                        };
-                                    ToolOutcome::Result {
-                                        index,
-                                        id,
-                                        name,
-                                        args,
-                                        result,
-                                        elapsed_ms: t0.elapsed().as_millis(),
-                                    }
+                            Some(BuiltinTool::CheckBackgroundTasks) => {
+                                let t0 = std::time::Instant::now();
+                                let completed = self.background.take_pending();
+                                // Accumulate costs from completed tasks
+                                for task in &completed {
+                                    total_cost_usd += task.result.cost;
+                                }
+                                let active: Vec<serde_json::Value> = self.background.active_tasks().iter().map(|t| {
+                                    json!({
+                                        "task_id": t.task_id,
+                                        "description": t.description,
+                                        "running_secs": t.started_at.elapsed().as_secs_f64(),
+                                    })
+                                }).collect();
+                                let completed_json: Vec<serde_json::Value> = completed.iter().map(|t| {
+                                    json!({
+                                        "task_id": t.task_id,
+                                        "description": t.description,
+                                        "elapsed_secs": t.elapsed_secs,
+                                        "result": serde_json::to_value(&t.result).unwrap_or(json!(t.result.summary)),
+                                    })
+                                }).collect();
+                                let result = json!({
+                                    "active": active,
+                                    "completed": completed_json,
+                                }).to_string();
+                                outcomes.push(ToolOutcome::Result {
+                                    index: ptc.index,
+                                    id: ptc.id,
+                                    name: ptc.name,
+                                    args: ptc.args,
+                                    result,
+                                    elapsed_ms: t0.elapsed().as_millis(),
                                 });
+                            }
+                            Some(BuiltinTool::SpawnAgent) => {
+                                let run_in_background = ptc.args["run_in_background"].as_bool().unwrap_or(false);
+                                let task_str = ptc.args["task"].as_str().unwrap_or("").to_string();
+
+                                if run_in_background {
+                                    let task_id = format!("bg_{}", &Uuid::new_v4().to_string()[..8]);
+                                    let url = gateway_url.clone();
+                                    let key = gateway_key.clone();
+                                    let spawn_cfg = spawn::SpawnConfig::from_args(&ptc.args, task_str.clone());
+
+                                    match self.background.spawn_task(
+                                        task_id.clone(),
+                                        task_str.clone(),
+                                        async move {
+                                            match spawn::spawn_agent(spawn_cfg, &url, &key).await {
+                                                Ok(r) => r,
+                                                Err(e) => spawn::AgentResult {
+                                                    status: "error".to_string(),
+                                                    summary: e.to_string(),
+                                                    cost: 0.0,
+                                                    turns: 0,
+                                                },
+                                            }
+                                        },
+                                    ) {
+                                        Ok(()) => {
+                                            self.permission_gate.renderer().background_task_spawned(&task_id, &task_str);
+                                            outcomes.push(ToolOutcome::Result {
+                                                index: ptc.index,
+                                                id: ptc.id,
+                                                name: ptc.name,
+                                                args: ptc.args,
+                                                result: json!({
+                                                    "status": "spawned_in_background",
+                                                    "task_id": task_id,
+                                                    "description": task_str,
+                                                    "message": "Task is running in the background. You will be notified when it completes. Use check_background_tasks to query status."
+                                                }).to_string(),
+                                                elapsed_ms: 0,
+                                            });
+                                        }
+                                        Err(msg) => {
+                                            outcomes.push(ToolOutcome::Result {
+                                                index: ptc.index,
+                                                id: ptc.id,
+                                                name: ptc.name,
+                                                args: ptc.args,
+                                                result: json!({"status": "error", "summary": msg}).to_string(),
+                                                elapsed_ms: 0,
+                                            });
+                                        }
+                                    }
+                                } else {
+                                    let args = ptc.args;
+                                    let index = ptc.index;
+                                    let id = ptc.id;
+                                    let name = ptc.name;
+                                    let url = gateway_url.clone();
+                                    let key = gateway_key.clone();
+                                    let spawn_cfg = spawn::SpawnConfig::from_args(&args, task_str);
+                                    joinset.spawn(async move {
+                                        let t0 = std::time::Instant::now();
+                                        let result =
+                                            match spawn::spawn_agent(spawn_cfg, &url, &key)
+                                                .await
+                                            {
+                                                Ok(r) => serde_json::to_string(&r)
+                                                    .unwrap_or_else(|_| r.summary.clone()),
+                                                Err(e) => serde_json::json!({
+                                                    "status": "error",
+                                                    "summary": e.to_string()
+                                                })
+                                                .to_string(),
+                                            };
+                                        ToolOutcome::Result {
+                                            index,
+                                            id,
+                                            name,
+                                            args,
+                                            result,
+                                            elapsed_ms: t0.elapsed().as_millis(),
+                                        }
+                                    });
+                                }
                             }
                             _ => {
                                 let name = ptc.name;

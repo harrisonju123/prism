@@ -12,6 +12,19 @@ pub struct SpawnConfig {
     pub timeout_secs: Option<u64>,
 }
 
+impl SpawnConfig {
+    /// Build from tool call args JSON, using the given task string.
+    pub fn from_args(args: &serde_json::Value, task: String) -> Self {
+        Self {
+            task,
+            model: args["model"].as_str().map(str::to_string),
+            cost_cap: args["cost_cap"].as_f64(),
+            tools: None,
+            timeout_secs: args["timeout_secs"].as_u64(),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AgentResult {
     pub status: String,
