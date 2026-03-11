@@ -1137,7 +1137,7 @@ impl ThreadView {
                 ThreadError::PaymentRequired => (
                     "payment_required",
                     None,
-                    "You reached your free usage limit. Upgrade to Zed Pro for more prompts."
+                    "You reached your free usage limit. Upgrade to Prism Pro for more prompts."
                         .into(),
                 ),
                 ThreadError::Refusal => {
@@ -7201,7 +7201,7 @@ impl ThreadView {
 
     fn render_payment_required_error(&self, cx: &mut Context<Self>) -> Callout {
         const ERROR_MESSAGE: &str =
-            "You reached your free usage limit. Upgrade to Zed Pro for more prompts.";
+            "You reached your free usage limit. Upgrade to Prism Pro for more prompts.";
 
         Callout::new()
             .severity(Severity::Error)

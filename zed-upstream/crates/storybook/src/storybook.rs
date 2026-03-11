@@ -125,7 +125,7 @@ impl Render for StoryWrapper {
             .flex()
             .flex_col()
             .size_full()
-            .font_family(".ZedMono")
+            .font_family(".PrismMono")
             .child(self.story.clone())
     }
 }

@@ -1187,11 +1187,11 @@ impl TitleBar {
             return None;
         }
 
-        let branch = value
-            .get("branch")
+        let branch = value.get("branch").and_then(|v| v.as_str()).unwrap_or("");
+        let task_name = value
+            .get("task_name")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let task_name = value.get("task_name").and_then(|v| v.as_str()).unwrap_or("");
         let agent = value
             .get("agent_name")
             .and_then(|v| v.as_str())

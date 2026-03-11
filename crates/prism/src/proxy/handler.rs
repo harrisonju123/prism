@@ -130,7 +130,11 @@ pub async fn chat_completions(
             ctx.budget_action,
         );
         match budget_result {
-            BudgetCheckResult::Exceeded { message, limit, spent } => {
+            BudgetCheckResult::Exceeded {
+                message,
+                limit,
+                spent,
+            } => {
                 tracing::warn!(key_prefix = %ctx.key_prefix, %message, "budget exceeded");
                 return Err(PrismError::BudgetExceeded { limit, spent });
             }
@@ -349,25 +353,21 @@ pub async fn chat_completions(
                         )));
                     }
                     "smart" => {
-                        let smart_cfg =
-                            crate::proxy::context_window::SmartTruncationConfig {
-                                preserve_recent: state
-                                    .config
-                                    .context_management
-                                    .preserve_recent,
-                                tool_output_max_tokens: state
-                                    .config
-                                    .context_management
-                                    .tool_output_max_tokens,
-                                tool_output_head_lines: state
-                                    .config
-                                    .context_management
-                                    .tool_output_head_lines,
-                                tool_output_tail_lines: state
-                                    .config
-                                    .context_management
-                                    .tool_output_tail_lines,
-                            };
+                        let smart_cfg = crate::proxy::context_window::SmartTruncationConfig {
+                            preserve_recent: state.config.context_management.preserve_recent,
+                            tool_output_max_tokens: state
+                                .config
+                                .context_management
+                                .tool_output_max_tokens,
+                            tool_output_head_lines: state
+                                .config
+                                .context_management
+                                .tool_output_head_lines,
+                            tool_output_tail_lines: state
+                                .config
+                                .context_management
+                                .tool_output_tail_lines,
+                        };
                         let r = crate::proxy::context_window::smart_truncate_to_fit(
                             &mut request.messages,
                             budget,
@@ -623,7 +623,9 @@ pub async fn chat_completions(
                         };
                         match fb_provider.chat_completion(&request, fb_model_id).await {
                             Ok(resp) => {
-                                fb_cb.record_success();
+                                // Don't record CB success here — streaming response hasn't
+                                // been fully drained yet. The post-stream spawn will credit
+                                // serving_cb after confirming usage data is present.
                                 if let Some(ref ht) = state.health_tracker {
                                     ht.record_success(fb_provider_name);
                                 }
@@ -844,17 +846,7 @@ pub async fn chat_completions(
                 state
                     .budget_tracker
                     .record_spend(&ctx.key_hash, event.estimated_cost_usd);
-                // Accumulate session spend for per-key hard cap
-                *state.session_spend.entry(ctx.key_id).or_insert(0.0) += event.estimated_cost_usd;
-                if state.session_spend.len() > 10_000 {
-                    // Evict low-spend entries to bound memory. Spend tracking is best-effort,
-                    // so dropping keys that have accumulated less than $0.01 is acceptable.
-                    state.session_spend.retain(|_, v| *v >= 0.01);
-                    tracing::warn!(
-                        len = state.session_spend.len(),
-                        "session_spend map exceeded 10,000 entries — evicted low-spend keys"
-                    );
-                }
+                record_session_spend(&state.session_spend, ctx.key_id, event.estimated_cost_usd);
             }
 
             let event_id = event.id;
@@ -1043,17 +1035,7 @@ pub async fn chat_completions(
                             .record_tokens(&ctx.key_hash, usage.total_tokens)
                             .await;
                         budget_tracker.record_spend(&ctx.key_hash, event.estimated_cost_usd);
-                        // Accumulate session spend for per-key hard cap
-                        *session_spend.entry(ctx.key_id).or_insert(0.0) += event.estimated_cost_usd;
-                        if session_spend.len() > 10_000 {
-                            // Evict low-spend entries to bound memory. Spend tracking is best-effort,
-                            // so dropping keys that have accumulated less than $0.01 is acceptable.
-                            session_spend.retain(|_, v| *v >= 0.01);
-                            tracing::warn!(
-                                len = session_spend.len(),
-                                "session_spend map exceeded 10,000 entries — evicted low-spend keys"
-                            );
-                        }
+                        record_session_spend(&session_spend, ctx.key_id, event.estimated_cost_usd);
                     }
 
                     let event_id = event.id;
@@ -1755,6 +1737,19 @@ pub struct AppState {
     pub circuit_breakers: CircuitBreakerMap,
     /// Per-key session spend accumulator (key ID → USD spent this session).
     pub session_spend: Arc<dashmap::DashMap<Uuid, f64>>,
+}
+
+/// Accumulate spend and evict low-value entries when the map gets too large.
+/// Spend tracking is best-effort so dropping keys below $0.01 is acceptable.
+fn record_session_spend(map: &dashmap::DashMap<Uuid, f64>, key_id: Uuid, cost: f64) {
+    *map.entry(key_id).or_insert(0.0) += cost;
+    if map.len() > 10_000 {
+        map.retain(|_, v| *v >= 0.01);
+        tracing::warn!(
+            len = map.len(),
+            "session_spend map exceeded 10,000 entries — evicted low-spend keys"
+        );
+    }
 }
 
 #[cfg(test)]

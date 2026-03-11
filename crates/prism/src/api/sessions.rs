@@ -90,15 +90,26 @@ pub async fn list_sessions(
     filters.push("episode_id IS NOT NULL".to_string());
 
     if let Some(ref thread_id) = params.thread_id {
-        let sanitized: String = thread_id.chars().filter(|c| c.is_alphanumeric() || *c == '-').collect();
+        let sanitized: String = thread_id
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '-')
+            .collect();
         filters.push(format!("thread_id = '{sanitized}'"));
     }
     if let Some(ref model) = params.model {
-        let sanitized: String = model.chars().filter(|c| c.is_alphanumeric() || *c == '-' || *c == '.' || *c == '_' || *c == ':' || *c == '/').collect();
+        let sanitized: String = model
+            .chars()
+            .filter(|c| {
+                c.is_alphanumeric() || *c == '-' || *c == '.' || *c == '_' || *c == ':' || *c == '/'
+            })
+            .collect();
         filters.push(format!("model = '{sanitized}'"));
     }
     if let Some(ref since) = params.since {
-        let sanitized: String = since.chars().filter(|c| c.is_alphanumeric() || *c == '-' || *c == 'T' || *c == ':' || *c == 'Z').collect();
+        let sanitized: String = since
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '-' || *c == 'T' || *c == ':' || *c == 'Z')
+            .collect();
         filters.push(format!("timestamp >= '{sanitized}'"));
     }
 
@@ -138,12 +149,35 @@ pub async fn list_sessions(
     for line in resp.lines() {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
             sessions.push(SessionSummaryResponse {
-                episode_id: v.get("episode_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                model: v.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                task_type: v.get("task_type").and_then(|v| v.as_str()).map(String::from),
-                thread_id: v.get("thread_id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from),
-                started_at: v.get("started_at").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                ended_at: v.get("ended_at").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                episode_id: v
+                    .get("episode_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                model: v
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                task_type: v
+                    .get("task_type")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                thread_id: v
+                    .get("thread_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(String::from),
+                started_at: v
+                    .get("started_at")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                ended_at: v
+                    .get("ended_at")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 turn_count: v.get("turn_count").and_then(|v| v.as_u64()).unwrap_or(0),
                 total_cost: v.get("total_cost").and_then(|v| v.as_f64()).unwrap_or(0.0),
                 total_tokens: v.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
@@ -164,7 +198,10 @@ pub async fn get_session(
     let ch_db = &state.config.clickhouse.database;
 
     // Validate episode_id format
-    let sanitized: String = episode_id.chars().filter(|c| c.is_alphanumeric() || *c == '-').collect();
+    let sanitized: String = episode_id
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-')
+        .collect();
     if sanitized.is_empty() {
         return Err(PrismError::BadRequest("invalid episode_id".into()));
     }
@@ -199,15 +236,29 @@ pub async fn get_session(
 
     let (turns_resp, feedback_resp) = tokio::join!(
         async {
-            client.post(ch_url).body(turns_query).send().await?.text().await
+            client
+                .post(ch_url)
+                .body(turns_query)
+                .send()
+                .await?
+                .text()
+                .await
         },
         async {
-            client.post(ch_url).body(feedback_query).send().await?.text().await
+            client
+                .post(ch_url)
+                .body(feedback_query)
+                .send()
+                .await?
+                .text()
+                .await
         }
     );
 
-    let turns_text = turns_resp.map_err(|e| PrismError::Internal(format!("clickhouse query failed: {e}")))?;
-    let feedback_text = feedback_resp.map_err(|e| PrismError::Internal(format!("clickhouse query failed: {e}")))?;
+    let turns_text =
+        turns_resp.map_err(|e| PrismError::Internal(format!("clickhouse query failed: {e}")))?;
+    let feedback_text =
+        feedback_resp.map_err(|e| PrismError::Internal(format!("clickhouse query failed: {e}")))?;
 
     let mut turns = Vec::new();
     let mut total_cost = 0.0;
@@ -216,12 +267,31 @@ pub async fn get_session(
             let cost = v.get("cost").and_then(|v| v.as_f64()).unwrap_or(0.0);
             total_cost += cost;
             turns.push(TurnDetail {
-                inference_id: v.get("inference_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                timestamp: v.get("timestamp").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                model: v.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                task_type: v.get("task_type").and_then(|v| v.as_str()).map(String::from),
+                inference_id: v
+                    .get("inference_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                timestamp: v
+                    .get("timestamp")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                model: v
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                task_type: v
+                    .get("task_type")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
                 routing_decision: v.get("routing_decision").and_then(|v| {
-                    if v.is_null() { None } else { serde_json::from_str(v.as_str().unwrap_or("null")).ok() }
+                    if v.is_null() {
+                        None
+                    } else {
+                        serde_json::from_str(v.as_str().unwrap_or("null")).ok()
+                    }
                 }),
                 cost,
                 latency_ms: v.get("latency_ms").and_then(|v| v.as_u64()).unwrap_or(0),
@@ -235,13 +305,35 @@ pub async fn get_session(
     for line in feedback_text.lines() {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
             feedback.push(FeedbackDetail {
-                id: v.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                timestamp: v.get("timestamp").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                metric_name: v.get("metric_name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                metric_value: v.get("metric_value").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                metadata: v.get("metadata").and_then(|v| {
-                    if let Some(s) = v.as_str() { serde_json::from_str(s).ok() } else { Some(v.clone()) }
-                }).unwrap_or(serde_json::Value::Object(Default::default())),
+                id: v
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                timestamp: v
+                    .get("timestamp")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                metric_name: v
+                    .get("metric_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                metric_value: v
+                    .get("metric_value")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                metadata: v
+                    .get("metadata")
+                    .and_then(|v| {
+                        if let Some(s) = v.as_str() {
+                            serde_json::from_str(s).ok()
+                        } else {
+                            Some(v.clone())
+                        }
+                    })
+                    .unwrap_or(serde_json::Value::Object(Default::default())),
             });
         }
     }
@@ -251,5 +343,6 @@ pub async fn get_session(
         turns,
         feedback,
         total_cost,
-    }).into_response())
+    })
+    .into_response())
 }

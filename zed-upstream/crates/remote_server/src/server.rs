@@ -467,7 +467,9 @@ pub fn execute_run(
             zed_version: VERSION.to_owned(),
             binary: "zed-remote-server".to_string(),
             release_channel: release_channel::RELEASE_CHANNEL_NAME.clone(),
-            commit_sha: option_env!("PRISM_COMMIT_SHA").unwrap_or("no_sha").to_owned(),
+            commit_sha: option_env!("PRISM_COMMIT_SHA")
+                .unwrap_or("no_sha")
+                .to_owned(),
         },
         |task| {
             app.background_executor().spawn(task).detach();
@@ -513,7 +515,8 @@ pub fn execute_run(
     let git_hosting_provider_registry = Arc::new(GitHostingProviderRegistry::new());
     let run = move |cx: &mut _| {
         settings::init(cx);
-        let app_commit_sha = option_env!("PRISM_COMMIT_SHA").map(|s| AppCommitSha::new(s.to_owned()));
+        let app_commit_sha =
+            option_env!("PRISM_COMMIT_SHA").map(|s| AppCommitSha::new(s.to_owned()));
         let app_version = AppVersion::load(
             env!("PRISM_PKG_VERSION"),
             option_env!("PRISM_BUILD_ID"),
@@ -722,7 +725,9 @@ pub(crate) fn execute_proxy(
             zed_version: VERSION.to_owned(),
             binary: "zed-remote-server".to_string(),
             release_channel: release_channel::RELEASE_CHANNEL_NAME.clone(),
-            commit_sha: option_env!("PRISM_COMMIT_SHA").unwrap_or("no_sha").to_owned(),
+            commit_sha: option_env!("PRISM_COMMIT_SHA")
+                .unwrap_or("no_sha")
+                .to_owned(),
         },
         |task| {
             smol::spawn(task).detach();

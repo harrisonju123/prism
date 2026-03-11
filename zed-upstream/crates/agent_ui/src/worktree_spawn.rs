@@ -87,10 +87,7 @@ impl Render for SpawnWorktreeModal {
                     .w_full()
                     .gap_1p5()
                     .child(Icon::new(IconName::GitBranch).size(IconSize::XSmall))
-                    .child(
-                        Headline::new("Spawn Agent in New Worktree")
-                            .size(HeadlineSize::XSmall),
-                    ),
+                    .child(Headline::new("Spawn Agent in New Worktree").size(HeadlineSize::XSmall)),
             )
             .child(div().px_3().pb_3().w_full().child(self.name_editor.clone()))
     }
@@ -110,7 +107,11 @@ fn spawn_agent_in_worktree(
     window: &mut Window,
     cx: &mut Context<SpawnWorktreeModal>,
 ) {
-    let Some(root) = workspace.update(cx, |ws, cx| project_root(ws, cx)).ok().flatten() else {
+    let Some(root) = workspace
+        .update(cx, |ws, cx| project_root(ws, cx))
+        .ok()
+        .flatten()
+    else {
         return;
     };
 
@@ -187,11 +188,7 @@ exec claude --dangerously-skip-permissions
 }
 
 /// Entry point called from the action handler.
-pub fn open(
-    workspace: &mut Workspace,
-    window: &mut Window,
-    cx: &mut Context<Workspace>,
-) {
+pub fn open(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     let handle = workspace.weak_handle();
     workspace.toggle_modal(window, cx, |window, cx| {
         SpawnWorktreeModal::new(handle, window, cx)

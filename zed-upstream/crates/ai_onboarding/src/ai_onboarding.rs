@@ -111,15 +111,15 @@ impl ZedAiOnboarding {
         v_flex()
             .relative()
             .gap_1()
-            .child(Headline::new("Welcome to Zed AI"))
+            .child(Headline::new("Welcome to Prism AI"))
             .child(
-                Label::new("Sign in to try Zed Pro for 14 days, no credit card required.")
+                Label::new("Sign in to try Prism Pro for 14 days, no credit card required.")
                     .color(Color::Muted)
                     .mb_2(),
             )
             .child(PlanDefinitions.pro_plan())
             .child(
-                Button::new("sign_in", "Try Zed Pro for Free")
+                Button::new("sign_in", "Try Prism Pro for Free")
                     .disabled(signing_in)
                     .full_width()
                     .style(ButtonStyle::Tinted(ui::TintColor::Accent))
@@ -141,7 +141,7 @@ impl ZedAiOnboarding {
                 .relative()
                 .max_w_full()
                 .gap_1()
-                .child(Headline::new("Welcome to Zed AI"))
+                .child(Headline::new("Welcome to Prism AI"))
                 .child(YoungAccountBanner)
                 .child(
                     v_flex()
@@ -177,7 +177,7 @@ impl ZedAiOnboarding {
             v_flex()
                 .relative()
                 .gap_1()
-                .child(Headline::new("Welcome to Zed AI"))
+                .child(Headline::new("Welcome to Prism AI"))
                 .child(
                     v_flex()
                         .mt_2()
@@ -241,7 +241,7 @@ impl ZedAiOnboarding {
         v_flex()
             .relative()
             .gap_1()
-            .child(Headline::new("Welcome to the Zed Pro Trial"))
+            .child(Headline::new("Welcome to the Prism Pro Trial"))
             .child(
                 Label::new("Here's what you get for the next 14 days:")
                     .color(Color::Muted)
@@ -255,7 +255,7 @@ impl ZedAiOnboarding {
     fn render_pro_plan_state(&self, _cx: &mut App) -> AnyElement {
         v_flex()
             .gap_1()
-            .child(Headline::new("Welcome to Zed Pro"))
+            .child(Headline::new("Welcome to Prism Pro"))
             .child(
                 Label::new("Here's what you get:")
                     .color(Color::Muted)
@@ -269,7 +269,7 @@ impl ZedAiOnboarding {
     fn render_student_plan_state(&self, _cx: &mut App) -> AnyElement {
         v_flex()
             .gap_1()
-            .child(Headline::new("Welcome to Zed Student"))
+            .child(Headline::new("Welcome to Prism Student"))
             .child(
                 Label::new("Here's what you get:")
                     .color(Color::Muted)

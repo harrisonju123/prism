@@ -49,7 +49,11 @@ pub struct ProviderCircuitBreaker {
 }
 
 impl ProviderCircuitBreaker {
-    pub fn new(provider: impl Into<String>, failure_threshold: u32, open_duration_secs: u64) -> Self {
+    pub fn new(
+        provider: impl Into<String>,
+        failure_threshold: u32,
+        open_duration_secs: u64,
+    ) -> Self {
         Self {
             state: Mutex::new(CircuitState::Closed {
                 consecutive_failures: 0,
@@ -79,8 +83,15 @@ impl ProviderCircuitBreaker {
                     // Only one probe at a time — claim the probe slot atomically.
                     // Reset a stale probe first (probe timed out without completing).
                     self.reset_stale_probe();
-                    if self.probing.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
-                        *self.probe_started_at.lock().expect("probe_started_at lock poisoned") = Some(Instant::now());
+                    if self
+                        .probing
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        *self
+                            .probe_started_at
+                            .lock()
+                            .expect("probe_started_at lock poisoned") = Some(Instant::now());
                         Ok(())
                     } else {
                         // Another thread already has the probe; treat as still Open.
@@ -97,8 +108,15 @@ impl ProviderCircuitBreaker {
                 // Reset it if it has been in-flight longer than open_duration.
                 self.reset_stale_probe();
                 // Only one concurrent probe allowed.
-                if self.probing.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
-                    *self.probe_started_at.lock().expect("probe_started_at lock poisoned") = Some(Instant::now());
+                if self
+                    .probing
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+                {
+                    *self
+                        .probe_started_at
+                        .lock()
+                        .expect("probe_started_at lock poisoned") = Some(Instant::now());
                     Ok(())
                 } else {
                     Err(1)
@@ -112,7 +130,10 @@ impl ProviderCircuitBreaker {
     /// Must be called while holding the state lock to avoid races with concurrent check() calls.
     fn reset_stale_probe(&self) {
         if self.probing.load(Ordering::Acquire) {
-            let mut started = self.probe_started_at.lock().expect("probe_started_at lock poisoned");
+            let mut started = self
+                .probe_started_at
+                .lock()
+                .expect("probe_started_at lock poisoned");
             if let Some(t) = *started {
                 if t.elapsed() >= self.open_duration {
                     tracing::warn!(
@@ -132,7 +153,10 @@ impl ProviderCircuitBreaker {
         // Clear probe tracking before releasing the state lock to eliminate the
         // window where probing=false but state hasn't transitioned yet.
         self.probing.store(false, Ordering::Release);
-        *self.probe_started_at.lock().expect("probe_started_at lock poisoned") = None;
+        *self
+            .probe_started_at
+            .lock()
+            .expect("probe_started_at lock poisoned") = None;
         match &*guard {
             CircuitState::HalfOpen => {
                 tracing::info!(
@@ -163,7 +187,10 @@ impl ProviderCircuitBreaker {
         // Clear probe tracking before releasing the state lock to eliminate the
         // window where probing=false but state hasn't transitioned yet.
         self.probing.store(false, Ordering::Release);
-        *self.probe_started_at.lock().expect("probe_started_at lock poisoned") = None;
+        *self
+            .probe_started_at
+            .lock()
+            .expect("probe_started_at lock poisoned") = None;
         match &*guard {
             CircuitState::Closed {
                 consecutive_failures,
@@ -199,7 +226,10 @@ impl ProviderCircuitBreaker {
 
     /// Return the state name as a string for health reporting.
     pub fn state_name(&self) -> &'static str {
-        self.state.lock().expect("circuit breaker lock poisoned").name()
+        self.state
+            .lock()
+            .expect("circuit breaker lock poisoned")
+            .name()
     }
 }
 
@@ -224,7 +254,11 @@ pub fn get_or_create(
 ) -> Arc<ProviderCircuitBreaker> {
     map.entry(provider.to_string())
         .or_insert_with(|| {
-            Arc::new(ProviderCircuitBreaker::new(provider, failure_threshold, open_duration_secs))
+            Arc::new(ProviderCircuitBreaker::new(
+                provider,
+                failure_threshold,
+                open_duration_secs,
+            ))
         })
         .clone()
 }

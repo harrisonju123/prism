@@ -162,6 +162,21 @@ enum Commands {
         #[arg(long, default_value = "")]
         label: String,
     },
+
+    /// Show messages in your inbox
+    Inbox {
+        /// Show only unread messages
+        #[arg(long)]
+        unread: bool,
+    },
+
+    /// Send a message to an agent
+    Send {
+        /// Recipient agent name
+        to: String,
+        /// Message content
+        message: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -770,6 +785,14 @@ async fn run(cli: Cli) -> Result<(), String> {
                 .await
                 .map_err(|e| e.to_string())?;
             print_json(&snap);
+        }
+        Commands::Inbox { unread } => {
+            let messages = store.list_messages(workspace_id, &agent_name(), unread).await.map_err(|e| e.to_string())?;
+            print_json(&messages);
+        }
+        Commands::Send { to, message } => {
+            let msg = store.send_message(workspace_id, &agent_name(), &to, &message).await.map_err(|e| e.to_string())?;
+            print_json(&msg);
         }
     }
 

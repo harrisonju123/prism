@@ -128,12 +128,14 @@ check-zed:
 check-all: check-prism check-zed
 
 # Build Zed from source (release build)
+# cli must be built alongside zed so path_for_auxiliary_executable("cli") succeeds
 build-zed:
-	$(CARGO) build -p zed --release
+	$(CARGO) build -p zed -p cli --release
 
 # Run Zed from source (debug build — faster compile, slower runtime)
+# cli must be built first so "Install CLI" can find the auxiliary executable
 run-zed:
-	$(CARGO) run -p zed
+	$(CARGO) build -p cli && $(CARGO) run -p zed
 
 # Remove build artifacts not accessed in the last 7 days, cap cache at 20GB
 # Requires: cargo install cargo-sweep (auto-installed on first run)

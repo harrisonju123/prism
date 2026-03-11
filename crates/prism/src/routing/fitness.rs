@@ -286,7 +286,10 @@ mod tests {
             .await;
         let list = cache.get_entries_for_task(TaskType::Reasoning).await;
         // Existing synthetic entries should still be present
-        assert!(list.len() > 1, "existing entries should be retained after recording new benchmark");
+        assert!(
+            list.len() > 1,
+            "existing entries should be retained after recording new benchmark"
+        );
         // First entry should be the one with highest quality (perfect-model with q=1.0)
         assert_eq!(
             list[0].model, "perfect-model",

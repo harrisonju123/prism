@@ -481,10 +481,7 @@ impl History {
         Some(&mut entry.transaction)
     }
 
-    fn history_entry_mut(
-        &mut self,
-        transaction_id: TransactionId,
-    ) -> Option<&mut HistoryEntry> {
+    fn history_entry_mut(&mut self, transaction_id: TransactionId) -> Option<&mut HistoryEntry> {
         self.undo_stack
             .iter_mut()
             .rfind(|entry| entry.transaction.id == transaction_id)

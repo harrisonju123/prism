@@ -573,28 +573,49 @@ async fn test_guardrail_null_file_path_passes_when_files_restricted() {
         .await
         .expect("set guardrails");
 
-    store.checkin(ws.id, "agent-x", vec![], None).await.expect("checkin");
+    store
+        .checkin(ws.id, "agent-x", vec![], None)
+        .await
+        .expect("checkin");
 
     // file_path = None: allowed_files check is skipped entirely (read-only tools don't carry a path)
     let check = store
         .check_guardrail(ws.id, "plan-thread", "agent-x", "read_file", None)
         .await
         .expect("check");
-    assert!(check.allowed, "None file_path must pass even when allowed_files is set");
+    assert!(
+        check.allowed,
+        "None file_path must pass even when allowed_files is set"
+    );
 
     // file_path = plan file: write should be allowed
     let check2 = store
-        .check_guardrail(ws.id, "plan-thread", "agent-x", "write_file", Some("/tmp/plan.md"))
+        .check_guardrail(
+            ws.id,
+            "plan-thread",
+            "agent-x",
+            "write_file",
+            Some("/tmp/plan.md"),
+        )
         .await
         .expect("check");
     assert!(check2.allowed, "writing the plan file must be allowed");
 
     // file_path = other file: write must be denied
     let check3 = store
-        .check_guardrail(ws.id, "plan-thread", "agent-x", "write_file", Some("/tmp/other.rs"))
+        .check_guardrail(
+            ws.id,
+            "plan-thread",
+            "agent-x",
+            "write_file",
+            Some("/tmp/other.rs"),
+        )
         .await
         .expect("check");
-    assert!(!check3.allowed, "writing outside the plan file must be denied");
+    assert!(
+        !check3.allowed,
+        "writing outside the plan file must be denied"
+    );
 }
 
 #[tokio::test]

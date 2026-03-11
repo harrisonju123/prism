@@ -2,7 +2,6 @@ mod agent_configuration;
 mod agent_diff;
 mod agent_model_selector;
 mod agent_panel;
-pub mod multi_file_diff_review;
 mod agent_registry_ui;
 mod branch_names;
 mod buffer_codegen;
@@ -22,6 +21,7 @@ mod message_editor;
 mod mode_selector;
 mod model_selector;
 mod model_selector_popover;
+pub mod multi_file_diff_review;
 mod profile_selector;
 mod slash_command;
 mod slash_command_picker;
@@ -29,11 +29,11 @@ mod terminal_codegen;
 mod terminal_inline_assistant;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
-pub mod worktree_spawn;
 mod text_thread_editor;
 mod text_thread_history;
 mod thread_history;
 mod ui;
+pub mod worktree_spawn;
 
 use std::rc::Rc;
 use std::sync::Arc;

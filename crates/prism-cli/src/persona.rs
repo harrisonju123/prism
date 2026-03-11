@@ -183,6 +183,11 @@ mod tests {
 
         persona.apply(&mut config);
         assert!(config.session.denied_tools.contains(&"bash".to_string()));
-        assert!(config.session.denied_tools.contains(&"write_file".to_string()));
+        assert!(
+            config
+                .session
+                .denied_tools
+                .contains(&"write_file".to_string())
+        );
     }
 }

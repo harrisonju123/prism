@@ -762,7 +762,7 @@ pub(crate) fn copilot_request_headers(
         .header(
             "Editor-Version",
             format!(
-                "Zed/{}",
+                "PrisM/{}",
                 option_env!("CARGO_PKG_VERSION").unwrap_or("unknown")
             ),
         )

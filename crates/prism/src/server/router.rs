@@ -202,11 +202,23 @@ fn build_management_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
         )
         // Session replay
         .route("/api/v1/sessions", get(api::sessions::list_sessions))
-        .route("/api/v1/sessions/{episode_id}", get(api::sessions::get_session))
+        .route(
+            "/api/v1/sessions/{episode_id}",
+            get(api::sessions::get_session),
+        )
         // Analytics
-        .route("/api/v1/analytics/quality-trends", get(api::analytics::quality_trends))
-        .route("/api/v1/analytics/routing-savings", get(api::analytics::routing_savings))
-        .route("/api/v1/analytics/session-efficiency", get(api::analytics::session_efficiency))
+        .route(
+            "/api/v1/analytics/quality-trends",
+            get(api::analytics::quality_trends),
+        )
+        .route(
+            "/api/v1/analytics/routing-savings",
+            get(api::analytics::routing_savings),
+        )
+        .route(
+            "/api/v1/analytics/session-efficiency",
+            get(api::analytics::session_efficiency),
+        )
         .layer(from_fn(
             move |mut req: Request, next: axum::middleware::Next| {
                 let mk = mk.clone();

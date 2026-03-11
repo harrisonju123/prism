@@ -53,10 +53,24 @@ pub async fn quality_trends(
     let ch_url = &state.config.clickhouse.url;
     let ch_db = &state.config.clickhouse.database;
 
-    let model_filter = params.model.as_deref().map(|m| {
-        let sanitized: String = m.chars().filter(|c| c.is_alphanumeric() || *c == '-' || *c == '.' || *c == '_' || *c == ':' || *c == '/').collect();
-        format!("AND ie.model = '{sanitized}'")
-    }).unwrap_or_default();
+    let model_filter = params
+        .model
+        .as_deref()
+        .map(|m| {
+            let sanitized: String = m
+                .chars()
+                .filter(|c| {
+                    c.is_alphanumeric()
+                        || *c == '-'
+                        || *c == '.'
+                        || *c == '_'
+                        || *c == ':'
+                        || *c == '/'
+                })
+                .collect();
+            format!("AND ie.model = '{sanitized}'")
+        })
+        .unwrap_or_default();
 
     let query = format!(
         "SELECT toString(toStartOfDay(fe.timestamp)) AS day, \
@@ -88,9 +102,20 @@ pub async fn quality_trends(
     for line in resp.lines() {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
             data.push(QualityTrendPoint {
-                day: v.get("day").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                model: v.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                task_type: v.get("task_type").and_then(|v| v.as_str()).map(String::from),
+                day: v
+                    .get("day")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                model: v
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                task_type: v
+                    .get("task_type")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
                 avg_quality: v.get("avg_quality").and_then(|v| v.as_f64()).unwrap_or(0.0),
                 sample_count: v.get("sample_count").and_then(|v| v.as_u64()).unwrap_or(0),
             });
@@ -153,7 +178,9 @@ pub async fn routing_savings(
             // Compute counterfactual: what it would have cost with the originally requested model
             if let Some(rd_str) = v.get("routing_decision").and_then(|v| v.as_str()) {
                 if let Ok(rd) = serde_json::from_str::<serde_json::Value>(rd_str) {
-                    if let Some(requested_model) = rd.get("requested_model").and_then(|v| v.as_str()) {
+                    if let Some(requested_model) =
+                        rd.get("requested_model").and_then(|v| v.as_str())
+                    {
                         if let Some(info) = MODEL_CATALOG.get(requested_model) {
                             let cf = info.input_cost_per_token() * input as f64
                                 + info.output_cost_per_token() * output as f64;
@@ -178,7 +205,8 @@ pub async fn routing_savings(
         counterfactual_cost,
         savings: counterfactual_cost - actual_cost,
         routed_requests,
-    }).into_response())
+    })
+    .into_response())
 }
 
 /// GET /api/v1/analytics/session-efficiency
@@ -227,7 +255,11 @@ pub async fn session_efficiency(
     for line in resp.lines() {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
             data.push(SessionEfficiencyStat {
-                task_type: v.get("task_type").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
+                task_type: v
+                    .get("task_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
                 avg_turns: v.get("avg_turns").and_then(|v| v.as_f64()).unwrap_or(0.0),
                 avg_cost: v.get("avg_cost").and_then(|v| v.as_f64()).unwrap_or(0.0),
                 session_count: v.get("session_count").and_then(|v| v.as_u64()).unwrap_or(0),

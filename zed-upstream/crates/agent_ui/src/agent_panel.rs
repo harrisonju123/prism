@@ -87,7 +87,9 @@ use workspace::{
 };
 use zed_actions::{
     DecreaseBufferFontSize, IncreaseBufferFontSize, ResetBufferFontSize,
-    agent::{OpenAcpOnboardingModal, OpenSettings, ResetAgentZoom, ResetOnboarding, SpawnInNewWorktree},
+    agent::{
+        OpenAcpOnboardingModal, OpenSettings, ResetAgentZoom, ResetOnboarding, SpawnInNewWorktree,
+    },
     assistant::{OpenRulesLibrary, Toggle, ToggleFocus},
 };
 
@@ -4011,7 +4013,7 @@ impl AgentPanel {
         let zed_provider_configured = AgentSettings::get_global(cx)
             .default_model
             .as_ref()
-            .is_some_and(|selection| selection.provider.0.as_str() == "zed.dev");
+            .is_some_and(|selection| selection.provider.0.as_str() == "prism");
 
         let callout = if zed_provider_configured {
             Callout::new()

@@ -12,10 +12,10 @@ use crate::{
 ///
 /// This is used to construct the default theme fallback values, as well as to
 /// have a theme available at compile time for tests.
-pub fn zed_default_themes() -> ThemeFamily {
+pub fn prism_default_themes() -> ThemeFamily {
     ThemeFamily {
-        id: "zed-default".to_string(),
-        name: "Zed Default".into(),
+        id: "prism-default".to_string(),
+        name: "PrisM Default".into(),
         author: "".into(),
         themes: vec![zed_default_dark()],
         scales: default_color_scales(),

@@ -128,9 +128,7 @@ impl CircuitBreaker {
         b.consecutive_failures += 1;
         b.last_failure_at = Some(Instant::now());
 
-        if b.consecutive_failures >= self.failure_threshold
-            || b.state == CircuitState::HalfOpen
-        {
+        if b.consecutive_failures >= self.failure_threshold || b.state == CircuitState::HalfOpen {
             let now = Instant::now();
             b.state = CircuitState::Open {
                 opened_at: now,

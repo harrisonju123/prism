@@ -298,8 +298,11 @@ fn main() {
             app_commit_sha,
             *release_channel::RELEASE_CHANNEL,
         );
-        println!("Prism System Specs (from CLI):
-{}", system_specs);
+        println!(
+            "Prism System Specs (from CLI):
+{}",
+            system_specs
+        );
         return;
     }
 
@@ -705,6 +708,9 @@ fn main() {
         project_symbols::init(cx);
         project_panel::init(cx);
         outline_panel::init(cx);
+        uglyhat_panel::init(cx);
+        prism_dashboard::init(cx);
+        prism_hq::init(cx);
         tasks_ui::init(cx);
         snippets_ui::init(cx);
         channel::init(&app_state.client.clone(), app_state.user_store.clone(), cx);

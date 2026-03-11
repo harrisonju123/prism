@@ -6,8 +6,8 @@ use edit_prediction_types::{
 use fs::Fs;
 use futures::{AsyncReadExt, FutureExt, StreamExt, future::BoxFuture};
 use gpui::{
-    AnyView, App, AsyncApp, Context, DismissEvent, Entity, EventEmitter, Focusable, FocusHandle,
-    Global, SharedString, Task, WeakEntity, Window,
+    AnyView, App, AsyncApp, Context, DismissEvent, Entity, EventEmitter, FocusHandle, Focusable,
+    Global, SharedString, Task, WeakEntity, Window, actions,
 };
 use http_client::{AsyncBody, HttpClient, Method, Request as HttpRequest};
 use language::{Anchor, Buffer, BufferSnapshot, EditPreview, OffsetRangeExt, ToOffset, ToPoint};
@@ -279,7 +279,9 @@ impl State {
                 }),
                 Err(err) if is_connection_refused(&err) => {
                     for _ in 0..3 {
-                        cx.background_executor().timer(Duration::from_millis(500)).await;
+                        cx.background_executor()
+                            .timer(Duration::from_millis(500))
+                            .await;
                         match do_fetch_models(&http_client, &api_url, &api_key).await {
                             Ok(result) => {
                                 return this.update(cx, |this, cx| {
@@ -976,7 +978,9 @@ impl ConfigurationView {
         drop(state);
 
         let Some(api_key) = api_key else {
-            self.connection_status = Some(ConnectionStatus::Failed("No API key configured".to_string()));
+            self.connection_status = Some(ConnectionStatus::Failed(
+                "No API key configured".to_string(),
+            ));
             cx.notify();
             return;
         };
@@ -996,10 +1000,9 @@ impl ConfigurationView {
             let status = match request {
                 Ok(req) => match http_client.send(req).await {
                     Ok(response) if response.status().is_success() => ConnectionStatus::Success,
-                    Ok(response) => ConnectionStatus::Failed(format!(
-                        "HTTP {}",
-                        response.status().as_u16()
-                    )),
+                    Ok(response) => {
+                        ConnectionStatus::Failed(format!("HTTP {}", response.status().as_u16()))
+                    }
                     Err(err) => ConnectionStatus::Failed(err.to_string()),
                 },
                 Err(err) => ConnectionStatus::Failed(err.to_string()),
@@ -1170,7 +1173,11 @@ impl Render for ConfigurationView {
             Some(ConnectionStatus::Success) => Some(
                 h_flex()
                     .gap_1()
-                    .child(Icon::new(IconName::Check).color(Color::Success).size(IconSize::Small))
+                    .child(
+                        Icon::new(IconName::Check)
+                            .color(Color::Success)
+                            .size(IconSize::Small),
+                    )
                     .child(
                         Label::new("Connected")
                             .size(LabelSize::Small)
@@ -1181,7 +1188,11 @@ impl Render for ConfigurationView {
             Some(ConnectionStatus::Failed(message)) => Some(
                 h_flex()
                     .gap_1()
-                    .child(Icon::new(IconName::XCircle).color(Color::Error).size(IconSize::Small))
+                    .child(
+                        Icon::new(IconName::XCircle)
+                            .color(Color::Error)
+                            .size(IconSize::Small),
+                    )
                     .child(
                         Label::new(format!("Failed: {message}"))
                             .size(LabelSize::Small)
@@ -1250,7 +1261,12 @@ struct SwitchModelModal {
 }
 
 impl SwitchModelModal {
-    fn new(state: Entity<State>, fs: Arc<dyn Fs>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        state: Entity<State>,
+        fs: Arc<dyn Fs>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
         Self {
@@ -1262,7 +1278,13 @@ impl SwitchModelModal {
     }
 
     fn filtered_models(&self, cx: &App) -> Vec<String> {
-        let models = self.state.read(cx).fetched_models.clone();
+        let models: Vec<String> = self
+            .state
+            .read(cx)
+            .fetched_models
+            .iter()
+            .map(|m| m.id.clone())
+            .collect();
         if self.query.is_empty() {
             return models;
         }
@@ -1305,6 +1327,7 @@ impl Render for SwitchModelModal {
 
         let query = self.query.clone();
         let model_list = div()
+            .id("prism-model-list")
             .flex_1()
             .overflow_y_scroll()
             .children(models.into_iter().enumerate().map(|(ix, model_id)| {
@@ -1337,12 +1360,16 @@ impl Render for SwitchModelModal {
             .child(
                 h_flex()
                     .gap_1()
-                    .child(Icon::new(IconName::MagnifyingGlass).size(IconSize::Small).color(Color::Muted))
                     .child(
-                        div()
-                            .flex_1()
-                            .child(Label::new(if query.is_empty() { "Search PrisM models…".to_string() } else { query }))
-                    ),
+                        Icon::new(IconName::MagnifyingGlass)
+                            .size(IconSize::Small)
+                            .color(Color::Muted),
+                    )
+                    .child(div().flex_1().child(Label::new(if query.is_empty() {
+                        "Search PrisM models…".to_string()
+                    } else {
+                        query
+                    }))),
             )
             .child(model_list)
     }

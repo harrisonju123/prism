@@ -81,7 +81,9 @@ pub async fn screenshot(region: Option<&serde_json::Value>) -> ToolResult {
     };
 
     if !status.success() {
-        return ToolResult::Text("{\"error\": \"screencapture exited with non-zero status\"}".to_string());
+        return ToolResult::Text(
+            "{\"error\": \"screencapture exited with non-zero status\"}".to_string(),
+        );
     }
 
     // Downscale to 1280px wide using sips (built-in macOS)
@@ -111,9 +113,7 @@ pub async fn screenshot(region: Option<&serde_json::Value>) -> ToolResult {
 
 /// Click at screen coordinates using osascript.
 pub async fn click(x: i32, y: i32) -> String {
-    let script = format!(
-        "tell application \"System Events\" to click at {{{x}, {y}}}"
-    );
+    let script = format!("tell application \"System Events\" to click at {{{x}, {y}}}");
     run_osascript(&script)
 }
 
@@ -121,9 +121,7 @@ pub async fn click(x: i32, y: i32) -> String {
 pub async fn type_text(text: &str) -> String {
     // Escape backslashes and quotes for AppleScript string literal
     let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
-    let script = format!(
-        "tell application \"System Events\" to keystroke \"{escaped}\""
-    );
+    let script = format!("tell application \"System Events\" to keystroke \"{escaped}\"");
     run_osascript(&script)
 }
 
@@ -148,9 +146,8 @@ pub async fn key_press(key: &str, modifiers: &[String]) -> String {
 
     // Escape key name for AppleScript
     let escaped_key = key.replace('"', "\\\"");
-    let script = format!(
-        "tell application \"System Events\" to keystroke \"{escaped_key}\"{using_clause}"
-    );
+    let script =
+        format!("tell application \"System Events\" to keystroke \"{escaped_key}\"{using_clause}");
     run_osascript(&script)
 }
 
@@ -161,7 +158,10 @@ fn run_osascript(script: &str) -> String {
             if stdout.is_empty() {
                 "{\"ok\": true}".to_string()
             } else {
-                format!("{{\"ok\": true, \"output\": {}}}", serde_json::json!(stdout))
+                format!(
+                    "{{\"ok\": true, \"output\": {}}}",
+                    serde_json::json!(stdout)
+                )
             }
         }
         Ok(o) => {

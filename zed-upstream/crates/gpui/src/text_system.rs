@@ -73,6 +73,8 @@ impl TextSystem {
             font_runs_pool: Mutex::default(),
             fallback_font_stack: smallvec![
                 // TODO: Remove this when Linux have implemented setting fallbacks.
+                font(".PrismMono"),
+                font(".PrismSans"),
                 font(".ZedMono"),
                 font(".ZedSans"),
                 font("Helvetica"),
@@ -964,8 +966,8 @@ pub fn font_name_with_fallbacks<'a>(name: &'a str, system: &'a str) -> &'a str {
     // and so retained here for backward compatibility.
     match name {
         ".SystemUIFont" => system,
-        ".ZedSans" | "Zed Plex Sans" => "IBM Plex Sans",
-        ".ZedMono" | "Zed Plex Mono" => "Lilex",
+        ".PrismSans" | ".ZedSans" | "Zed Plex Sans" => "IBM Plex Sans",
+        ".PrismMono" | ".ZedMono" | "Zed Plex Mono" => "Lilex",
         _ => name,
     }
 }
@@ -981,8 +983,10 @@ pub fn font_name_with_fallbacks_shared<'a>(
     // and so retained here for backward compatibility.
     match name.as_str() {
         ".SystemUIFont" => system,
-        ".ZedSans" | "Zed Plex Sans" => const { &SharedString::new_static("IBM Plex Sans") },
-        ".ZedMono" | "Zed Plex Mono" => const { &SharedString::new_static("Lilex") },
+        ".PrismSans" | ".ZedSans" | "Zed Plex Sans" => {
+            const { &SharedString::new_static("IBM Plex Sans") }
+        }
+        ".PrismMono" | ".ZedMono" | "Zed Plex Mono" => const { &SharedString::new_static("Lilex") },
         _ => name,
     }
 }

@@ -1,12 +1,12 @@
 [package]
-description = "The fast, collaborative code editor."
+description = "PrisM — AI agent IDE"
 edition.workspace = true
 name = "zed"
 version = "0.228.0"
 publish.workspace = true
 license = "GPL-3.0-or-later"
 authors = ["Prism Team <hi@harrisonju.dev>"]
-default-run = "zed"
+default-run = "prism"
 
 [lints]
 workspace = true
@@ -51,7 +51,7 @@ visual-tests = [
 ]
 
 [[bin]]
-name = "zed"
+name = "prism"
 path = "src/main.rs"
 
 [[bin]]
@@ -216,6 +216,7 @@ web_search_providers.workspace = true
 which_key.workspace = true
 uglyhat-panel.workspace = true
 prism-dashboard.workspace = true
+prism-hq.workspace = true
 workspace.workspace = true
 zed_actions.workspace = true
 zed_env_vars.workspace = true

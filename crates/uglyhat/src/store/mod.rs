@@ -197,4 +197,26 @@ pub trait Store: Send + Sync {
 
     // --- Overview (1) ---
     async fn get_workspace_overview(&self, workspace_id: Uuid) -> Result<WorkspaceOverview>;
+
+    // --- Messages (4) ---
+    async fn send_message(
+        &self,
+        workspace_id: Uuid,
+        from_agent: &str,
+        to_agent: &str,
+        content: &str,
+    ) -> Result<Message>;
+    async fn list_messages(
+        &self,
+        workspace_id: Uuid,
+        to_agent: &str,
+        unread_only: bool,
+    ) -> Result<Vec<Message>>;
+    async fn mark_messages_read(&self, workspace_id: Uuid, to_agent: &str) -> Result<()>;
+    async fn count_unread_messages(&self, workspace_id: Uuid, to_agent: &str) -> Result<i64>;
+    async fn count_all_unread_messages(
+        &self,
+        workspace_id: Uuid,
+    ) -> Result<std::collections::HashMap<String, i64>>;
+    async fn prune_old_messages(&self, workspace_id: Uuid) -> Result<()>;
 }

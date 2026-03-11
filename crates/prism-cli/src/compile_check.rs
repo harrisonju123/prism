@@ -3,8 +3,7 @@ use std::time::Duration;
 use tokio::process::Command;
 
 const CODE_EXTENSIONS: &[&str] = &[
-    "go", "rs", "ts", "tsx", "js", "jsx", "py", "java", "c", "cpp", "h", "cs", "rb", "swift",
-    "kt",
+    "go", "rs", "ts", "tsx", "js", "jsx", "py", "java", "c", "cpp", "h", "cs", "rb", "swift", "kt",
 ];
 
 fn has_code_files(files: &[String]) -> bool {
@@ -42,9 +41,7 @@ pub async fn run_compile_check(
     let child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            return Some(format!(
-                "[Compile Check] `{command}` failed to spawn: {e}"
-            ));
+            return Some(format!("[Compile Check] `{command}` failed to spawn: {e}"));
         }
     };
 

@@ -511,8 +511,8 @@ pub async fn predict_baseten(
     format: ZetaFormat,
     step_progress: &StepProgress,
 ) -> anyhow::Result<()> {
-    let model_id =
-        std::env::var("PRISM_ZETA_MODEL").context("PRISM_ZETA_MODEL environment variable required")?;
+    let model_id = std::env::var("PRISM_ZETA_MODEL")
+        .context("PRISM_ZETA_MODEL environment variable required")?;
 
     let api_key =
         std::env::var("BASETEN_API_KEY").context("BASETEN_API_KEY environment variable not set")?;

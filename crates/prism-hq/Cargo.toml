@@ -1,0 +1,31 @@
+[package]
+name = "prism-hq"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+description = "Agent HQ UI for PrisM — non-file Items and Panels for workspace supervision"
+
+[lib]
+path = "src/prism_hq.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+db.workspace = true
+futures.workspace = true
+gpui.workspace = true
+gpui_tokio.workspace = true
+tokio.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+settings.workspace = true
+time_format.workspace = true
+ui.workspace = true
+util.workspace = true
+uuid = { workspace = true }
+uglyhat.workspace = true
+uglyhat-panel.workspace = true
+workspace.workspace = true

@@ -17,10 +17,12 @@ futures.workspace = true
 gpui.workspace = true
 language_models.workspace = true
 prism-client = { workspace = true }
+prism-hq = { workspace = true }
 prism-types = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 settings.workspace = true
+uglyhat.workspace = true
 ui.workspace = true
 util.workspace = true
 workspace.workspace = true

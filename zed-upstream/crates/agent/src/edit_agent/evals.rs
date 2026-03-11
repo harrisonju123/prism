@@ -1430,11 +1430,13 @@ impl EditAgentTest {
         fs.insert_tree("/root", json!({})).await;
         let project = Project::test(fs.clone(), [path!("/root").as_ref()], cx).await;
         let agent_model = SelectedModel::from_str(
-            &std::env::var("PRISM_AGENT_MODEL").unwrap_or("anthropic/claude-sonnet-4-latest".into()),
+            &std::env::var("PRISM_AGENT_MODEL")
+                .unwrap_or("anthropic/claude-sonnet-4-latest".into()),
         )
         .unwrap();
         let judge_model = SelectedModel::from_str(
-            &std::env::var("PRISM_JUDGE_MODEL").unwrap_or("anthropic/claude-sonnet-4-latest".into()),
+            &std::env::var("PRISM_JUDGE_MODEL")
+                .unwrap_or("anthropic/claude-sonnet-4-latest".into()),
         )
         .unwrap();
 

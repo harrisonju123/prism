@@ -16,6 +16,8 @@ use workspace::{
     dock::{DockPosition, Panel, PanelEvent},
     Workspace,
 };
+use prism_hq::HqState;
+use uglyhat::model::{ActivityEntry, AgentState, AgentStatus};
 
 const PANEL_KEY: &str = "PrismDashboardPanel";
 const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
@@ -48,9 +50,15 @@ pub struct PrismDashboardPanel {
     quality_expanded: bool,
     savings_expanded: bool,
     efficiency_expanded: bool,
+    uglyhat_agents: Vec<AgentStatus>,
+    uglyhat_activity: Vec<ActivityEntry>,
+    uglyhat_available: bool,
+    active_agents_expanded: bool,
+    recent_activity_expanded: bool,
     refresh_task: Option<Task<()>>,
     _auto_refresh: Task<()>,
     _prism_subscription: Option<gpui::Subscription>,
+    _hq_subscription: Option<gpui::Subscription>,
     pending_serialization: Task<Option<()>>,
 }
 
@@ -75,6 +83,10 @@ struct SerializedPanel {
     savings_expanded: bool,
     #[serde(default = "default_true")]
     efficiency_expanded: bool,
+    #[serde(default = "default_true")]
+    active_agents_expanded: bool,
+    #[serde(default = "default_true")]
+    recent_activity_expanded: bool,
 }
 
 fn default_true() -> bool {
@@ -119,9 +131,15 @@ impl PrismDashboardPanel {
                 quality_expanded: true,
                 savings_expanded: true,
                 efficiency_expanded: true,
+                uglyhat_agents: Vec::new(),
+                uglyhat_activity: Vec::new(),
+                uglyhat_available: false,
+                active_agents_expanded: true,
+                recent_activity_expanded: true,
                 refresh_task: None,
                 _auto_refresh: Task::ready(()),
                 _prism_subscription: prism_subscription,
+                _hq_subscription: None,
                 pending_serialization: Task::ready(None),
             };
 
@@ -137,6 +155,24 @@ impl PrismDashboardPanel {
             panel._auto_refresh = auto_refresh;
 
             panel.refresh(cx);
+
+            // Subscribe to HqState for uglyhat data (agents, activity)
+            if let Some(hq_entity) = HqState::global(cx) {
+                {
+                    let hq = hq_entity.read(cx);
+                    panel.uglyhat_agents = hq.agents.clone();
+                    panel.uglyhat_activity = hq.activity.iter().take(10).cloned().collect();
+                    panel.uglyhat_available = hq.error.is_none();
+                }
+                panel._hq_subscription = Some(cx.observe(&hq_entity, |this, hq, cx| {
+                    let hq = hq.read(cx);
+                    this.uglyhat_agents = hq.agents.clone();
+                    this.uglyhat_activity = hq.activity.iter().take(10).cloned().collect();
+                    this.uglyhat_available = hq.error.is_none();
+                    cx.notify();
+                }));
+            }
+
             panel
         })
     }
@@ -167,6 +203,8 @@ impl PrismDashboardPanel {
                         panel.quality_expanded = serialized.quality_expanded;
                         panel.savings_expanded = serialized.savings_expanded;
                         panel.efficiency_expanded = serialized.efficiency_expanded;
+                        panel.active_agents_expanded = serialized.active_agents_expanded;
+                        panel.recent_activity_expanded = serialized.recent_activity_expanded;
                         cx.notify();
                     });
                 }
@@ -186,6 +224,8 @@ impl PrismDashboardPanel {
         let quality_expanded = self.quality_expanded;
         let savings_expanded = self.savings_expanded;
         let efficiency_expanded = self.efficiency_expanded;
+        let active_agents_expanded = self.active_agents_expanded;
+        let recent_activity_expanded = self.recent_activity_expanded;
         self.pending_serialization = cx.background_spawn(
             async move {
                 KEY_VALUE_STORE
@@ -202,6 +242,8 @@ impl PrismDashboardPanel {
                             quality_expanded,
                             savings_expanded,
                             efficiency_expanded,
+                            active_agents_expanded,
+                            recent_activity_expanded,
                         })?,
                     )
                     .await?;
@@ -226,29 +268,50 @@ impl PrismDashboardPanel {
 
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
             let result: anyhow::Result<_> = cx
-                .background_spawn(async move {
-                    let mut client = prism_client::PrismClient::new(&gateway_url);
-                    if let Some(key) = api_key {
-                        client = client.with_api_key(key);
-                    }
-                    let (summary, waste, task_types, policy, agents, quality, savings, efficiency) = futures::join!(
-                        client.stats_summary(7),
-                        client.stats_waste_score(7),
-                        client.stats_task_types(7),
-                        client.routing_policy(),
-                        client.stats_agents(7),
-                        client.quality_trends(7),
-                        client.routing_savings(7),
-                        client.session_efficiency(7)
-                    );
-                    anyhow::Ok((summary, waste, task_types, policy, agents, quality, savings, efficiency))
-                })
-                .await;
+                    .background_spawn(async move {
+                        let mut client = prism_client::PrismClient::new(&gateway_url);
+                        if let Some(key) = api_key {
+                            client = client.with_api_key(key);
+                        }
+                        let (
+                            summary,
+                            waste,
+                            task_types,
+                            policy,
+                            agents,
+                            quality,
+                            savings,
+                            efficiency,
+                        ) = futures::join!(
+                            client.stats_summary(7),
+                            client.stats_waste_score(7),
+                            client.stats_task_types(7),
+                            client.routing_policy(),
+                            client.stats_agents(7),
+                            client.quality_trends(7),
+                            client.routing_savings(7),
+                            client.session_efficiency(7)
+                        );
+                        anyhow::Ok((
+                            summary, waste, task_types, policy, agents, quality, savings,
+                            efficiency,
+                        ))
+                    })
+                    .await;
 
             this.update(cx, |this, cx| {
                 this.is_loading = false;
                 match result {
-                    Ok((summary, waste, task_types, policy, agents, quality, savings, efficiency)) => {
+                    Ok((
+                        summary,
+                        waste,
+                        task_types,
+                        policy,
+                        agents,
+                        quality,
+                        savings,
+                        efficiency,
+                    )) => {
                         this.data.summary = summary.ok();
                         this.data.waste_score = waste.ok();
                         this.data.task_types = task_types.ok();
@@ -1023,6 +1086,169 @@ impl PrismDashboardPanel {
                 }
             })
     }
+
+    fn render_active_agents_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let expanded = self.active_agents_expanded;
+        let has_agents = !self.uglyhat_agents.is_empty();
+        let uglyhat_available = self.uglyhat_available;
+        v_flex()
+            .w_full()
+            .child(Self::render_section_header(
+                "section-active-agents",
+                "Active Agents",
+                expanded,
+                cx.listener(|this, _, _, cx| {
+                    this.active_agents_expanded = !this.active_agents_expanded;
+                    this.serialize(cx);
+                    cx.notify();
+                }),
+                cx,
+            ))
+            .when(expanded, |this| {
+                if !uglyhat_available {
+                    return this.child(
+                        div().px_3().pb_1().child(
+                            Label::new("uglyhat not connected")
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        ),
+                    );
+                }
+                if !has_agents {
+                    return this.child(
+                        div().px_3().pb_1().child(
+                            Label::new("No active agents")
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        ),
+                    );
+                }
+                let mut children = v_flex().w_full().px_3().pb_1().gap_0p5();
+                for agent in &self.uglyhat_agents {
+                    let state_color = match agent.state {
+                        AgentState::Working => Color::Accent,
+                        AgentState::Idle => Color::Success,
+                        AgentState::Blocked => Color::Warning,
+                        AgentState::Dead => Color::Muted,
+                    };
+                    let state_label = match agent.state {
+                        AgentState::Working => "working",
+                        AgentState::Idle => "idle",
+                        AgentState::Blocked => "blocked",
+                        AgentState::Dead => "dead",
+                    };
+                    let thread_label = agent
+                        .current_thread
+                        .as_deref()
+                        .unwrap_or("—")
+                        .to_string();
+                    children = children.child(
+                        v_flex()
+                            .w_full()
+                            .py_0p5()
+                            .border_b_1()
+                            .border_color(cx.theme().colors().border_variant)
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .w(px(6.))
+                                            .h(px(6.))
+                                            .rounded_full()
+                                            .flex_none()
+                                            .bg(state_color.color(cx)),
+                                    )
+                                    .child(
+                                        Label::new(agent.name.clone())
+                                            .size(LabelSize::Small)
+                                            .truncate(),
+                                    )
+                                    .flex_1()
+                                    .child(
+                                        Label::new(state_label)
+                                            .size(LabelSize::XSmall)
+                                            .color(state_color),
+                                    ),
+                            )
+                            .child(
+                                Label::new(thread_label)
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted),
+                            ),
+                    );
+                }
+                this.child(children)
+            })
+    }
+
+    fn render_recent_activity_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let expanded = self.recent_activity_expanded;
+        let uglyhat_available = self.uglyhat_available;
+        v_flex()
+            .w_full()
+            .child(Self::render_section_header(
+                "section-recent-activity",
+                "Recent Activity",
+                expanded,
+                cx.listener(|this, _, _, cx| {
+                    this.recent_activity_expanded = !this.recent_activity_expanded;
+                    this.serialize(cx);
+                    cx.notify();
+                }),
+                cx,
+            ))
+            .when(expanded, |this| {
+                if !uglyhat_available {
+                    return this.child(
+                        div().px_3().pb_1().child(
+                            Label::new("uglyhat not connected")
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        ),
+                    );
+                }
+                if self.uglyhat_activity.is_empty() {
+                    return this.child(
+                        div().px_3().pb_1().child(
+                            Label::new("No recent activity")
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        ),
+                    );
+                }
+                let mut children = v_flex().w_full().px_3().pb_1().gap_0p5();
+                for entry in self.uglyhat_activity.iter().take(10) {
+                    let label = if entry.actor.is_empty() {
+                        format!("{} {}", entry.action, entry.entity_type)
+                    } else {
+                        format!("{}: {} {}", entry.actor, entry.action, entry.entity_type)
+                    };
+                    // Format timestamp as relative time (just show the time part of RFC3339)
+                    let ts = entry
+                        .created_at
+                        .format("%H:%M")
+                        .to_string();
+                    children = children.child(
+                        h_flex()
+                            .w_full()
+                            .gap_1()
+                            .child(
+                                Label::new(ts)
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted),
+                            )
+                            .child(
+                                Label::new(label)
+                                    .size(LabelSize::XSmall)
+                                    .truncate(),
+                            ),
+                    );
+                }
+                this.child(children)
+            })
+    }
 }
 
 fn format_number(n: u64) -> String {
@@ -1086,7 +1312,47 @@ impl Render for PrismDashboardPanel {
                     .flex_none()
                     .border_b_1()
                     .border_color(cx.theme().colors().border)
-                    .child(Label::new("PrisM Dashboard").size(LabelSize::Small))
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .child(Label::new("PrisM Dashboard").size(LabelSize::Small))
+                            .child(
+                                div()
+                                    .id("uglyhat-status-dot")
+                                    .w(px(6.))
+                                    .h(px(6.))
+                                    .rounded_full()
+                                    .flex_none()
+                                    .bg(if self.uglyhat_available {
+                                        Color::Success.color(cx)
+                                    } else {
+                                        Color::Error.color(cx)
+                                    })
+                                    .tooltip(Tooltip::text(if self.uglyhat_available {
+                                        "uglyhat connected"
+                                    } else {
+                                        "uglyhat not connected"
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("gateway-status-dot")
+                                    .w(px(6.))
+                                    .h(px(6.))
+                                    .rounded_full()
+                                    .flex_none()
+                                    .bg(if self.gateway_url.is_some() {
+                                        Color::Success.color(cx)
+                                    } else {
+                                        Color::Muted.color(cx)
+                                    })
+                                    .tooltip(Tooltip::text(if self.gateway_url.is_some() {
+                                        "gateway configured"
+                                    } else {
+                                        "gateway not configured"
+                                    })),
+                            ),
+                    )
                     .child(
                         IconButton::new("refresh", IconName::ArrowCircle)
                             .icon_size(ui::IconSize::Small)
@@ -1120,6 +1386,8 @@ impl Render for PrismDashboardPanel {
                             ),
                         )
                     })
+                    .child(self.render_active_agents_section(cx))
+                    .child(self.render_recent_activity_section(cx))
                     .child(self.render_cost_section(cx))
                     .child(self.render_models_section(cx))
                     .child(self.render_waste_section(cx))

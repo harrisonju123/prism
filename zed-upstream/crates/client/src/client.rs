@@ -57,7 +57,8 @@ pub use user::*;
 
 static ZED_SERVER_URL: LazyLock<Option<String>> =
     LazyLock::new(|| std::env::var("PRISM_SERVER_URL").ok());
-static ZED_RPC_URL: LazyLock<Option<String>> = LazyLock::new(|| std::env::var("PRISM_RPC_URL").ok());
+static ZED_RPC_URL: LazyLock<Option<String>> =
+    LazyLock::new(|| std::env::var("PRISM_RPC_URL").ok());
 
 pub static IMPERSONATE_LOGIN: LazyLock<Option<String>> = LazyLock::new(|| {
     std::env::var("PRISM_IMPERSONATE")
@@ -65,7 +66,8 @@ pub static IMPERSONATE_LOGIN: LazyLock<Option<String>> = LazyLock::new(|| {
         .and_then(|s| if s.is_empty() { None } else { Some(s) })
 });
 
-pub static USE_WEB_LOGIN: LazyLock<bool> = LazyLock::new(|| std::env::var("PRISM_WEB_LOGIN").is_ok());
+pub static USE_WEB_LOGIN: LazyLock<bool> =
+    LazyLock::new(|| std::env::var("PRISM_WEB_LOGIN").is_ok());
 
 pub static ADMIN_API_TOKEN: LazyLock<Option<String>> = LazyLock::new(|| {
     std::env::var("PRISM_ADMIN_API_TOKEN")

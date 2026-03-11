@@ -28,8 +28,14 @@ impl BudgetAction {
 #[derive(Debug, Clone, PartialEq)]
 pub enum BudgetCheckResult {
     Ok,
-    Warning { message: String },
-    Exceeded { message: String, limit: f64, spent: f64 },
+    Warning {
+        message: String,
+    },
+    Exceeded {
+        message: String,
+        limit: f64,
+        spent: f64,
+    },
 }
 
 /// Per-key spend state.

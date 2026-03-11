@@ -58,6 +58,17 @@ const MIGRATIONS: &[&str] = &[
     // Migration 5: Memory access tracking
     "ALTER TABLE memories ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0;
      ALTER TABLE memories ADD COLUMN last_accessed_at TEXT;",
+    // Migration 6: Agent messaging table
+    "CREATE TABLE IF NOT EXISTS messages (
+         id           TEXT PRIMARY KEY,
+         workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+         from_agent   TEXT NOT NULL,
+         to_agent     TEXT NOT NULL,
+         content      TEXT NOT NULL,
+         read         INTEGER NOT NULL DEFAULT 0,
+         created_at   TEXT NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_messages_to_agent ON messages(workspace_id, to_agent, read);",
 ];
 
 pub fn latest_version() -> i64 {

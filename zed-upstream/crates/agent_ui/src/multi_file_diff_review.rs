@@ -77,7 +77,9 @@ impl PendingEdit {
 }
 
 pub enum MultiFileDiffReviewEvent {
-    Accepted { failed_paths: Vec<std::path::PathBuf> },
+    Accepted {
+        failed_paths: Vec<std::path::PathBuf>,
+    },
     Rejected,
 }
 
@@ -152,8 +154,10 @@ impl MultiFileDiffReview {
                     }
                 }
             }
-            this.update(cx, |_, cx| cx.emit(MultiFileDiffReviewEvent::Accepted { failed_paths }))
-                .ok();
+            this.update(cx, |_, cx| {
+                cx.emit(MultiFileDiffReviewEvent::Accepted { failed_paths })
+            })
+            .ok();
         }));
     }
 
@@ -178,69 +182,63 @@ impl Render for MultiFileDiffReview {
 
         let file_tabs = v_flex()
             .gap_1()
-            .children(
-                self.pending_edits
-                    .iter()
-                    .enumerate()
-                    .map(|(index, edit)| {
-                        let file_name = edit
-                            .file_path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("unknown")
-                            .to_string();
-                        let full_path = edit.file_path.display().to_string();
-                        let accepted = edit.accepted;
+            .children(self.pending_edits.iter().enumerate().map(|(index, edit)| {
+                let file_name = edit
+                    .file_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                let full_path = edit.file_path.display().to_string();
+                let accepted = edit.accepted;
 
-                        h_flex()
-                            .p_1()
-                            .gap_2()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(cx.theme().colors().border)
-                            .bg(cx.theme().colors().surface_background)
+                h_flex()
+                    .p_1()
+                    .gap_2()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(cx.theme().colors().border)
+                    .bg(cx.theme().colors().surface_background)
+                    .child(
+                        Icon::new(if accepted {
+                            IconName::Check
+                        } else {
+                            IconName::XCircle
+                        })
+                        .color(if accepted {
+                            Color::Success
+                        } else {
+                            Color::Muted
+                        })
+                        .size(IconSize::Small),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_x_hidden()
+                            .text_ellipsis()
+                            .child(Label::new(file_name).size(LabelSize::Small))
                             .child(
-                                Icon::new(if accepted {
-                                    IconName::Check
-                                } else {
-                                    IconName::XCircle
-                                })
-                                .color(if accepted {
-                                    Color::Success
-                                } else {
-                                    Color::Muted
-                                })
-                                .size(IconSize::Small),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .overflow_x_hidden()
-                                    .text_ellipsis()
-                                    .child(
-                                        Label::new(file_name)
-                                            .size(LabelSize::Small),
-                                    )
-                                    .child(
-                                        Label::new(full_path)
-                                            .size(LabelSize::XSmall)
-                                            .color(Color::Muted),
-                                    ),
-                            )
-                            .child(
-                                Button::new(
-                                    ("toggle", index),
-                                    if accepted { "Reject" } else { "Accept" },
-                                )
-                                .label_size(LabelSize::XSmall)
-                                .layer(ElevationIndex::ModalSurface)
-                                .on_click(cx.listener(move |this, _, _window, cx| {
-                                    this.toggle_file(index, cx);
-                                })),
-                            )
-                    }),
-            );
+                                Label::new(full_path)
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted),
+                            ),
+                    )
+                    .child(
+                        Button::new(
+                            ("toggle", index),
+                            if accepted { "Reject" } else { "Accept" },
+                        )
+                        .label_size(LabelSize::XSmall)
+                        .layer(ElevationIndex::ModalSurface)
+                        .on_click(cx.listener(
+                            move |this, _, _window, cx| {
+                                this.toggle_file(index, cx);
+                            },
+                        )),
+                    )
+            }));
 
         v_flex()
             .size_full()

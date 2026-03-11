@@ -188,7 +188,11 @@ impl PrismClient {
                 .await?;
             let status = resp.status().as_u16();
             if !resp.status().is_success() {
-                let retry_after_secs = if status == 429 { parse_retry_after(&resp) } else { None };
+                let retry_after_secs = if status == 429 {
+                    parse_retry_after(&resp)
+                } else {
+                    None
+                };
                 let msg = resp.text().await.unwrap_or_default();
                 return Err(ClientError::Api {
                     status,
@@ -221,7 +225,11 @@ impl PrismClient {
                 .await?;
             let status = r.status().as_u16();
             if !r.status().is_success() {
-                let retry_after_secs = if status == 429 { parse_retry_after(&r) } else { None };
+                let retry_after_secs = if status == 429 {
+                    parse_retry_after(&r)
+                } else {
+                    None
+                };
                 let msg = r.text().await.unwrap_or_default();
                 return Err(ClientError::Api {
                     status,

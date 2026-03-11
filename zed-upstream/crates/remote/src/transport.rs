@@ -33,7 +33,7 @@ fn parse_platform(output: &str) -> Result<RemotePlatform> {
         "Darwin" => RemoteOs::MacOs,
         "Linux" => RemoteOs::Linux,
         _ => anyhow::bail!(
-            "Prebuilt remote servers are not yet available for {os:?}. See https://zed.dev/docs/remote-development"
+            "Prebuilt remote servers are not yet available for {os:?}. See https://prism.dev/docs/remote-development"
         ),
     };
 
@@ -48,7 +48,7 @@ fn parse_platform(output: &str) -> Result<RemotePlatform> {
         RemoteArch::X86_64
     } else {
         anyhow::bail!(
-            "Prebuilt remote servers are not yet available for {arch:?}. See https://zed.dev/docs/remote-development"
+            "Prebuilt remote servers are not yet available for {arch:?}. See https://prism.dev/docs/remote-development"
         )
     };
 
@@ -215,7 +215,9 @@ async fn build_remote_server_from_source(
         if binary_exists_on_server {
             return Ok(None);
         }
-        log::warn!("PRISM_BUILD_REMOTE_SERVER is disabled, but no server binary exists on the server")
+        log::warn!(
+            "PRISM_BUILD_REMOTE_SERVER is disabled, but no server binary exists on the server"
+        )
     }
 
     async fn run_cmd(command: &mut Command) -> Result<()> {

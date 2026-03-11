@@ -1400,7 +1400,7 @@ impl Render for ConfigurationView {
                     .icon_size(IconSize::Small)
                     .icon_color(Color::Muted)
                     .on_click(move |_, _window, cx| {
-                        cx.open_url("https://zed.dev/docs/ai/llm-providers#openai-api-compatible")
+                        cx.open_url("https://prism.dev/docs/ai/llm-providers#openai-api-compatible")
                     }),
             );
 

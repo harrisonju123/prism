@@ -190,7 +190,10 @@ mod tests {
     #[tokio::test]
     async fn health_check_records_failure_on_connection_error() {
         let tracker = ProviderHealthTracker::new(3);
-        let urls = vec![("dead-provider".to_string(), "http://127.0.0.1:1".to_string())];
+        let urls = vec![(
+            "dead-provider".to_string(),
+            "http://127.0.0.1:1".to_string(),
+        )];
         let client = reqwest::Client::new();
 
         check_providers_once(&tracker, &urls, &client).await;

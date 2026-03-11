@@ -320,6 +320,17 @@ pub struct Snapshot {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Message {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    pub from_agent: String,
+    pub to_agent: String,
+    pub content: String,
+    pub read: bool,
+    pub created_at: DateTime<Utc>,
+}
+
 // ---------------------------------------------------------------------------
 // Composite read types
 // ---------------------------------------------------------------------------

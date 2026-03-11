@@ -86,7 +86,9 @@ impl StreamRelay {
                     }
                 };
                 // Reset idle deadline after each successful receive
-                idle_sleep.as_mut().reset(tokio::time::Instant::now() + idle_timeout);
+                idle_sleep
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + idle_timeout);
                 match chunk_result {
                     Ok(bytes) => {
                         // Forward raw bytes to client
@@ -317,15 +319,18 @@ mod tests {
             .await
             .unwrap();
 
-        let (relay, _result_rx) =
-            StreamRelay::start(source, Duration::from_millis(100));
+        let (relay, _result_rx) = StreamRelay::start(source, Duration::from_millis(100));
 
         // Drain the relay and collect items
         use futures::StreamExt;
         let items: Vec<_> = relay.collect().await;
 
         // Should have the first chunk (Ok) and then the timeout error
-        assert!(items.len() >= 2, "expected at least 2 items, got {}", items.len());
+        assert!(
+            items.len() >= 2,
+            "expected at least 2 items, got {}",
+            items.len()
+        );
         assert!(items[0].is_ok());
         let last = items.last().unwrap();
         assert!(last.is_err());

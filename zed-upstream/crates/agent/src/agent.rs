@@ -367,16 +367,15 @@ impl NativeAgent {
             // Auto-claim uglyhat task when the branch matches a known task or a
             // `.prism-session.json` already has a task_id (resume after crash).
             let session_file_path = prism_session::session_file_path(&worktree_root);
-            let maybe_task_id: Option<String> = prism_session::PrismSessionFile::try_read_from(
-                &session_file_path,
-            )
-            .and_then(|existing| existing.task_id)
-            .or_else(|| {
-                branch
-                    .as_deref()
-                    .and_then(prism_session::find_task_for_branch)
-                    .map(|(id, _name)| id)
-            });
+            let maybe_task_id: Option<String> =
+                prism_session::PrismSessionFile::try_read_from(&session_file_path)
+                    .and_then(|existing| existing.task_id)
+                    .or_else(|| {
+                        branch
+                            .as_deref()
+                            .and_then(prism_session::find_task_for_branch)
+                            .map(|(id, _name)| id)
+                    });
 
             if let Some(task_id) = maybe_task_id {
                 if let Some(task_name) = prism_session::auto_claim_task(&task_id, &agent_name) {

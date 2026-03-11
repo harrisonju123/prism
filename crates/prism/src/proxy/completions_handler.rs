@@ -58,7 +58,11 @@ pub async fn text_completions(
             ctx.budget_action,
         );
         match budget_result {
-            BudgetCheckResult::Exceeded { message, limit, spent } => {
+            BudgetCheckResult::Exceeded {
+                message,
+                limit,
+                spent,
+            } => {
                 tracing::warn!(key_prefix = %ctx.key_prefix, %message, "budget exceeded");
                 return Err(PrismError::BudgetExceeded { limit, spent });
             }
@@ -268,7 +272,10 @@ mod tests {
 
     #[test]
     fn fim_detected_by_fim_prefix_token() {
-        let req = make_request("<fim_prefix>def foo():<fim_suffix>    pass<fim_middle>", None);
+        let req = make_request(
+            "<fim_prefix>def foo():<fim_suffix>    pass<fim_middle>",
+            None,
+        );
         assert!(is_fim_request(&req));
     }
 

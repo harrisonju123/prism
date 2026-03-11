@@ -14106,12 +14106,37 @@ dependencies = [
  "gpui",
  "language_models",
  "prism-client",
+ "prism-hq",
  "prism-types",
  "serde",
  "serde_json",
  "settings",
+ "uglyhat",
  "ui",
  "util",
+ "workspace",
+]
+
+[[package]]
+name = "prism-hq"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "db",
+ "futures 0.3.32",
+ "gpui",
+ "gpui_tokio",
+ "log",
+ "serde",
+ "serde_json",
+ "settings",
+ "time_format",
+ "tokio",
+ "uglyhat",
+ "uglyhat-panel",
+ "ui",
+ "util",
+ "uuid",
  "workspace",
 ]
 
@@ -20066,6 +20091,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "uglyhat-types"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "uglyhat",
+ "uuid",
+]
+
+[[package]]
 name = "ui"
 version = "0.1.0"
 dependencies = [
@@ -23715,6 +23751,7 @@ dependencies = [
  "pkg-config",
  "pretty_assertions",
  "prism-dashboard",
+ "prism-hq",
  "profiling",
  "project",
  "project_panel",

@@ -325,9 +325,7 @@ pub fn smart_truncate_to_fit(
     // --- Pass 2: priority-based group dropping ---
     pass_used = 2;
 
-    let first_user_idx = messages
-        .iter()
-        .position(|m| m.role == MessageRole::User);
+    let first_user_idx = messages.iter().position(|m| m.role == MessageRole::User);
 
     // Build groups and score them. We repeatedly rebuild groups after each removal
     // so indices stay valid — simpler than trying to update indices in place.
@@ -601,12 +599,12 @@ mod tests {
         let body = "x".repeat(100);
         let mut messages = vec![
             make_msg(MessageRole::System, &body),
-            make_msg(MessageRole::User, &body),       // first user
-            make_msg(MessageRole::Assistant, &body),   // middle A
-            make_msg(MessageRole::User, &body),        // middle B
-            make_msg(MessageRole::Assistant, &body),   // middle C
-            make_msg(MessageRole::User, &body),        // recent
-            make_msg(MessageRole::Assistant, &body),   // recent
+            make_msg(MessageRole::User, &body),      // first user
+            make_msg(MessageRole::Assistant, &body), // middle A
+            make_msg(MessageRole::User, &body),      // middle B
+            make_msg(MessageRole::Assistant, &body), // middle C
+            make_msg(MessageRole::User, &body),      // recent
+            make_msg(MessageRole::Assistant, &body), // recent
         ];
         // Tight budget so some middle messages must go.
         let config = SmartTruncationConfig {

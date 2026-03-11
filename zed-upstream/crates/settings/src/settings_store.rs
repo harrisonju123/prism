@@ -2446,7 +2446,7 @@ mod tests {
 
         let schema = SettingsStore::json_schema(&SettingsJsonSchemaParams {
             language_names: &["Rust".to_string(), "TypeScript".to_string()],
-            font_names: &["Zed Mono".to_string()],
+            font_names: &["PrisM Mono".to_string()],
             theme_names: &["One Dark".into()],
             icon_theme_names: &["Zed Icons".into()],
             lsp_adapter_names: &[
@@ -2497,7 +2497,7 @@ mod tests {
 
         let schema = SettingsStore::project_json_schema(&SettingsJsonSchemaParams {
             language_names: &["Rust".to_string(), "TypeScript".to_string()],
-            font_names: &["Zed Mono".to_string()],
+            font_names: &["PrisM Mono".to_string()],
             theme_names: &["One Dark".into()],
             icon_theme_names: &["Zed Icons".into()],
             lsp_adapter_names: &[
@@ -2548,7 +2548,7 @@ mod tests {
 
         let params = SettingsJsonSchemaParams {
             language_names: &["Rust".to_string()],
-            font_names: &["Zed Mono".to_string()],
+            font_names: &["PrisM Mono".to_string()],
             theme_names: &["One Dark".into()],
             icon_theme_names: &["Zed Icons".into()],
             lsp_adapter_names: &["rust-analyzer".to_string()],

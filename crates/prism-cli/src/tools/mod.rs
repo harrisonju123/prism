@@ -1,5 +1,5 @@
-mod files;
 pub mod computer;
+mod files;
 mod search;
 mod shell;
 mod web;
@@ -442,7 +442,8 @@ pub async fn dispatch(
             let resolved = resolve_path(Some(raw), session_cwd);
             if is_path_denied(&resolved, config) {
                 return ToolResult::Text(format!(
-                    "{{\"error\": \"access to path '{}' is denied by policy\"}}", resolved
+                    "{{\"error\": \"access to path '{}' is denied by policy\"}}",
+                    resolved
                 ));
             }
         }
@@ -451,7 +452,8 @@ pub async fn dispatch(
         let resolved = resolve_path(args["path"].as_str(), session_cwd);
         if is_path_denied(&resolved, config) {
             return ToolResult::Text(format!(
-                "{{\"error\": \"access to path '{}' is denied by policy\"}}", resolved
+                "{{\"error\": \"access to path '{}' is denied by policy\"}}",
+                resolved
             ));
         }
     }
@@ -459,7 +461,8 @@ pub async fn dispatch(
         let resolved = resolve_path(args["dir"].as_str(), session_cwd);
         if is_path_denied(&resolved, config) {
             return ToolResult::Text(format!(
-                "{{\"error\": \"access to path '{}' is denied by policy\"}}", resolved
+                "{{\"error\": \"access to path '{}' is denied by policy\"}}",
+                resolved
             ));
         }
     }
@@ -468,16 +471,18 @@ pub async fn dispatch(
     if matches!(name, "bash" | "run_command") {
         let cmd = args["command"].as_str().unwrap_or("");
         if is_command_denied(cmd, config) {
-            return ToolResult::Text(format!(
-                "{{\"error\": \"command is denied by policy\"}}"
-            ));
+            return ToolResult::Text(format!("{{\"error\": \"command is denied by policy\"}}"));
         }
     }
 
     dispatch_inner(name, args, session_cwd).await
 }
 
-async fn dispatch_inner(name: &str, args: &serde_json::Value, session_cwd: Option<&Path>) -> ToolResult {
+async fn dispatch_inner(
+    name: &str,
+    args: &serde_json::Value,
+    session_cwd: Option<&Path>,
+) -> ToolResult {
     // Computer tools are not in BuiltinTool — handle them first
     match name {
         "screenshot" => {
@@ -497,7 +502,11 @@ async fn dispatch_inner(name: &str, args: &serde_json::Value, session_cwd: Optio
             let key = args["key"].as_str().unwrap_or("");
             let modifiers: Vec<String> = args["modifiers"]
                 .as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
                 .unwrap_or_default();
             return ToolResult::Text(computer::key_press(key, &modifiers).await);
         }
@@ -522,7 +531,9 @@ async fn dispatch_inner(name: &str, args: &serde_json::Value, session_cwd: Optio
             match raw {
                 Some(_) => {
                     let path = resolve_path(raw, session_cwd);
-                    ToolResult::Text(files::write_file(&path, args["content"].as_str().unwrap_or("")).await)
+                    ToolResult::Text(
+                        files::write_file(&path, args["content"].as_str().unwrap_or("")).await,
+                    )
                 }
                 None => ToolResult::Text("error: path is required".to_string()),
             }
@@ -594,7 +605,9 @@ async fn dispatch_inner(name: &str, args: &serde_json::Value, session_cwd: Optio
         ) => {
             // Intercepted before dispatch() in the agent loop; reaching here means
             // the caller invoked dispatch() directly without agent context.
-            ToolResult::Text(format!("{{\"error\": \"tool '{name}' requires agent loop context\"}}"))
+            ToolResult::Text(format!(
+                "{{\"error\": \"tool '{name}' requires agent loop context\"}}"
+            ))
         }
         None => ToolResult::Text(format!("unknown tool: {name}")),
     }

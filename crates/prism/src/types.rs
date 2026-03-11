@@ -449,7 +449,8 @@ mod tests {
     fn deeply_escaped_json_normalized() {
         // Simulate LLM-generated arguments with source code containing escapes
         let raw_args = r#"{"code":"fn main() {\n\tprintln!(\"hello\\nworld\");\n}"}"#;
-        let tc = json!({"type": "function", "function": {"name": "write_file", "arguments": raw_args}});
+        let tc =
+            json!({"type": "function", "function": {"name": "write_file", "arguments": raw_args}});
         let mut req = make_request(vec![assistant_msg_with_tool_calls(vec![tc])]);
         req.normalize_tool_call_arguments();
 

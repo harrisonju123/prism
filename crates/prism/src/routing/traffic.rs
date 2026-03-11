@@ -101,8 +101,15 @@ pub async fn refresh_fitness_from_traffic(
 
     // Merge quality signals from feedback_events (best-effort, non-blocking)
     if let Err(e) = refresh_quality_from_feedback(
-        fitness_cache, client, ch_url, ch_db, min_sample_size, lookback_days,
-    ).await {
+        fitness_cache,
+        client,
+        ch_url,
+        ch_db,
+        min_sample_size,
+        lookback_days,
+    )
+    .await
+    {
         tracing::warn!("feedback quality merge failed (non-fatal): {e}");
     }
 
@@ -169,7 +176,6 @@ pub async fn refresh_quality_from_feedback(
     min_samples: u32,
     lookback_days: u32,
 ) -> anyhow::Result<()> {
-
     let query = format!(
         "SELECT ie.model, ie.task_type, \
                 avg(fe.metric_value) AS avg_quality, \
@@ -325,7 +331,8 @@ mod tests {
         let feedback: f64 = 0.50;
         let sample_size: f64 = 2.0;
         let prior_weight: f64 = 5.0;
-        let blended = (catalog * prior_weight + feedback * sample_size) / (prior_weight + sample_size);
+        let blended =
+            (catalog * prior_weight + feedback * sample_size) / (prior_weight + sample_size);
         // (0.79 * 5 + 0.50 * 2) / (5 + 2) = (3.95 + 1.0) / 7 = 4.95 / 7 ≈ 0.707
         assert!((blended - 0.707).abs() < 0.01);
     }
@@ -337,7 +344,8 @@ mod tests {
         let feedback: f64 = 0.50;
         let sample_size: f64 = 100.0;
         let prior_weight: f64 = 5.0;
-        let blended = (catalog * prior_weight + feedback * sample_size) / (prior_weight + sample_size);
+        let blended =
+            (catalog * prior_weight + feedback * sample_size) / (prior_weight + sample_size);
         // Should be close to 0.50
         assert!((blended - feedback).abs() < 0.02);
     }

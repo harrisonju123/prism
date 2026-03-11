@@ -98,6 +98,7 @@ use workspace::{
     with_active_or_new_workspace,
 };
 use workspace::{Pane, notifications::DetachAndPromptErr};
+use prism_hq::NavigatorPanel;
 use zed_actions::{
     OpenAccountSettings, OpenBrowser, OpenDocs, OpenServerSettings, OpenSettingsFile, OpenZedUrl,
     Quit,
@@ -758,6 +759,14 @@ pub fn initialize_workspace(
         workspace.set_panels_task(panels_task);
         register_actions(app_state.clone(), workspace, window, cx);
 
+        // Open the Command Center as the initial center-pane tab in every fresh workspace.
+        // If the workspace already has items (e.g. restored from a previous session), skip.
+        if workspace.active_pane().read(cx).items().count() == 0 {
+            if let Some(hq_state) = prism_hq::HqState::global(cx) {
+                prism_hq::open_command_center(workspace, hq_state, window, cx);
+            }
+        }
+
         if !workspace.has_active_modal(window, cx) {
             workspace.focus_handle(cx).focus(window, cx);
         }
@@ -894,14 +903,10 @@ fn initialize_panels(
             cx.clone(),
         );
         let debug_panel = DebugPanel::load(workspace_handle.clone(), cx);
-        let task_board_panel =
-            uglyhat_panel::TaskBoardPanel::load(workspace_handle.clone(), cx.clone());
-        let agent_roster_panel =
-            uglyhat_panel::AgentRosterPanel::load(workspace_handle.clone(), cx.clone());
-        let session_history_panel =
-            uglyhat_panel::SessionHistoryPanel::load(workspace_handle.clone(), cx.clone());
         let prism_dashboard =
             prism_dashboard::PrismDashboardPanel::load(workspace_handle.clone(), cx.clone());
+        let hq_navigator =
+            NavigatorPanel::load(workspace_handle.clone(), cx.clone());
 
         async fn add_panel_when_ready(
             panel_task: impl Future<Output = anyhow::Result<Entity<impl workspace::Panel>>> + 'static,
@@ -926,10 +931,8 @@ fn initialize_panels(
             add_panel_when_ready(channels_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(notification_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(debug_panel, workspace_handle.clone(), cx.clone()),
-            add_panel_when_ready(task_board_panel, workspace_handle.clone(), cx.clone()),
-            add_panel_when_ready(agent_roster_panel, workspace_handle.clone(), cx.clone()),
-            add_panel_when_ready(session_history_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(prism_dashboard, workspace_handle.clone(), cx.clone()),
+            add_panel_when_ready(hq_navigator, workspace_handle.clone(), cx.clone()),
             initialize_agent_panel(workspace_handle, prompt_builder, cx.clone()).map(|r| r.log_err()),
         );
 
@@ -5286,6 +5289,7 @@ mod tests {
             outline_panel::init(cx);
             uglyhat_panel::init(cx);
             prism_dashboard::init(cx);
+            prism_hq::init(cx);
             terminal_view::init(cx);
             copilot_chat::init(
                 app_state.fs.clone(),

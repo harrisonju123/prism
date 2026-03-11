@@ -102,7 +102,9 @@ impl LiveJudgeTask {
             0
         };
 
-        let mut last_call = Instant::now().checked_sub(Duration::from_secs(60)).unwrap_or_else(Instant::now);
+        let mut last_call = Instant::now()
+            .checked_sub(Duration::from_secs(60))
+            .unwrap_or_else(Instant::now);
         let mut judged = 0;
 
         for sample in samples.iter().take(allowed) {
@@ -154,11 +156,7 @@ impl LiveJudgeTask {
             last_call = Instant::now();
         }
 
-        tracing::info!(
-            judged,
-            samples = samples.len(),
-            "live judge cycle complete"
-        );
+        tracing::info!(judged, samples = samples.len(), "live judge cycle complete");
         Ok(())
     }
 
@@ -199,9 +197,9 @@ impl LiveJudgeTask {
                     None => continue,
                 };
                 let task_type_str = v.get("task_type").and_then(|x| x.as_str()).unwrap_or("");
-                let task_type = serde_json::from_value::<TaskType>(
-                    serde_json::Value::String(task_type_str.to_string()),
-                )
+                let task_type = serde_json::from_value::<TaskType>(serde_json::Value::String(
+                    task_type_str.to_string(),
+                ))
                 .ok();
                 let completion_hash = v
                     .get("completion_hash")

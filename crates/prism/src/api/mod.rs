@@ -8,6 +8,8 @@ pub mod alerts;
 #[cfg(feature = "full")]
 pub mod aliases;
 #[cfg(feature = "full")]
+pub mod analytics;
+#[cfg(feature = "full")]
 pub mod audit;
 #[cfg(feature = "full")]
 pub mod billing;
@@ -28,10 +30,8 @@ pub mod prompts;
 #[cfg(feature = "full")]
 pub mod routing;
 #[cfg(feature = "full")]
+pub mod sessions;
+#[cfg(feature = "full")]
 pub mod stats;
 #[cfg(feature = "full")]
 pub mod workflows;
-#[cfg(feature = "full")]
-pub mod analytics;
-#[cfg(feature = "full")]
-pub mod sessions;

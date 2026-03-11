@@ -541,6 +541,7 @@ mod tests {
             ttft_ms: Some(200),
             session_id: None,
             provider_attempted: None,
+            thread_id: None,
         }
     }
 

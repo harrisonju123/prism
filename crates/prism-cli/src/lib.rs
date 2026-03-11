@@ -1,8 +1,8 @@
 pub mod acp;
 pub mod agent;
-pub mod compile_check;
 pub mod approval_bridge;
 pub mod common;
+pub mod compile_check;
 pub mod compression;
 pub mod config;
 pub mod conversation;

@@ -156,7 +156,11 @@ pub async fn anthropic_messages(
             ctx.budget_action,
         );
         match budget_result {
-            BudgetCheckResult::Exceeded { message, limit, spent } => {
+            BudgetCheckResult::Exceeded {
+                message,
+                limit,
+                spent,
+            } => {
                 tracing::warn!(key_prefix = %ctx.key_prefix, %message, "budget exceeded");
                 return Err(PrismError::BudgetExceeded { limit, spent });
             }
@@ -362,7 +366,6 @@ pub async fn anthropic_messages(
                 }
             });
         }
-
 
         return Ok(Sse::new(sse_stream)
             .keep_alive(KeepAlive::default())

@@ -152,13 +152,7 @@ mod tests {
         let count = AtomicU32::new(0);
         let result: Result<u32> = with_retry(&config, || {
             let n = count.fetch_add(1, Ordering::SeqCst);
-            async move {
-                if n < 2 {
-                    Err(retryable_err())
-                } else {
-                    Ok(42)
-                }
-            }
+            async move { if n < 2 { Err(retryable_err()) } else { Ok(42) } }
         })
         .await;
         assert!(result.is_ok());

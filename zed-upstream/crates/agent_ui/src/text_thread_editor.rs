@@ -3177,14 +3177,18 @@ mod tests {
 
     #[gpui::test]
     async fn test_copy_paste_whole_message(cx: &mut TestAppContext) {
-        let (context, text_thread_editor, mut cx) = setup_text_thread_editor_text(vec![
-            (Role::User, "What is the Zed editor?"),
-            (
-                Role::Assistant,
-                "Prism is a powerful code editor with built-in LLM gateway integration.",
-            ),
-            (Role::User, ""),
-        ],cx).await;
+        let (context, text_thread_editor, mut cx) = setup_text_thread_editor_text(
+            vec![
+                (Role::User, "What is the Zed editor?"),
+                (
+                    Role::Assistant,
+                    "Prism is a powerful code editor with built-in LLM gateway integration.",
+                ),
+                (Role::User, ""),
+            ],
+            cx,
+        )
+        .await;
 
         // Select & Copy whole user message
         assert_copy_paste_text_thread_editor(

@@ -524,6 +524,9 @@ impl Agent {
             // Poll for workspace-scoped decisions from other agents
             self.poll_and_inject_decisions().await;
 
+            // Poll inbox for messages sent to this agent from the IDE or other agents
+            self.poll_and_inject_messages().await;
+
             // --- Exploration checkpoints ---
             let current_turn = turns;
 
@@ -1426,6 +1429,33 @@ If you have questions, ask them now. If you're confident, continue."
 
         // Auto-acknowledge
         let _ = store.acknowledge_decisions(ws_id, &agent_name, ids).await;
+    }
+
+    /// Poll inbox for unread messages from the IDE or other agents, inject as context.
+    async fn poll_and_inject_messages(&mut self) {
+        use uglyhat::store::Store;
+
+        let Some(store) = self.memory.store().cloned() else {
+            return;
+        };
+        let Some(ws_id) = self.memory.workspace_id() else {
+            return;
+        };
+        let agent_name =
+            std::env::var(UH_AGENT_NAME_ENV).unwrap_or_else(|_| UH_AGENT_NAME_DEFAULT.to_string());
+
+        let messages = match store.list_messages(ws_id, &agent_name, true).await {
+            Ok(msgs) if !msgs.is_empty() => msgs,
+            _ => return,
+        };
+
+        let mut msg = String::from("MESSAGES FROM OPERATOR (read and act on these):\n");
+        for m in &messages {
+            msg.push_str(&format!("- From {}: {}\n", m.from_agent, m.content));
+        }
+        self.session.push_message(common::user_message(msg));
+
+        let _ = store.mark_messages_read(ws_id, &agent_name).await;
     }
 
     /// Emit an implicit quality feedback event based on session outcome signals.

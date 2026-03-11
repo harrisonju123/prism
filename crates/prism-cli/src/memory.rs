@@ -150,7 +150,8 @@ fn discover_uglyhat() -> (Option<std::path::PathBuf>, Option<Uuid>) {
 }
 
 /// Keywords indicating error resolution patterns in session content.
-pub const RESOLUTION_KEYWORDS: &[&str] = &["fixed", "resolved", "workaround", "root cause", "solution"];
+pub const RESOLUTION_KEYWORDS: &[&str] =
+    &["fixed", "resolved", "workaround", "root cause", "solution"];
 
 /// Auto-extract memories from session data on checkout.
 /// Pure heuristics — no LLM involved.

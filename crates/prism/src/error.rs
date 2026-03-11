@@ -217,6 +217,19 @@ impl PrismError {
         }
     }
 
+    /// Extract the HTTP status code from a Provider error message.
+    /// All providers use the format "<Name> returned <status>[...]: <body>".
+    fn provider_status_code(&self) -> Option<u16> {
+        match self {
+            PrismError::Provider(msg) => {
+                let after = msg.split("returned ").nth(1)?;
+                let code_str = after.split(|c: char| !c.is_ascii_digit()).next()?;
+                code_str.parse().ok()
+            }
+            _ => None,
+        }
+    }
+
     /// True for errors where trying another provider makes sense.
     /// Includes upstream 429s (provider-level rate limit) since exhaustion on one provider
     /// does not mean all providers are at capacity.
@@ -226,10 +239,7 @@ impl PrismError {
         if self.is_retryable() {
             return true;
         }
-        match self {
-            PrismError::Provider(msg) => msg.contains("429"),
-            _ => false,
-        }
+        self.provider_status_code() == Some(429)
     }
 }
 

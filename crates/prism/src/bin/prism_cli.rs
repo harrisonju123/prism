@@ -61,8 +61,7 @@ async fn spawn_agent(args: SpawnAgentArgs) -> Result<()> {
     let worktree = &args.worktree;
 
     // Resolve the git repo root by walking up from the worktree path or its parent.
-    let repo_root = find_git_root(worktree)
-        .context("Could not determine git repository root")?;
+    let repo_root = find_git_root(worktree).context("Could not determine git repository root")?;
 
     // Step 1: create the git worktree if it does not exist.
     if !worktree.exists() {
@@ -98,7 +97,10 @@ async fn spawn_agent(args: SpawnAgentArgs) -> Result<()> {
             Err(e) => eprintln!("Warning: could not run uh task claim: {}; continuing", e),
         }
     } else {
-        eprintln!("Warning: uh binary not found at {}; skipping task claim", uh_bin.display());
+        eprintln!(
+            "Warning: uh binary not found at {}; skipping task claim",
+            uh_bin.display()
+        );
     }
 
     // Step 3: launch claude --dangerously-skip-permissions and stream output.
@@ -136,7 +138,10 @@ async fn spawn_agent(args: SpawnAgentArgs) -> Result<()> {
         }
     });
 
-    let status = child.wait().await.context("Failed to wait for claude process")?;
+    let status = child
+        .wait()
+        .await
+        .context("Failed to wait for claude process")?;
     stdout_task.await.ok();
     stderr_task.await.ok();
 
@@ -149,13 +154,7 @@ async fn spawn_agent(args: SpawnAgentArgs) -> Result<()> {
 /// Creates a git worktree at `path` with a new branch named `branch`.
 async fn create_worktree(repo_root: &PathBuf, path: &PathBuf, branch: &str) -> Result<()> {
     let status = Command::new("git")
-        .args([
-            "worktree",
-            "add",
-            &path.to_string_lossy(),
-            "-b",
-            branch,
-        ])
+        .args(["worktree", "add", &path.to_string_lossy(), "-b", branch])
         .current_dir(repo_root)
         .status()
         .await;

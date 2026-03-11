@@ -746,7 +746,7 @@ mod tests {
                 "Recommended",
                 "zed/claude",
                 "anthropic/claude",
-            "Prism",
+                "Prism",
                 "zed/claude",
                 "zed/gpt-5",
                 "Antropic",

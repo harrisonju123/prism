@@ -166,7 +166,11 @@ async fn run(cli: Cli) -> Result<()> {
             if let Some(ref name) = effective_persona {
                 let p = persona::load_persona(name)
                     .map_err(|e| anyhow::anyhow!("failed to load persona '{}': {}", name, e))?;
-                eprintln!("[persona] loaded '{}' — {}", p.name, p.description.as_deref().unwrap_or(""));
+                eprintln!(
+                    "[persona] loaded '{}' — {}",
+                    p.name,
+                    p.description.as_deref().unwrap_or("")
+                );
                 p.apply(&mut config);
             }
 
@@ -285,25 +289,25 @@ async fn run(cli: Cli) -> Result<()> {
                 anyhow::bail!("task is required when stdin is not a terminal");
             }
         }
-        Commands::Personas { cmd } => {
-            match cmd {
-                PersonasCmd::List => {
-                    let personas = persona::list_personas();
-                    if personas.is_empty() {
-                        eprintln!("no personas found. Create ~/.prism/personas/<name>.toml to get started.");
-                    } else {
-                        eprintln!("{:<20} {}", "NAME", "PATH");
-                        for (name, path) in &personas {
-                            eprintln!("{:<20} {}", name, path.display());
-                        }
+        Commands::Personas { cmd } => match cmd {
+            PersonasCmd::List => {
+                let personas = persona::list_personas();
+                if personas.is_empty() {
+                    eprintln!(
+                        "no personas found. Create ~/.prism/personas/<name>.toml to get started."
+                    );
+                } else {
+                    eprintln!("{:<20} {}", "NAME", "PATH");
+                    for (name, path) in &personas {
+                        eprintln!("{:<20} {}", name, path.display());
                     }
                 }
-                PersonasCmd::Show { name } => {
-                    let p = persona::load_persona(&name)?;
-                    println!("{}", toml::to_string_pretty(&p)?);
-                }
             }
-        }
+            PersonasCmd::Show { name } => {
+                let p = persona::load_persona(&name)?;
+                println!("{}", toml::to_string_pretty(&p)?);
+            }
+        },
         Commands::Models => {
             let config = Config::from_env()?;
             let client =
