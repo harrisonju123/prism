@@ -191,8 +191,9 @@ impl Session {
             if path.extension().map_or(false, |ext| ext == "json") {
                 match Self::load(&path) {
                     Ok(session) => {
-                        let task = if session.task.len() > 60 {
-                            format!("{}…", &session.task[..57])
+                        let task = if session.task.chars().count() > 20 {
+                            let s: String = session.task.chars().take(20).collect();
+                            format!("{s}…")
                         } else {
                             session.task.clone()
                         };

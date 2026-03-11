@@ -162,7 +162,7 @@ async fn run(cli: Cli) -> Result<()> {
             let mut config = Config::from_env()?;
 
             // Apply persona first (lowest priority), then CLI overrides
-            let effective_persona = persona_name.or_else(|| config.persona.clone());
+            let effective_persona = persona_name.or_else(|| config.session.persona.clone());
             if let Some(ref name) = effective_persona {
                 let p = persona::load_persona(name)
                     .map_err(|e| anyhow::anyhow!("failed to load persona '{}': {}", name, e))?;

@@ -182,6 +182,7 @@ impl SqliteStore {
         next_steps: Vec<String>,
     ) -> Result<AgentSession> {
         let now = now_rfc3339();
+        let mut tx = self.pool.begin().await?;
 
         // Find open session
         let session_row = sqlx::query(
@@ -193,7 +194,7 @@ impl SqliteStore {
         )
         .bind(workspace_id.to_string())
         .bind(name)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(|| Error::NotFound(format!("no open session for agent {name:?}")))?;
         let session_id: String = session_row.try_get("id")?;
@@ -211,7 +212,7 @@ impl SqliteStore {
         .bind(json_array_to_str(&files_touched))
         .bind(json_array_to_str(&next_steps))
         .bind(&session_id)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await?;
 
         // Set state=idle, clear current_thread_id on checkout
@@ -222,9 +223,10 @@ impl SqliteStore {
         .bind(&now)
         .bind(workspace_id.to_string())
         .bind(name)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
 
+        tx.commit().await?;
         row_to_agent_session(&row)
     }
 
@@ -298,14 +300,16 @@ impl SqliteStore {
         let now = now_rfc3339();
         let threshold = (chrono::Utc::now() - chrono::Duration::seconds(timeout_secs)).to_rfc3339();
 
-        // Find agents with stale heartbeats that aren't already dead
+        // Atomically mark stale agents as dead and return their names.
         let rows = sqlx::query(
-            "SELECT name FROM agents
-             WHERE workspace_id = $1
+            "UPDATE agents SET state = 'dead', updated_at = $1
+             WHERE workspace_id = $2
                AND state != 'dead'
                AND last_heartbeat IS NOT NULL
-               AND last_heartbeat < $2",
+               AND last_heartbeat < $3
+             RETURNING name",
         )
+        .bind(&now)
         .bind(workspace_id.to_string())
         .bind(&threshold)
         .fetch_all(&self.pool)
@@ -315,21 +319,6 @@ impl SqliteStore {
             .iter()
             .map(|r| r.try_get::<String, _>("name"))
             .collect::<std::result::Result<_, _>>()?;
-
-        if !names.is_empty() {
-            sqlx::query(
-                "UPDATE agents SET state = 'dead', updated_at = $1
-                 WHERE workspace_id = $2
-                   AND state != 'dead'
-                   AND last_heartbeat IS NOT NULL
-                   AND last_heartbeat < $3",
-            )
-            .bind(&now)
-            .bind(workspace_id.to_string())
-            .bind(&threshold)
-            .execute(&self.pool)
-            .await?;
-        }
 
         Ok(names)
     }

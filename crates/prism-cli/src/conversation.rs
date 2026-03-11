@@ -54,12 +54,14 @@ impl ConversationTree {
             Some(self.active_leaf)
         };
 
-        self.nodes.push(ConversationNode {
+        let node = ConversationNode {
             id,
             parent_id,
             message: msg,
             created_at: Utc::now().to_rfc3339(),
-        });
+        };
+        debug_assert_eq!(node.id, self.nodes.len() as u32, "node.id must equal its index in nodes vec");
+        self.nodes.push(node);
 
         self.next_id += 1;
         self.active_leaf = id;

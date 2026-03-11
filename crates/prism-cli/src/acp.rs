@@ -28,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use agent_client_protocol as acp;
 use anyhow::Result;
@@ -85,6 +86,8 @@ struct AcpSession {
     model: Option<String>,
     /// Working directory for this session (from Zed's project root)
     cwd: PathBuf,
+    /// When the session was created — used for deterministic LRU eviction
+    created_at: Instant,
 }
 
 // SAFETY: PrismAgent uses RefCell because the ACP Agent trait is !Send and runs
@@ -154,9 +157,15 @@ impl PrismAgent {
         .await;
     }
 
-    #[allow(clippy::await_holding_refcell_ref)]
     async fn build_system_message(&self, cwd: Option<&Path>) -> Message {
-        let memory_content = self.memory.borrow().load().await;
+        // Extract what load() needs synchronously so the RefCell borrow is dropped
+        // before the first .await (holding a RefCell borrow across an await is UB
+        // if anything else borrows memory on the same thread while suspended).
+        let (store, workspace_id) = {
+            let m = self.memory.borrow();
+            (m.store().cloned(), m.workspace_id())
+        };
+        let memory_content = MemoryManager::load_from(store.as_deref(), workspace_id).await;
         let skills_section = self.skill_registry.system_prompt_section();
         let cwd_section = cwd
             .map(|p| {
@@ -200,7 +209,7 @@ impl PrismAgent {
             if let Some(session) = sessions.get(session_id)
                 && session.allowed_tools.contains(tool_name)
             {
-                return ToolPermissionOutcome::AllowOnce;
+                return ToolPermissionOutcome::AllowSession;
             }
         }
 
@@ -286,6 +295,7 @@ impl PrismAgent {
                 allowed_tools: HashSet::new(),
                 model: None,
                 cwd: std::env::current_dir().unwrap_or_default(),
+                created_at: Instant::now(),
             });
 
         let tool_call_id = acp::ToolCallId::new("bridge_tc");
@@ -317,7 +327,14 @@ impl PrismAgent {
             return;
         }
         let excess = sessions.len() - max;
-        let keys_to_remove: Vec<String> = sessions.keys().take(excess).cloned().collect();
+        // Sort by created_at ascending so we evict the oldest sessions first
+        let mut ordered: Vec<(&String, Instant)> = sessions
+            .iter()
+            .map(|(k, v)| (k, v.created_at))
+            .collect();
+        ordered.sort_by_key(|(_, t)| *t);
+        let keys_to_remove: Vec<String> =
+            ordered.into_iter().take(excess).map(|(k, _)| k.clone()).collect();
         for key in keys_to_remove {
             sessions.remove(&key);
         }
@@ -748,6 +765,7 @@ impl acp::Agent for PrismAgent {
                 allowed_tools: HashSet::new(),
                 model: None,
                 cwd,
+                created_at: Instant::now(),
             },
         );
 
@@ -833,6 +851,7 @@ impl acp::Agent for PrismAgent {
                 allowed_tools: HashSet::new(),
                 model: Some(session.model),
                 cwd,
+                created_at: Instant::now(),
             },
         );
 

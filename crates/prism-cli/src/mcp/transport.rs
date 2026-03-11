@@ -26,7 +26,8 @@ impl StdioTransport {
             .envs(env)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
 
         let mut child = cmd
             .spawn()

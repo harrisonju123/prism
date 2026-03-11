@@ -40,30 +40,30 @@ impl Persona {
     /// Apply this persona's settings onto a Config, mutating it in place.
     pub fn apply(&self, config: &mut Config) {
         if let Some(ref sp) = self.system_prompt {
-            config.system_prompt = Some(sp.clone());
+            config.model.system_prompt = Some(sp.clone());
         }
         if let Some(ref m) = self.model {
-            config.prism_model = m.clone();
+            config.model.model = m.clone();
         }
         if let Some(t) = self.max_turns {
-            config.max_turns = t;
+            config.model.max_turns = t;
         }
         if let Some(c) = self.max_cost_usd {
-            config.max_cost_usd = Some(c);
+            config.model.max_cost_usd = Some(c);
         }
         if let Some(ref allowed) = self.allowed_tools {
-            config.allowed_tools = Some(allowed.clone());
+            config.session.allowed_tools = Some(allowed.clone());
         }
         if let Some(ref denied) = self.denied_tools {
             // Merge persona deny list with config deny list
             for tool in denied {
-                if !config.denied_tools.contains(tool) {
-                    config.denied_tools.push(tool.clone());
+                if !config.session.denied_tools.contains(tool) {
+                    config.session.denied_tools.push(tool.clone());
                 }
             }
         }
         if let Some(ref mode) = self.sandbox_mode {
-            config.sandbox_mode = SandboxMode::from_str(mode);
+            config.session.sandbox_mode = SandboxMode::from_str(mode);
         }
     }
 }
@@ -145,7 +145,7 @@ mod tests {
     #[test]
     fn persona_apply_overrides_model() {
         let mut config = Config::from_env().unwrap();
-        config.prism_model = "claude-haiku-4-5".to_string();
+        config.model.model = "claude-haiku-4-5".to_string();
 
         let persona = Persona {
             name: "test".to_string(),
@@ -160,14 +160,14 @@ mod tests {
         };
 
         persona.apply(&mut config);
-        assert_eq!(config.prism_model, "claude-opus-4-6");
-        assert_eq!(config.max_turns, 5);
+        assert_eq!(config.model.model, "claude-opus-4-6");
+        assert_eq!(config.model.max_turns, 5);
     }
 
     #[test]
     fn persona_merges_denied_tools() {
         let mut config = Config::from_env().unwrap();
-        config.denied_tools = vec!["bash".to_string()];
+        config.session.denied_tools = vec!["bash".to_string()];
 
         let persona = Persona {
             name: "test".to_string(),
@@ -182,7 +182,7 @@ mod tests {
         };
 
         persona.apply(&mut config);
-        assert!(config.denied_tools.contains(&"bash".to_string()));
-        assert!(config.denied_tools.contains(&"write_file".to_string()));
+        assert!(config.session.denied_tools.contains(&"bash".to_string()));
+        assert!(config.session.denied_tools.contains(&"write_file".to_string()));
     }
 }

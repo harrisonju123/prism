@@ -271,19 +271,22 @@ pub fn tool_definitions_filtered(config: &Config) -> Vec<Tool> {
 /// Check whether a named tool may be called under the current config.
 pub fn is_tool_allowed(name: &str, config: &Config) -> bool {
     // ReadOnly mode: block write tools
-    if config.sandbox_mode == SandboxMode::ReadOnly && WRITE_TOOLS.contains(&name) {
+    if config.session.sandbox_mode == SandboxMode::ReadOnly && WRITE_TOOLS.contains(&name) {
         return false;
     }
-    // Restricted mode: enforce allow/deny lists
-    if config.sandbox_mode == SandboxMode::Restricted {
-        if let Some(allowed) = &config.allowed_tools {
-            if !allowed.iter().any(|a| a == name) {
-                return false;
+    // Restricted mode: enforce allowlist — None means deny all (strictest interpretation)
+    if config.session.sandbox_mode == SandboxMode::Restricted {
+        match &config.session.allowed_tools {
+            Some(allowed) => {
+                if !allowed.iter().any(|a| a == name) {
+                    return false;
+                }
             }
+            None => return false,
         }
     }
     // Deny list always applies
-    if config.denied_tools.iter().any(|d| d == name) {
+    if config.session.denied_tools.iter().any(|d| d == name) {
         return false;
     }
     true
@@ -293,7 +296,7 @@ pub fn is_tool_allowed(name: &str, config: &Config) -> bool {
 pub fn is_path_denied(path: &str, config: &Config) -> bool {
     use globset::Glob;
     let path_norm = shellexpand::tilde(path).into_owned();
-    for pattern in &config.denied_paths {
+    for pattern in &config.session.denied_paths {
         let pat_norm = shellexpand::tilde(pattern).into_owned();
         if let Ok(glob) = Glob::new(&pat_norm) {
             let matcher = glob.compile_matcher();
@@ -306,11 +309,43 @@ pub fn is_path_denied(path: &str, config: &Config) -> bool {
 }
 
 /// Check whether a shell command is denied by the config.
+///
+/// Splits on shell operators (`&&`, `||`, `;`, `|`) and checks each segment so
+/// that chained or piped commands cannot bypass a prefix-only check.  Also
+/// strips leading `VAR=val` env assignments before matching, which prevents
+/// bypasses like `FOO=bar rm -rf /`.
 pub fn is_command_denied(cmd: &str, config: &Config) -> bool {
     let cmd_trimmed = cmd.trim();
-    for denied in &config.denied_commands {
-        if cmd_trimmed.starts_with(denied.trim()) {
+    // Check the full command string first
+    if check_single_command(cmd_trimmed, &config.session.denied_commands) {
+        return true;
+    }
+    // Split on shell operators and check each resulting segment
+    for segment in cmd_trimmed.split(&['&', '|', ';'][..]) {
+        let seg = segment.trim().trim_start_matches('(').trim();
+        // Strip leading env assignments (FOO=bar cmd) before checking
+        let effective = seg
+            .split_whitespace()
+            .skip_while(|w| w.contains('=') && !w.starts_with('-'))
+            .collect::<Vec<_>>()
+            .join(" ");
+        if check_single_command(&effective, &config.session.denied_commands) {
             return true;
+        }
+    }
+    false
+}
+
+fn check_single_command(cmd: &str, denied: &[String]) -> bool {
+    let cmd_trimmed = cmd.trim();
+    for d in denied {
+        let d_trimmed = d.trim();
+        if cmd_trimmed.starts_with(d_trimmed) {
+            // Require a word boundary after the denied prefix (space, tab, or exact match)
+            let rest = &cmd_trimmed[d_trimmed.len()..];
+            if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
+                return true;
+            }
         }
     }
     false
@@ -389,14 +424,32 @@ pub async fn dispatch(
         ));
     }
 
-    // Path-based permission for file tools
+    // Path-based permission checks — always use the resolved (absolute) path so
+    // that relative paths and `..` traversals cannot bypass glob patterns.
     if matches!(name, "read_file" | "write_file" | "edit_file") {
-        if let Some(path) = args["path"].as_str() {
-            if is_path_denied(path, config) {
+        if let Some(raw) = args["path"].as_str() {
+            let resolved = resolve_path(Some(raw), session_cwd);
+            if is_path_denied(&resolved, config) {
                 return ToolResult::Text(format!(
-                    "{{\"error\": \"access to path '{}' is denied by policy\"}}", path
+                    "{{\"error\": \"access to path '{}' is denied by policy\"}}", resolved
                 ));
             }
+        }
+    }
+    if name == "list_dir" {
+        let resolved = resolve_path(args["path"].as_str(), session_cwd);
+        if is_path_denied(&resolved, config) {
+            return ToolResult::Text(format!(
+                "{{\"error\": \"access to path '{}' is denied by policy\"}}", resolved
+            ));
+        }
+    }
+    if matches!(name, "glob_files" | "grep_files") {
+        let resolved = resolve_path(args["dir"].as_str(), session_cwd);
+        if is_path_denied(&resolved, config) {
+            return ToolResult::Text(format!(
+                "{{\"error\": \"access to path '{}' is denied by policy\"}}", resolved
+            ));
         }
     }
 

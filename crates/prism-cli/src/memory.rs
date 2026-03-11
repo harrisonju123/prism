@@ -30,10 +30,16 @@ impl MemoryManager {
 
     /// Load all memories as a formatted string for system prompt injection.
     pub async fn load(&self) -> String {
-        let Some(store) = &self.store else {
+        Self::load_from(self.store.as_deref(), self.workspace_id).await
+    }
+
+    /// Load memories without borrowing self — allows callers to release the
+    /// RefCell borrow before awaiting (avoids borrow-across-await).
+    pub async fn load_from(store: Option<&SqliteStore>, workspace_id: Option<Uuid>) -> String {
+        let Some(store) = store else {
             return String::new();
         };
-        let Some(ws_id) = self.workspace_id else {
+        let Some(ws_id) = workspace_id else {
             return String::new();
         };
 
@@ -247,10 +253,12 @@ pub async fn auto_extract_memories(
     saved
 }
 
-/// Simple hash for dedup keys (SipHash via DefaultHasher, not cryptographic).
+/// FNV-1a hash for stable dedup keys across Rust versions.
 fn dedup_hash(s: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    s.hash(&mut hasher);
-    hasher.finish()
+    let mut h: u64 = 0xcbf29ce484222325;
+    for byte in s.as_bytes() {
+        h ^= *byte as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
 }

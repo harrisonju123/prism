@@ -54,10 +54,20 @@ impl HookRunner {
                     }
                 },
                 Err(e) => {
-                    tracing::warn!(
-                        hook = hook.command,
-                        "pre-hook failed, treating as allow: {e}"
-                    );
+                    if hook.fail_open {
+                        tracing::warn!(
+                            hook = hook.command,
+                            "pre-hook failed, treating as allow: {e}"
+                        );
+                    } else {
+                        tracing::warn!(
+                            hook = hook.command,
+                            "pre-hook failed, blocking tool call (fail_open=false): {e}"
+                        );
+                        return PreToolAction::Deny {
+                            message: format!("hook error: {e}"),
+                        };
+                    }
                 }
             }
         }
@@ -188,6 +198,7 @@ mod tests {
             command: "echo".into(),
             tool_pattern: Some("bash".into()),
             timeout_secs: 5,
+            fail_open: true,
         };
         assert!(matches_tool(&hook, "bash"));
         assert!(!matches_tool(&hook, "read_file"));
@@ -199,6 +210,7 @@ mod tests {
             command: "echo".into(),
             tool_pattern: Some("write_*".into()),
             timeout_secs: 5,
+            fail_open: true,
         };
         assert!(matches_tool(&hook, "write_file"));
         assert!(matches_tool(&hook, "write_memory"));
@@ -211,6 +223,7 @@ mod tests {
             command: "echo".into(),
             tool_pattern: Some("*_file".into()),
             timeout_secs: 5,
+            fail_open: true,
         };
         assert!(matches_tool(&hook, "read_file"));
         assert!(matches_tool(&hook, "write_file"));
@@ -223,6 +236,7 @@ mod tests {
             command: "echo".into(),
             tool_pattern: None,
             timeout_secs: 5,
+            fail_open: true,
         };
         assert!(matches_tool(&hook, "anything"));
     }

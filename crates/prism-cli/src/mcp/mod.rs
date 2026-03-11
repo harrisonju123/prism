@@ -32,6 +32,13 @@ impl McpRegistry {
         let futures: Vec<_> = config
             .mcp_servers
             .iter()
+            .filter(|(name, _)| {
+                if name.contains(MCP_SEPARATOR) {
+                    tracing::warn!(server = %name, "MCP server name contains `__` separator — skipping to avoid tool name collision");
+                    return false;
+                }
+                true
+            })
             .map(|(name, entry)| async move {
                 match McpClient::connect(name, entry).await {
                     Ok(client) => Some((name.clone(), client)),

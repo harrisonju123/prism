@@ -216,6 +216,21 @@ impl PrismError {
             | PrismError::SerdeJson(_) => false,
         }
     }
+
+    /// True for errors where trying another provider makes sense.
+    /// Includes upstream 429s (provider-level rate limit) since exhaustion on one provider
+    /// does not mean all providers are at capacity.
+    /// Does NOT include `RateLimited`: that variant is a Prism-side key rate limit, so
+    /// failover to another provider using the same key will hit the same limit.
+    pub fn is_failover_eligible(&self) -> bool {
+        if self.is_retryable() {
+            return true;
+        }
+        match self {
+            PrismError::Provider(msg) => msg.contains("429"),
+            _ => false,
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, PrismError>;

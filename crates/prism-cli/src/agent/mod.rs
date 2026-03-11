@@ -124,6 +124,9 @@ pub struct Agent {
     background: BackgroundTaskManager,
     // Shared interrupt flag — set by ctrl-c handler (owned by REPL) or per-run handler
     pub interrupted: Arc<AtomicBool>,
+    // Counts ctrl-c presses within a single run; shared with the spawned signal task.
+    // Kept as a field so two-press kill logic persists correctly across REPL turns.
+    interrupt_count: Arc<AtomicU32>,
     /// Current thread name (from UH_THREAD env or handoff)
     current_thread: Option<String>,
     /// Count of write-tool denials while in plan mode
@@ -134,6 +137,8 @@ pub struct Agent {
     plan_thread_auto_created: bool,
     /// Paths mutated by write_file / edit_file during this session
     files_touched: HashSet<String>,
+    /// Cancels the previous run's ctrl-c listener task when a new run starts.
+    cancel_interrupt: Arc<AtomicBool>,
 }
 
 const UH_AGENT_NAME_ENV: &str = "UH_AGENT_NAME";
@@ -168,11 +173,13 @@ impl Agent {
             compressor,
             background: BackgroundTaskManager::new(),
             interrupted: Arc::new(AtomicBool::new(false)),
+            interrupt_count: Arc::new(AtomicU32::new(0)),
             current_thread,
             plan_mode_violations: 0,
             plan_file,
             plan_thread_auto_created: false,
             files_touched: HashSet::new(),
+            cancel_interrupt: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -201,11 +208,13 @@ impl Agent {
             compressor,
             background: BackgroundTaskManager::new(),
             interrupted: Arc::new(AtomicBool::new(false)),
+            interrupt_count: Arc::new(AtomicU32::new(0)),
             current_thread,
             plan_mode_violations: 0,
             plan_file,
             plan_thread_auto_created: false,
             files_touched: HashSet::new(),
+            cancel_interrupt: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -339,16 +348,32 @@ impl Agent {
     }
 
     async fn inner_run(&mut self) -> Result<()> {
+        let result = self.inner_run_impl().await;
+        // Always tear down plan mode guardrails, even on early return or error.
+        if self.permission_gate.mode() == PermissionMode::Plan && self.plan_file.is_some() {
+            self.teardown_plan_mode_guardrails().await;
+        }
+        result
+    }
+
+    async fn inner_run_impl(&mut self) -> Result<()> {
         // Reset per-run state
         self.interrupted.store(false, Ordering::SeqCst);
         self.plan_mode_violations = 0;
-        let interrupt_count = Arc::new(AtomicU32::new(0));
-        let flag_count = interrupt_count.clone();
+        self.interrupt_count.store(0, Ordering::SeqCst);
+        // Signal the previous run's ctrl-c task to exit, then create a fresh token for this run.
+        self.cancel_interrupt.store(true, Ordering::SeqCst);
+        self.cancel_interrupt = Arc::new(AtomicBool::new(false));
+        let flag_count = self.interrupt_count.clone();
         let flag_interrupted = self.interrupted.clone();
-        // Try to install ctrl-c handler; it may fail if one is already installed (REPL mode).
+        let cancel = self.cancel_interrupt.clone();
         tokio::spawn(async move {
             loop {
                 let _ = tokio::signal::ctrl_c().await;
+                // Exit if this run has already finished (REPL moved on to next turn).
+                if cancel.load(Ordering::SeqCst) {
+                    break;
+                }
                 let prev = flag_count.fetch_add(1, Ordering::SeqCst);
                 flag_interrupted.store(true, Ordering::SeqCst);
                 if prev == 0 {
@@ -390,7 +415,9 @@ impl Agent {
                     &task.description,
                     task.elapsed_secs,
                 );
-                total_cost_usd += task.result.cost;
+                if task.result.cost.is_finite() {
+                    total_cost_usd += task.result.cost;
+                }
                 let notification = format!(
                     "[Background task completed] task_id={} description=\"{}\" elapsed={:.1}s\n\
                      Result: {}",
@@ -489,7 +516,7 @@ impl Agent {
             }
 
             // Print per-turn cost summary
-            if self.config.show_cost && (turn_prompt > 0 || turn_completion > 0) {
+            if self.config.session.show_cost && (turn_prompt > 0 || turn_completion > 0) {
                 eprintln!(
                     "\x1b[2m[turn {} · {} in / {} out · ~${:.4} · session ${:.4}]\x1b[0m",
                     turns, turn_prompt, turn_completion, turn_cost, total_cost_usd
@@ -657,8 +684,15 @@ impl Agent {
                     let max_tool_output = self.config.model.max_tool_output;
                     // Clone config for sandbox checks inside spawned tasks
                     let task_config = self.config.clone();
+                    // Capture cwd once so spawned tasks can resolve relative paths correctly.
+                    let run_cwd: std::path::PathBuf =
+                        std::env::current_dir().unwrap_or_default();
 
                     let mut joinset: JoinSet<ToolOutcome> = JoinSet::new();
+                    // Track (index, id) for every call spawned into the JoinSet so we can
+                    // synthesize error outcomes for any tasks that panic (their ID would
+                    // otherwise be lost, leaving the model without a tool response).
+                    let mut joinset_pending: Vec<(usize, String)> = Vec::new();
 
                     let mut pending_skill_messages: Vec<String> = Vec::new();
 
@@ -733,7 +767,9 @@ impl Agent {
                                 let completed = self.background.take_pending();
                                 // Accumulate costs from completed tasks
                                 for task in &completed {
-                                    total_cost_usd += task.result.cost;
+                                    if task.result.cost.is_finite() {
+                                        total_cost_usd += task.result.cost;
+                                    }
                                 }
                                 let active: Vec<serde_json::Value> = self
                                     .background
@@ -835,6 +871,7 @@ impl Agent {
                                     let url = gateway_url.clone();
                                     let key = gateway_key.clone();
                                     let spawn_cfg = spawn::SpawnConfig::from_args(&args, task_str);
+                                    joinset_pending.push((index, id.clone()));
                                     joinset.spawn(async move {
                                         let t0 = std::time::Instant::now();
                                         let result =
@@ -865,10 +902,12 @@ impl Agent {
                                 let id = ptc.id;
                                 let mcp = mcp_arc.clone();
                                 let cfg = task_config.clone();
+                                let cwd = run_cwd.clone();
+                                joinset_pending.push((index, id.clone()));
                                 joinset.spawn(async move {
                                     let t0 = std::time::Instant::now();
                                     let tool_result =
-                                        tools::dispatch(&name, &args, &cfg, None, mcp.as_deref()).await;
+                                        tools::dispatch(&name, &args, &cfg, Some(&cwd), mcp.as_deref()).await;
                                     let result = match tool_result {
                                         tools::ToolResult::Text(s) => s,
                                         tools::ToolResult::Multimodal(v) => v.to_string(),
@@ -889,11 +928,25 @@ impl Agent {
                     // Collect all parallel results
                     while let Some(join_result) = joinset.join_next().await {
                         match join_result {
-                            Ok(outcome) => outcomes.push(outcome),
+                            Ok(outcome) => {
+                                // Remove from pending so we know this ID was accounted for.
+                                let idx = outcome.index();
+                                joinset_pending.retain(|(i, _)| *i != idx);
+                                outcomes.push(outcome);
+                            }
                             Err(e) => {
                                 tracing::warn!("tool task panicked: {e}");
                             }
                         }
+                    }
+                    // Any IDs still in joinset_pending belong to tasks that panicked.
+                    // Push error outcomes so the model receives a tool response for each.
+                    for (index, id) in joinset_pending {
+                        outcomes.push(ToolOutcome::Denied {
+                            index,
+                            id,
+                            message: "tool task panicked; result unavailable".to_string(),
+                        });
                     }
 
                     // --- Phase 3: Sequential assembly — sort, post-hooks, push messages ---
@@ -1043,11 +1096,6 @@ impl Agent {
                     tracing::debug!(count = extracted.len(), "auto-extracted memories from session");
                 }
             }
-        }
-
-        // Clean up plan mode guardrails before returning
-        if self.permission_gate.mode() == PermissionMode::Plan && self.plan_file.is_some() {
-            self.teardown_plan_mode_guardrails().await;
         }
 
         if stop_reason.is_none() {

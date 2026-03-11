@@ -17,10 +17,18 @@ pub struct HookEntry {
     pub tool_pattern: Option<String>,
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
+    /// When true (default), hook errors are treated as Allow.
+    /// When false, hook errors are treated as Deny (fail-closed).
+    #[serde(default = "default_true")]
+    pub fail_open: bool,
 }
 
 fn default_timeout() -> u64 {
     10
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Action returned by a pre-tool-use hook.

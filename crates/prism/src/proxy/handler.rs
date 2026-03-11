@@ -547,8 +547,15 @@ pub async fn chat_completions(
 
     let retry_config = &state.config.retry;
 
+    let cb_config = &state.config.routing.circuit_breaker;
+
     // Circuit breaker check for primary provider
-    let primary_cb = get_or_create_cb(&state.circuit_breakers, &provider_name);
+    let primary_cb = get_or_create_cb(
+        &state.circuit_breakers,
+        &provider_name,
+        cb_config.failure_threshold,
+        cb_config.open_duration_secs,
+    );
     if let Err(retry_after_secs) = primary_cb.check() {
         tracing::warn!(
             provider = %provider_name,
@@ -561,18 +568,90 @@ pub async fn chat_completions(
         });
     }
 
+    // Tracks which CB actually served the stream; replaced by the winning fallback CB
+    // so the post-stream spawn credits the correct provider.
+    let mut serving_cb = primary_cb.clone();
+
     let provider_result = if request.stream {
         let result = provider.chat_completion(&request, &model_id).await;
         match result {
             Ok(resp) => {
-                primary_cb.record_success();
+                // Success is recorded after stream drains (in the spawn below), not here,
+                // because the connection may still fail mid-stream.
                 resp
             }
-            Err(e) => {
-                if e.is_provider_server_error() {
+            Err(primary_err) => {
+                if primary_err.is_provider_server_error() {
                     primary_cb.record_failure();
                 }
-                return Err(e);
+                // Attempt streaming failover if there are other candidates.
+                if primary_err.is_failover_eligible() && all_candidates.len() > 1 {
+                    tracing::warn!(
+                        provider = %provider_name,
+                        error = %primary_err,
+                        "streaming primary failed, trying fallbacks"
+                    );
+                    let mut last_err = primary_err;
+                    let mut fallback_stream = None;
+                    for (fb_provider_name, fb_model_id) in &all_candidates[1..] {
+                        if let Some(ref ht) = state.health_tracker {
+                            if !ht.is_available(fb_provider_name) {
+                                continue;
+                            }
+                        }
+                        let fb_cb = get_or_create_cb(
+                            &state.circuit_breakers,
+                            fb_provider_name,
+                            cb_config.failure_threshold,
+                            cb_config.open_duration_secs,
+                        );
+                        if let Err(retry_after_secs) = fb_cb.check() {
+                            tracing::warn!(
+                                fallback_provider = %fb_provider_name,
+                                retry_after_secs,
+                                "streaming fallback circuit breaker open, skipping"
+                            );
+                            last_err = PrismError::CircuitOpen {
+                                provider: fb_provider_name.clone(),
+                                retry_after_secs,
+                            };
+                            continue;
+                        }
+                        let fb_provider = match state.providers.get(fb_provider_name) {
+                            Ok(p) => p,
+                            Err(_) => continue,
+                        };
+                        match fb_provider.chat_completion(&request, fb_model_id).await {
+                            Ok(resp) => {
+                                fb_cb.record_success();
+                                if let Some(ref ht) = state.health_tracker {
+                                    ht.record_success(fb_provider_name);
+                                }
+                                tracing::info!(
+                                    fallback_provider = %fb_provider_name,
+                                    "streaming failover succeeded"
+                                );
+                                provider_name = fb_provider_name.clone();
+                                // This fallback CB served the stream; credit it, not the primary.
+                                serving_cb = fb_cb;
+                                fallback_stream = Some(resp);
+                                break;
+                            }
+                            Err(e) => {
+                                if e.is_provider_server_error() {
+                                    fb_cb.record_failure();
+                                }
+                                if let Some(ref ht) = state.health_tracker {
+                                    ht.record_failure(fb_provider_name, e.to_string());
+                                }
+                                last_err = e;
+                            }
+                        }
+                    }
+                    fallback_stream.ok_or(last_err)?
+                } else {
+                    return Err(primary_err);
+                }
             }
         }
     } else {
@@ -589,7 +668,7 @@ pub async fn chat_completions(
                 primary_cb.record_success();
                 resp
             }
-            Err(primary_err) if primary_err.is_retryable() && !fallback_providers.is_empty() => {
+            Err(primary_err) if primary_err.is_failover_eligible() && all_candidates.len() > 1 => {
                 if primary_err.is_provider_server_error() {
                     primary_cb.record_failure();
                 }
@@ -603,7 +682,7 @@ pub async fn chat_completions(
                 let mut succeeded = false;
                 let mut fallback_result = None;
 
-                for (fb_provider_name, fb_model_id) in &fallback_providers {
+                for (fb_provider_name, fb_model_id) in &all_candidates[1..] {
                     // Skip degraded providers
                     if let Some(ref ht) = state.health_tracker {
                         if !ht.is_available(fb_provider_name) {
@@ -616,7 +695,12 @@ pub async fn chat_completions(
                     }
 
                     // Circuit breaker check for fallback provider
-                    let fb_cb = get_or_create_cb(&state.circuit_breakers, fb_provider_name);
+                    let fb_cb = get_or_create_cb(
+                        &state.circuit_breakers,
+                        fb_provider_name,
+                        cb_config.failure_threshold,
+                        cb_config.open_duration_secs,
+                    );
                     if let Err(retry_after_secs) = fb_cb.check() {
                         tracing::warn!(
                             fallback_provider = %fb_provider_name,
@@ -763,9 +847,12 @@ pub async fn chat_completions(
                 // Accumulate session spend for per-key hard cap
                 *state.session_spend.entry(ctx.key_id).or_insert(0.0) += event.estimated_cost_usd;
                 if state.session_spend.len() > 10_000 {
+                    // Evict low-spend entries to bound memory. Spend tracking is best-effort,
+                    // so dropping keys that have accumulated less than $0.01 is acceptable.
+                    state.session_spend.retain(|_, v| *v >= 0.01);
                     tracing::warn!(
                         len = state.session_spend.len(),
-                        "session_spend map exceeds 10,000 entries — possible key churn"
+                        "session_spend map exceeded 10,000 entries — evicted low-spend keys"
                     );
                 }
             }
@@ -876,6 +963,7 @@ pub async fn chat_completions(
             let session_cost_usd = state.session_cost_usd.clone();
             let session_spend = state.session_spend.clone();
             let request_model_for_headers = request_model.clone();
+            let primary_cb_for_stream = serving_cb.clone();
 
             // Spawn a task to capture the final result after stream completes
             tokio::spawn(async move {
@@ -905,6 +993,12 @@ pub async fn chat_completions(
                     {
                         let cache_key = ResponseCache::cache_key(&request_clone);
                         cache.insert(cache_key, reconstructed).await;
+                    }
+
+                    // Record CB success only when usage data is present, confirming
+                    // the stream completed and was not just an empty/error response.
+                    if result.usage.is_some() {
+                        primary_cb_for_stream.record_success();
                     }
 
                     let usage = result.usage.unwrap_or_default();
@@ -952,9 +1046,12 @@ pub async fn chat_completions(
                         // Accumulate session spend for per-key hard cap
                         *session_spend.entry(ctx.key_id).or_insert(0.0) += event.estimated_cost_usd;
                         if session_spend.len() > 10_000 {
+                            // Evict low-spend entries to bound memory. Spend tracking is best-effort,
+                            // so dropping keys that have accumulated less than $0.01 is acceptable.
+                            session_spend.retain(|_, v| *v >= 0.01);
                             tracing::warn!(
                                 len = session_spend.len(),
-                                "session_spend map exceeds 10,000 entries — possible key churn"
+                                "session_spend map exceeded 10,000 entries — evicted low-spend keys"
                             );
                         }
                     }

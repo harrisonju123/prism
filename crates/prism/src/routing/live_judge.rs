@@ -7,7 +7,7 @@ use crate::benchmark::judge::Judge;
 use crate::config::Config;
 use crate::providers::ProviderRegistry;
 use crate::routing::FitnessCache;
-use crate::types::{Message, TaskType};
+use crate::types::{Message, MessageRole, TaskType};
 
 /// A sampled completion row read from ClickHouse inference_events.
 struct LiveSample {
@@ -244,7 +244,7 @@ impl LiveJudgeTask {
         // Note: This produces a rough quality score from the judge model's priors.
         // The key value is the cost/latency update from real traffic.
         let synthetic_messages = vec![Message {
-            role: "user".to_string(),
+            role: MessageRole::User,
             content: Some(serde_json::Value::String(format!(
                 "Task type: {}. Completion hash: {}. Rate the expected quality.",
                 sample.task_type.map_or("unknown", |_| "known"),

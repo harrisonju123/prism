@@ -66,7 +66,7 @@ pub fn build(state: Arc<AppState>) -> Router {
 
     // --- Health routes (no auth) ---
     let health_routes = Router::new()
-        .route("/health", get(api::health::health_with_state))
+        .route("/health", get(api::health::health))
         .route("/health/live", get(api::health::liveness))
         .route("/health/ready", get(api::health::readiness))
         .route("/health/providers", get(api::health::provider_health))

@@ -3,7 +3,7 @@ use serde_json::Value;
 
 /// Estimate token count via character heuristic (4 chars ≈ 1 token).
 pub fn estimate_tokens(text: &str) -> u32 {
-    (text.len() / 4).max(1) as u32
+    (text.len() / 4) as u32
 }
 
 fn message_text(msg: &Message) -> String {
@@ -165,16 +165,12 @@ fn compress_tool_output(
                 return None;
             }
             let omitted = total - keep;
-            let mut out = lines[..head_lines].to_vec();
-            out.push(&"");
             let marker = format!("[... {omitted} lines truncated by gateway ...]");
-            // We can't push a &str from a local String easily, so build the full string directly.
             let mut result = lines[..head_lines].join("\n");
             result.push('\n');
             result.push_str(&marker);
             result.push('\n');
             result.push_str(&lines[total - tail_lines..].join("\n"));
-            drop(out);
             Some(Value::String(result))
         }
         Value::Array(arr) => {
@@ -461,7 +457,7 @@ mod tests {
     fn test_estimate_tokens() {
         assert_eq!(estimate_tokens("hello"), 1); // 5/4 = 1
         assert_eq!(estimate_tokens("hello world"), 2); // 11/4 = 2
-        assert_eq!(estimate_tokens(""), 1); // max(0,1) = 1
+        assert_eq!(estimate_tokens(""), 0); // 0/4 = 0
     }
 
     #[test]
