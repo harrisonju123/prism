@@ -41,6 +41,46 @@ fn normalize_path(path: &str) -> String {
     path.to_string()
 }
 
+/// Tracks consecutive read-only turns and emits a convergence nudge when the threshold is reached.
+struct ExplorationBudget {
+    consecutive_readonly_turns: u32,
+    threshold: u32,
+    nudged: bool,
+}
+
+impl ExplorationBudget {
+    fn new(threshold: u32) -> Self {
+        Self { consecutive_readonly_turns: 0, threshold, nudged: false }
+    }
+
+    /// Record a turn. Returns `Some(nudge message)` if the threshold is reached for the first time.
+    /// Resets when a write or substantive text turn occurs.
+    fn record_turn(&mut self, all_readonly: bool, had_substantive_text: bool) -> Option<String> {
+        if self.threshold == 0 {
+            return None; // disabled
+        }
+
+        if all_readonly && !had_substantive_text {
+            self.consecutive_readonly_turns += 1;
+        } else {
+            self.consecutive_readonly_turns = 0;
+            self.nudged = false;
+        }
+
+        if self.consecutive_readonly_turns >= self.threshold && !self.nudged {
+            self.nudged = true;
+            Some(format!(
+                "[System] You have made {} consecutive exploration turns without proposing an approach. \
+                 Summarize what you have learned so far and either propose a specific implementation plan \
+                 or explain what specific information is still missing.",
+                self.consecutive_readonly_turns
+            ))
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FinishReason {
     Stop,
@@ -398,6 +438,7 @@ impl Agent {
         let model_name = self.config.model.model.clone();
         let mut stop_reason: Option<AgentStopReason> = None;
         let tool_defs = tools::all_tool_definitions(self.mcp_registry.as_deref());
+        let mut exploration_budget = ExplorationBudget::new(self.config.model.exploration_nudge_turns);
 
         for _turn in 0..self.config.model.max_turns {
             if self.interrupted.load(Ordering::Relaxed) {
@@ -996,6 +1037,12 @@ impl Agent {
                     // --- Phase 3: Sequential assembly — sort, post-hooks, push messages ---
                     outcomes.sort_by_key(|o| o.index());
 
+                    // Classify turn before consuming outcomes (needed for exploration budget)
+                    let turn_all_readonly = outcomes.iter().all(|o| match o {
+                        ToolOutcome::Result { name, .. } => is_read_only(name),
+                        ToolOutcome::Denied { .. } => true,
+                    });
+
                     let mut turn_files: Vec<String> = Vec::new();
 
                     for outcome in outcomes {
@@ -1046,8 +1093,8 @@ impl Agent {
                                     && let Some(path) = args["path"].as_str()
                                 {
                                     let normed = normalize_path(path);
-                                    turn_files.push(normed.clone());
-                                    self.files_touched.insert(normed);
+                                    self.files_touched.insert(normed.clone());
+                                    turn_files.push(normed);
                                 }
                             }
                         }
@@ -1073,6 +1120,16 @@ impl Agent {
                             self.permission_gate.renderer().compile_check(&msg);
                             self.session.push_message(common::user_message(msg));
                         }
+                    }
+
+                    // Exploration budget: nudge after too many consecutive read-only turns
+                    let had_substantive_text = content_buf.len() > 100;
+                    if let Some(nudge) =
+                        exploration_budget.record_turn(turn_all_readonly, had_substantive_text)
+                    {
+                        tracing::info!("exploration budget nudge triggered");
+                        self.permission_gate.renderer().exploration_nudge();
+                        self.session.push_message(common::user_message(nudge));
                     }
                 }
             }
@@ -1632,5 +1689,56 @@ mod tests {
     #[test]
     fn normalize_path_keeps_outside_paths() {
         assert_eq!(normalize_path("/tmp/other/file.rs"), "/tmp/other/file.rs");
+    }
+
+    #[test]
+    fn exploration_budget_fires_at_threshold() {
+        let mut budget = ExplorationBudget::new(3);
+        assert!(budget.record_turn(true, false).is_none());
+        assert!(budget.record_turn(true, false).is_none());
+        let nudge = budget.record_turn(true, false);
+        assert!(nudge.is_some());
+        assert!(nudge.unwrap().contains("3 consecutive"));
+    }
+
+    #[test]
+    fn exploration_budget_fires_only_once_per_streak() {
+        let mut budget = ExplorationBudget::new(2);
+        budget.record_turn(true, false);
+        let first = budget.record_turn(true, false);
+        assert!(first.is_some());
+        // Fourth read-only turn — already nudged, should not fire again
+        let second = budget.record_turn(true, false);
+        assert!(second.is_none());
+    }
+
+    #[test]
+    fn exploration_budget_resets_on_write_turn() {
+        let mut budget = ExplorationBudget::new(2);
+        budget.record_turn(true, false);
+        budget.record_turn(true, false); // fires nudge
+        // Write turn resets the streak
+        budget.record_turn(false, false);
+        assert!(budget.record_turn(true, false).is_none());
+        // Fires again after a full new streak
+        let nudge = budget.record_turn(true, false);
+        assert!(nudge.is_some());
+    }
+
+    #[test]
+    fn exploration_budget_disabled_when_threshold_zero() {
+        let mut budget = ExplorationBudget::new(0);
+        for _ in 0..20 {
+            assert!(budget.record_turn(true, false).is_none());
+        }
+    }
+
+    #[test]
+    fn exploration_budget_resets_on_substantive_text() {
+        let mut budget = ExplorationBudget::new(2);
+        budget.record_turn(true, false);
+        // Substantive text output counts as a non-exploration turn
+        budget.record_turn(true, true);
+        assert!(budget.record_turn(true, false).is_none());
     }
 }

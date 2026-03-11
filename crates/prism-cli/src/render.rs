@@ -252,6 +252,18 @@ impl Renderer {
             eprintln!("\n[interrupt] Ctrl+C — stopping");
         }
     }
+
+    pub fn exploration_nudge(&self) {
+        if self.colored {
+            eprintln!(
+                "{}[exploration nudge]{}",
+                SetForegroundColor(Color::Yellow),
+                ResetColor,
+            );
+        } else {
+            eprintln!("[exploration nudge]");
+        }
+    }
 }
 
 #[cfg(test)]

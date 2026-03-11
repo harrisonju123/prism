@@ -49,6 +49,8 @@ pub struct ModelConfig {
     pub max_cost_usd: Option<f64>,
     pub max_tool_output: usize,
     pub system_prompt: Option<String>,
+    /// Inject a convergence nudge after this many consecutive read-only turns. 0 = disabled.
+    pub exploration_nudge_turns: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +133,11 @@ impl Config {
 
         let system_prompt = std::env::var("PRISM_SYSTEM_PROMPT").ok();
 
+        let exploration_nudge_turns = std::env::var("PRISM_EXPLORATION_NUDGE_TURNS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(4);
+
         let sessions_dir = std::env::var("PRISM_SESSIONS_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| prism_home().join("sessions"));
@@ -207,6 +214,7 @@ impl Config {
                 max_cost_usd,
                 max_tool_output,
                 system_prompt,
+                exploration_nudge_turns,
             },
             session: SessionConfig {
                 sessions_dir,

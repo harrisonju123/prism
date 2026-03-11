@@ -705,7 +705,7 @@ impl PrismAgent {
                             Some(BuiltinTool::WriteFile | BuiltinTool::EditFile)
                         ) {
                             if let Some(path) = args["path"].as_str() {
-                                turn_files.push(path.to_string());
+                                turn_files.push(path.to_owned());
                             }
                         }
 
@@ -726,6 +726,8 @@ impl PrismAgent {
                         .await
                         {
                             tracing::info!(compile_check = %msg, "post-turn compile check");
+                            // Surface to user via ACP before injecting into LLM context
+                            self.send_text_chunk(session_id, &format!("\n{msg}")).await;
                             messages.push(common::user_message(msg));
                         }
                     }

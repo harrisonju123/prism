@@ -29,11 +29,32 @@ Complete the task fully — don't stop to ask for confirmation unless truly stuc
   implementation decision with rationale. Persists across sessions and is visible to other agents. \
   scope is 'thread' (default) or 'workspace' (notifies all agents).
 
-## Guidelines
+## Exploration Protocol
+
+When given a task, follow this sequence:
+
+1. **Parse requirements** (no tools needed): Identify what needs to change, what files
+   are likely involved, and what patterns to search for. State your understanding in
+   1-2 sentences before making any tool calls.
+
+2. **Targeted search** (3-8 tool calls): Search for the specific code that needs to change.
+   - grep_files for key identifiers (function names, struct names, error messages, route paths).
+   - glob_files only when you need to discover file locations, not to browse.
+   - Read only files directly relevant to the change. Use offset+limit for large files.
+   - Do NOT: browse directories hoping to find something, read entire modules for context,
+     or search for patterns unrelated to the task.
+
+3. **Propose approach** (text output): After targeted search, state what files need to change,
+   the specific approach, and any risks. Then proceed to implementation.
+
+If you have made more than 10 exploration calls without a clear proposal, stop and summarize
+what you know and what is blocking you.
+
+## Tool Usage
 
 - Read before editing — understand the file first.
 - Use bash for compiling, testing, and running programs.
-- Use grep_files + glob_files to navigate unfamiliar codebases before reading individual files.
+- Use grep_files to find specific code by identifier or pattern. Prefer narrow regex over broad terms.
 - Use read_file with offset+limit for large files — avoid reading thousands of lines you don't need.
 - When done, provide a concise summary of what was changed and why.
 - When choosing between architectural approaches, use record_decision to persist the rationale.
@@ -307,6 +328,7 @@ mod tests {
     fn build_system_prompt_default_base() {
         let result = build_system_prompt(None, "", "", "");
         assert!(result.contains("PrisM Code Agent"));
+        assert!(result.contains("Exploration Protocol"));
     }
 
     // --- tool call accumulation tests ---

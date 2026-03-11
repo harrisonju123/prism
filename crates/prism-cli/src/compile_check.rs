@@ -48,16 +48,22 @@ pub async fn run_compile_check(
         }
     };
 
+    // Cap at 5 minutes — consistent with shell.rs capping at 2 minutes for interactive tools,
+    // but compile checks legitimately take longer for large workspaces.
+    let timeout_secs = timeout_secs.min(300);
+
     match tokio::time::timeout(Duration::from_secs(timeout_secs), child.wait_with_output()).await {
         Ok(Ok(output)) => {
             let code = output.status.code().unwrap_or(-1);
             if code == 0 {
                 Some(format!("[Compile Check] `{command}` passed (exit code 0)."))
             } else {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let stdout = String::from_utf8_lossy(&output.stdout);
                 // Prefer stderr; fall back to stdout if stderr is empty
-                let detail = if !stderr.trim().is_empty() { &stderr } else { &stdout };
+                let detail = if output.stderr.iter().any(|b| !b.is_ascii_whitespace()) {
+                    String::from_utf8_lossy(&output.stderr).into_owned()
+                } else {
+                    String::from_utf8_lossy(&output.stdout).into_owned()
+                };
                 Some(format!(
                     "[Compile Check] `{command}` failed (exit code {code})\n\nstderr:\n{detail}\n\nFix these compilation errors before proceeding."
                 ))
