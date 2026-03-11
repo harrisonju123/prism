@@ -1,11 +1,27 @@
+use axum::response::sse::Event;
 use bytes::Bytes;
 use futures::Stream;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use crate::types::{ChatCompletionChunk, PrismStreamError, Usage};
+
+/// Build an SSE error event from a stream error. Used by both OpenAI and
+/// Anthropic handlers to surface upstream failures to the client.
+pub fn stream_error_event(e: &PrismStreamError) -> Event {
+    tracing::warn!(error = %e, "upstream provider stream error, sending error event to client");
+    let error_payload = serde_json::json!({
+        "error": {
+            "message": format!("upstream stream error: {e}"),
+            "type": "stream_error",
+        }
+    });
+    Event::default()
+        .event("error")
+        .data(error_payload.to_string())
+}
 
 /// Wraps a provider's byte stream, relays SSE chunks to the client,
 /// and extracts the final usage from the stream.
@@ -29,19 +45,48 @@ impl StreamRelay {
     /// Returns (StreamRelay for axum body, oneshot receiver for final result).
     pub fn start(
         mut source: Pin<Box<dyn Stream<Item = Result<Bytes, PrismStreamError>> + Send>>,
+        idle_timeout: Duration,
     ) -> (Self, tokio::sync::oneshot::Receiver<StreamResult>) {
         let (tx, rx) = mpsc::channel::<Result<Bytes, PrismStreamError>>(64);
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
 
         tokio::spawn(async move {
             use futures::StreamExt;
+            use tokio::time::sleep;
 
             let mut result = StreamResult::default();
             let mut buffer = String::new();
             let stream_start = Instant::now();
             let mut first_content_seen = false;
 
-            while let Some(chunk_result) = source.next().await {
+            // Single sleep future, reset on each chunk — avoids allocating a
+            // new timer per iteration.
+            let idle_sleep = sleep(idle_timeout);
+            tokio::pin!(idle_sleep);
+
+            loop {
+                let chunk_result = tokio::select! {
+                    maybe_chunk = source.next() => {
+                        match maybe_chunk {
+                            Some(chunk) => chunk,
+                            None => break, // stream ended naturally
+                        }
+                    }
+                    _ = &mut idle_sleep => {
+                        tracing::warn!(
+                            idle_timeout_secs = idle_timeout.as_secs(),
+                            "provider stream idle timeout, terminating"
+                        );
+                        let _ = tx
+                            .send(Err(PrismStreamError::Other(
+                                "provider stream idle timeout".into(),
+                            )))
+                            .await;
+                        break;
+                    }
+                };
+                // Reset idle deadline after each successful receive
+                idle_sleep.as_mut().reset(tokio::time::Instant::now() + idle_timeout);
                 match chunk_result {
                     Ok(bytes) => {
                         // Forward raw bytes to client
@@ -133,6 +178,8 @@ mod tests {
     use futures::stream;
     use serde_json::json;
 
+    const TEST_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
     /// Helper: build an SSE data line from a ChatCompletionChunk JSON value.
     fn sse_line(data: &serde_json::Value) -> Bytes {
         Bytes::from(format!("data: {}\n\n", data))
@@ -182,7 +229,7 @@ mod tests {
             sse_line(&make_chunk("gpt-4o", None, Some(usage_json))),
         ];
 
-        let (_relay, result_rx) = StreamRelay::start(mock_stream(chunks));
+        let (_relay, result_rx) = StreamRelay::start(mock_stream(chunks), TEST_IDLE_TIMEOUT);
         let result = result_rx.await.unwrap();
 
         let usage = result.usage.unwrap();
@@ -199,7 +246,7 @@ mod tests {
             sse_line(&make_chunk("gpt-4o", Some("world!"), None)),
         ];
 
-        let (_relay, result_rx) = StreamRelay::start(mock_stream(chunks));
+        let (_relay, result_rx) = StreamRelay::start(mock_stream(chunks), TEST_IDLE_TIMEOUT);
         let result = result_rx.await.unwrap();
 
         assert_eq!(result.completion_text, "Hello, world!");
@@ -212,7 +259,7 @@ mod tests {
             sse_line(&make_chunk("gpt-4o-2024-05-13-v2", Some("b"), None)),
         ];
 
-        let (_relay, result_rx) = StreamRelay::start(mock_stream(chunks));
+        let (_relay, result_rx) = StreamRelay::start(mock_stream(chunks), TEST_IDLE_TIMEOUT);
         let result = result_rx.await.unwrap();
 
         // Model should be captured from the first chunk only
@@ -226,7 +273,7 @@ mod tests {
             Bytes::from("data: [DONE]\n\n"),
         ];
 
-        let (_relay, result_rx) = StreamRelay::start(mock_stream(chunks));
+        let (_relay, result_rx) = StreamRelay::start(mock_stream(chunks), TEST_IDLE_TIMEOUT);
         let result = result_rx.await.unwrap();
 
         // Should complete without panicking and have accumulated text
@@ -248,12 +295,48 @@ mod tests {
             sse_line(&make_chunk("gpt-4o", Some("Hello"), None)),
         ];
 
-        let (_relay, result_rx) = StreamRelay::start(mock_stream(chunks));
+        let (_relay, result_rx) = StreamRelay::start(mock_stream(chunks), TEST_IDLE_TIMEOUT);
         let result = result_rx.await.unwrap();
 
         // TTFT should be set (non-None) once the first content chunk arrives
         assert!(result.ttft_ms.is_some());
         // The value should be small since we're in a test (likely < 100ms)
         assert!(result.ttft_ms.unwrap() < 1000);
+    }
+
+    #[tokio::test]
+    async fn test_idle_timeout_sends_error() {
+        // Stream that sends one chunk then hangs forever
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, PrismStreamError>>(4);
+        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+        let source: Pin<Box<dyn Stream<Item = Result<Bytes, PrismStreamError>> + Send>> =
+            Box::pin(stream);
+
+        // Send one chunk, then let the stream idle
+        tx.send(Ok(sse_line(&make_chunk("gpt-4o", Some("partial"), None))))
+            .await
+            .unwrap();
+
+        let (relay, _result_rx) =
+            StreamRelay::start(source, Duration::from_millis(100));
+
+        // Drain the relay and collect items
+        use futures::StreamExt;
+        let items: Vec<_> = relay.collect().await;
+
+        // Should have the first chunk (Ok) and then the timeout error
+        assert!(items.len() >= 2, "expected at least 2 items, got {}", items.len());
+        assert!(items[0].is_ok());
+        let last = items.last().unwrap();
+        assert!(last.is_err());
+        match last {
+            Err(PrismStreamError::Other(msg)) => {
+                assert!(msg.contains("idle timeout"), "unexpected error: {msg}");
+            }
+            other => panic!("expected PrismStreamError::Other, got: {other:?}"),
+        }
+
+        // Keep tx alive until after assertions so the stream doesn't end early
+        drop(tx);
     }
 }

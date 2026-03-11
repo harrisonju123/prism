@@ -68,6 +68,8 @@ pub struct Config {
     pub context_management: ContextManagementConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub streaming: StreamingConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -1223,6 +1225,35 @@ fn default_log_format() -> String {
     "text".into()
 }
 
+// --- Streaming ---
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StreamingConfig {
+    /// Request timeout for upstream provider calls (seconds). Default: 300.
+    #[serde(default = "default_request_timeout_secs")]
+    pub request_timeout_secs: u64,
+    /// If no bytes arrive from the provider within this window, terminate the stream. Default: 60.
+    #[serde(default = "default_stream_idle_timeout_secs")]
+    pub stream_idle_timeout_secs: u64,
+}
+
+impl Default for StreamingConfig {
+    fn default() -> Self {
+        Self {
+            request_timeout_secs: default_request_timeout_secs(),
+            stream_idle_timeout_secs: default_stream_idle_timeout_secs(),
+        }
+    }
+}
+
+fn default_request_timeout_secs() -> u64 {
+    300
+}
+
+fn default_stream_idle_timeout_secs() -> u64 {
+    60
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1303,5 +1334,12 @@ mod tests {
             config.aliases.get("code").map(|s| s.as_str()),
             Some("claude-sonnet-4-6")
         );
+    }
+
+    #[test]
+    fn test_streaming_defaults() {
+        let config: Config = Figment::new().extract().unwrap();
+        assert_eq!(config.streaming.request_timeout_secs, 300);
+        assert_eq!(config.streaming.stream_idle_timeout_secs, 60);
     }
 }

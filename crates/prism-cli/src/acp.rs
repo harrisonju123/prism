@@ -700,6 +700,9 @@ fn tool_title(bt: Option<BuiltinTool>, name: &str, args: &serde_json::Value) -> 
             format!("Skill: {}", args["name"].as_str().unwrap_or("skill"))
         }
         Some(BuiltinTool::CheckBackgroundTasks) => "Check background tasks".to_string(),
+        Some(BuiltinTool::RecordDecision) => {
+            format!("Decide: {}", args["title"].as_str().unwrap_or("decision"))
+        }
         None => name.to_string(),
     }
 }

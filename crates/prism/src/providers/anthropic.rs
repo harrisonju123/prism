@@ -1216,7 +1216,8 @@ mod tests {
                 .into_iter()
                 .map(|b| Ok(b) as std::result::Result<Bytes, PrismStreamError>),
         ));
-        let (_relay, result_rx) = StreamRelay::start(source);
+        let (_relay, result_rx) =
+            StreamRelay::start(source, std::time::Duration::from_secs(60));
         let result = result_rx.await.unwrap();
 
         assert_eq!(result.model, "claude-3-5-sonnet");

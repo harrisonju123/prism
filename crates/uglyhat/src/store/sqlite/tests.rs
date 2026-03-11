@@ -544,6 +544,60 @@ async fn test_guardrails() {
 }
 
 #[tokio::test]
+async fn test_guardrail_null_file_path_passes_when_files_restricted() {
+    // When file_path is None (e.g. for non-write tools), allowed_files must not block the call.
+    let (store, ws) = setup().await;
+    let t = store
+        .create_thread(ws.id, "plan-thread", "plan mode test", vec![])
+        .await
+        .expect("create thread");
+
+    store
+        .set_guardrails(
+            ws.id,
+            "plan-thread",
+            ThreadGuardrails {
+                id: uuid::Uuid::new_v4(),
+                thread_id: t.id,
+                workspace_id: ws.id,
+                owner_agent_id: None,
+                locked: false,
+                allowed_files: vec!["/tmp/plan.md".to_string()],
+                allowed_tools: vec!["read_file".to_string(), "write_file".to_string()],
+                cost_budget_usd: None,
+                cost_spent_usd: 0.0,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            },
+        )
+        .await
+        .expect("set guardrails");
+
+    store.checkin(ws.id, "agent-x", vec![], None).await.expect("checkin");
+
+    // file_path = None: allowed_files check is skipped entirely (read-only tools don't carry a path)
+    let check = store
+        .check_guardrail(ws.id, "plan-thread", "agent-x", "read_file", None)
+        .await
+        .expect("check");
+    assert!(check.allowed, "None file_path must pass even when allowed_files is set");
+
+    // file_path = plan file: write should be allowed
+    let check2 = store
+        .check_guardrail(ws.id, "plan-thread", "agent-x", "write_file", Some("/tmp/plan.md"))
+        .await
+        .expect("check");
+    assert!(check2.allowed, "writing the plan file must be allowed");
+
+    // file_path = other file: write must be denied
+    let check3 = store
+        .check_guardrail(ws.id, "plan-thread", "agent-x", "write_file", Some("/tmp/other.rs"))
+        .await
+        .expect("check");
+    assert!(!check3.allowed, "writing outside the plan file must be denied");
+}
+
+#[tokio::test]
 async fn test_decision_notifications() {
     let (store, ws) = setup().await;
 

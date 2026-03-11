@@ -120,7 +120,7 @@ async fn main() -> anyhow::Result<()> {
 
     // HTTP client shared across providers
     let http_client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(300))
+        .timeout(Duration::from_secs(config.streaming.request_timeout_secs))
         .connect_timeout(Duration::from_secs(10))
         .build()?;
 

@@ -46,6 +46,9 @@ pub struct ToolPermissionGate {
     interactive: bool,
     renderer: Renderer,
     bridge_client: Option<ApprovalClient>,
+    /// True when a plan file is configured — enables structural enforcement where
+    /// read-only tools are auto-allowed and writes are guarded by uglyhat guardrails.
+    plan_file_set: bool,
 }
 
 impl ToolPermissionGate {
@@ -56,7 +59,16 @@ impl ToolPermissionGate {
             interactive,
             renderer: Renderer::new(),
             bridge_client: None,
+            plan_file_set: false,
         }
+    }
+
+    pub fn set_plan_file_enforcement(&mut self, enabled: bool) {
+        self.plan_file_set = enabled;
+    }
+
+    pub fn mode(&self) -> PermissionMode {
+        self.mode
     }
 
     pub fn renderer(&self) -> &Renderer {
@@ -105,7 +117,14 @@ impl ToolPermissionGate {
                 }
                 self.prompt_or_allow(tool_name, args)
             }
-            PermissionMode::Plan => self.prompt_or_allow(tool_name, args),
+            PermissionMode::Plan => {
+                // In structural plan mode, reads are always allowed — guardrails handle
+                // write restriction at the tool execution layer, not at the prompt layer.
+                if self.plan_file_set && is_read_only(tool_name) {
+                    return PermissionDecision::Allow;
+                }
+                self.prompt_or_allow(tool_name, args)
+            }
         }
     }
 
@@ -313,6 +332,43 @@ mod tests {
         );
         assert_eq!(
             gate.check_permission("bash", &json!({"command": "ls"})),
+            PermissionDecision::Deny
+        );
+    }
+
+    #[test]
+    fn structural_plan_mode_auto_allows_reads() {
+        // When plan_file_set is true, read-only tools bypass the prompt in plan mode.
+        let mut gate = ToolPermissionGate::new(PermissionMode::Plan, false);
+        gate.set_plan_file_enforcement(true);
+        assert_eq!(
+            gate.check_permission("read_file", &json!({"path": "foo.rs"})),
+            PermissionDecision::Allow,
+            "reads auto-allowed in structural plan mode"
+        );
+        assert_eq!(
+            gate.check_permission("glob_files", &json!({"pattern": "*.rs"})),
+            PermissionDecision::Allow,
+        );
+        // Non-interactive → write tools still denied (guardrails handle the enforcement)
+        assert_eq!(
+            gate.check_permission("write_file", &json!({"path": "foo.rs"})),
+            PermissionDecision::Deny,
+            "writes still require prompt (guardrails enforce file restriction)"
+        );
+        // bash is denied (not read-only, not auto-allowed)
+        assert_eq!(
+            gate.check_permission("bash", &json!({"command": "ls"})),
+            PermissionDecision::Deny,
+        );
+    }
+
+    #[test]
+    fn structural_plan_mode_off_still_denies_reads_without_tty() {
+        // Baseline: without plan_file_set, plan mode denies reads too
+        let mut gate = ToolPermissionGate::new(PermissionMode::Plan, false);
+        assert_eq!(
+            gate.check_permission("read_file", &json!({"path": "foo.rs"})),
             PermissionDecision::Deny
         );
     }

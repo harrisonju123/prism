@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use axum::Json;
@@ -475,6 +475,9 @@ pub async fn chat_completions(
         });
     }
 
+    // Normalize tool_call arguments escaping for LiteLLM/Bedrock compatibility
+    request.normalize_tool_call_arguments();
+
     // --- Provider call with retry + failover + circuit breaker ---
     // Build the full ordered candidate list: primary first, then per-model fallbacks,
     // then the global routing.fallback_chain (skipping providers already tried).
@@ -816,7 +819,8 @@ pub async fn chat_completions(
             Ok(resp)
         }
         ProviderResponse::Stream(stream) => {
-            let (relay, result_rx) = StreamRelay::start(stream);
+            let idle_timeout = Duration::from_secs(state.config.streaming.stream_idle_timeout_secs);
+            let (relay, result_rx) = StreamRelay::start(stream, idle_timeout);
             let event_tx = state.event_tx.clone();
             let provider_name_owned = provider_name.clone();
             let prompt_hash_owned = prompt_hash.clone();
@@ -996,7 +1000,9 @@ pub async fn chat_completions(
                             })
                             .collect()
                     }
-                    Err(_) => vec![],
+                    Err(e) => {
+                        vec![Ok(crate::proxy::streaming::stream_error_event(&e))]
+                    }
                 };
                 futures::stream::iter(events)
             });

@@ -109,7 +109,7 @@ pub async fn start_embedded_with(
     }
 
     let http_client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(300))
+        .timeout(Duration::from_secs(config.streaming.request_timeout_secs))
         .build()
         .map_err(|e| PrismError::Internal(e.to_string()))?;
 

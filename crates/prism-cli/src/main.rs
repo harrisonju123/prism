@@ -43,6 +43,11 @@ enum Commands {
         permission_mode: Option<PermissionMode>,
         #[arg(
             long,
+            help = "Plan file path: enables structural guardrail enforcement in plan mode (only this file may be written)"
+        )]
+        plan_file: Option<String>,
+        #[arg(
+            long,
             help = "Undo last assistant turn before resuming (requires --resume)"
         )]
         undo: bool,
@@ -150,6 +155,7 @@ async fn run(cli: Cli) -> Result<()> {
             persona: persona_name,
             resume,
             permission_mode,
+            plan_file,
             undo,
             branch,
         } => {
@@ -178,6 +184,9 @@ async fn run(cli: Cli) -> Result<()> {
             }
             if let Some(pm) = permission_mode {
                 config.extensions.permission_mode = Some(pm);
+            }
+            if let Some(pf) = plan_file {
+                config.extensions.plan_file = Some(pf);
             }
             let client =
                 PrismClient::new(&config.gateway.url).with_api_key(&config.gateway.api_key);

@@ -82,6 +82,9 @@ pub struct ExtensionConfig {
     pub mcp_config_path: PathBuf,
     pub hooks_config_path: PathBuf,
     pub permission_mode: Option<PermissionMode>,
+    /// When set alongside Plan mode, enables structural guardrail enforcement:
+    /// only this file may be written; bash/run_command are blocked entirely.
+    pub plan_file: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -172,6 +175,8 @@ impl Config {
             .map(PathBuf::from)
             .unwrap_or_else(|_| prism_home().join("hooks.json"));
 
+        let plan_file = std::env::var("PRISM_PLAN_FILE").ok();
+
         let compression_model = std::env::var("PRISM_COMPRESSION_MODEL").ok();
 
         let compression_threshold = std::env::var("PRISM_COMPRESSION_THRESHOLD")
@@ -214,6 +219,7 @@ impl Config {
                 mcp_config_path,
                 hooks_config_path,
                 permission_mode,
+                plan_file,
             },
         })
     }

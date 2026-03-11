@@ -343,6 +343,46 @@ pub struct InferenceEvent {
     pub provider_attempted: Option<String>,
 }
 
+impl ChatCompletionRequest {
+    /// Re-serialize tool_call arguments to canonical JSON escaping.
+    /// Workaround for LiteLLM Bedrock Converse failing on deeply-escaped strings.
+    pub fn normalize_tool_call_arguments(&mut self) {
+        for msg in &mut self.messages {
+            if msg.role != MessageRole::Assistant {
+                continue;
+            }
+            let Some(tool_calls) = msg.tool_calls.as_mut() else {
+                continue;
+            };
+            for tc in tool_calls.iter_mut() {
+                let Some(args_str) = tc
+                    .get("function")
+                    .and_then(|f| f.get("arguments"))
+                    .and_then(|a| a.as_str())
+                else {
+                    continue;
+                };
+
+                // Fast path: parse then re-serialize only produces
+                // different output when the original has non-canonical
+                // escaping (e.g. double-escaped strings from LiteLLM).
+                let Ok(parsed) = serde_json::from_str::<serde_json::Value>(args_str) else {
+                    tracing::warn!("tool_call arguments not valid JSON, skipping normalization");
+                    continue;
+                };
+                let Ok(normalized) = serde_json::to_string(&parsed) else {
+                    continue;
+                };
+                if normalized != args_str {
+                    if let Some(func) = tc.get_mut("function") {
+                        func["arguments"] = serde_json::Value::String(normalized);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Response from a provider — either complete or streaming.
 pub enum ProviderResponse {
     Complete(ChatCompletionResponse),
@@ -365,5 +405,112 @@ impl std::fmt::Display for PrismStreamError {
             PrismStreamError::Reqwest(e) => write!(f, "{e}"),
             PrismStreamError::Other(s) => write!(f, "{s}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_request(messages: Vec<Message>) -> ChatCompletionRequest {
+        ChatCompletionRequest {
+            model: "test".into(),
+            messages,
+            ..Default::default()
+        }
+    }
+
+    fn assistant_msg_with_tool_calls(tool_calls: Vec<serde_json::Value>) -> Message {
+        Message {
+            role: MessageRole::Assistant,
+            content: None,
+            name: None,
+            tool_calls: Some(tool_calls),
+            tool_call_id: None,
+            extra: Default::default(),
+        }
+    }
+
+    #[test]
+    fn canonical_json_unchanged() {
+        let args = r#"{"key":"value","num":42}"#;
+        let tc = json!({"type": "function", "function": {"name": "test", "arguments": args}});
+        let mut req = make_request(vec![assistant_msg_with_tool_calls(vec![tc])]);
+        req.normalize_tool_call_arguments();
+
+        let result = req.messages[0].tool_calls.as_ref().unwrap()[0]["function"]["arguments"]
+            .as_str()
+            .unwrap();
+        assert_eq!(result, args);
+    }
+
+    #[test]
+    fn deeply_escaped_json_normalized() {
+        // Simulate LLM-generated arguments with source code containing escapes
+        let raw_args = r#"{"code":"fn main() {\n\tprintln!(\"hello\\nworld\");\n}"}"#;
+        let tc = json!({"type": "function", "function": {"name": "write_file", "arguments": raw_args}});
+        let mut req = make_request(vec![assistant_msg_with_tool_calls(vec![tc])]);
+        req.normalize_tool_call_arguments();
+
+        let result = req.messages[0].tool_calls.as_ref().unwrap()[0]["function"]["arguments"]
+            .as_str()
+            .unwrap();
+        // Parse-reserialize should produce valid JSON that round-trips
+        let reparsed: serde_json::Value = serde_json::from_str(result).unwrap();
+        assert_eq!(
+            reparsed["code"].as_str().unwrap(),
+            "fn main() {\n\tprintln!(\"hello\\nworld\");\n}"
+        );
+    }
+
+    #[test]
+    fn invalid_json_left_alone() {
+        let bad_args = "not valid json {{{";
+        let tc = json!({"type": "function", "function": {"name": "test", "arguments": bad_args}});
+        let mut req = make_request(vec![assistant_msg_with_tool_calls(vec![tc])]);
+        req.normalize_tool_call_arguments();
+
+        let result = req.messages[0].tool_calls.as_ref().unwrap()[0]["function"]["arguments"]
+            .as_str()
+            .unwrap();
+        assert_eq!(result, bad_args);
+    }
+
+    #[test]
+    fn non_assistant_messages_skipped() {
+        let args = r#"{"key":"value"}"#;
+        let tc = json!({"type": "function", "function": {"name": "test", "arguments": args}});
+        let msg = Message {
+            role: MessageRole::User,
+            content: None,
+            name: None,
+            tool_calls: Some(vec![tc]),
+            tool_call_id: None,
+            extra: Default::default(),
+        };
+        let mut req = make_request(vec![msg]);
+        req.normalize_tool_call_arguments();
+
+        // User message tool_calls should be untouched
+        let result = req.messages[0].tool_calls.as_ref().unwrap()[0]["function"]["arguments"]
+            .as_str()
+            .unwrap();
+        assert_eq!(result, args);
+    }
+
+    #[test]
+    fn no_tool_calls_is_noop() {
+        let msg = Message {
+            role: MessageRole::Assistant,
+            content: Some(json!("hello")),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            extra: Default::default(),
+        };
+        let mut req = make_request(vec![msg]);
+        req.normalize_tool_call_arguments(); // should not panic
+        assert!(req.messages[0].tool_calls.is_none());
     }
 }

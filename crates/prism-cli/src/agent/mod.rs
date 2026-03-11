@@ -26,7 +26,7 @@ use crate::hooks::HookRunner;
 use crate::hooks::config::PreToolAction;
 use crate::mcp::McpRegistry;
 use crate::memory::MemoryManager;
-use crate::permissions::{self, PermissionDecision, ToolPermissionGate};
+use crate::permissions::{self, PermissionDecision, PermissionMode, ToolPermissionGate, is_read_only};
 use crate::session::Session;
 use crate::skills::SkillRegistry;
 use crate::tools::{self, BuiltinTool};
@@ -116,6 +116,12 @@ pub struct Agent {
     pub interrupted: Arc<AtomicBool>,
     /// Current thread name (from UH_THREAD env or handoff)
     current_thread: Option<String>,
+    /// Count of write-tool denials while in plan mode
+    plan_mode_violations: u32,
+    /// Plan file path for structural plan mode enforcement (from config)
+    plan_file: Option<String>,
+    /// True when setup_plan_mode_guardrails auto-created the current thread
+    plan_thread_auto_created: bool,
 }
 
 const UH_AGENT_NAME_ENV: &str = "UH_AGENT_NAME";
@@ -137,6 +143,7 @@ impl Agent {
         let hook_runner = config.build_hook_runner();
         let compressor = config.build_compressor();
         let current_thread = std::env::var(UH_THREAD_ENV).ok();
+        let plan_file = config.extensions.plan_file.clone();
         Self {
             client,
             config,
@@ -150,6 +157,9 @@ impl Agent {
             background: BackgroundTaskManager::new(),
             interrupted: Arc::new(AtomicBool::new(false)),
             current_thread,
+            plan_mode_violations: 0,
+            plan_file,
+            plan_thread_auto_created: false,
         }
     }
 
@@ -165,6 +175,7 @@ impl Agent {
         let hook_runner = config.build_hook_runner();
         let compressor = config.build_compressor();
         let current_thread = std::env::var(UH_THREAD_ENV).ok();
+        let plan_file = config.extensions.plan_file.clone();
         Self {
             client,
             config,
@@ -178,6 +189,9 @@ impl Agent {
             background: BackgroundTaskManager::new(),
             interrupted: Arc::new(AtomicBool::new(false)),
             current_thread,
+            plan_mode_violations: 0,
+            plan_file,
+            plan_thread_auto_created: false,
         }
     }
 
@@ -266,6 +280,12 @@ impl Agent {
     pub async fn run(&mut self, task: &str) -> Result<()> {
         tracing::info!(episode_id = %self.session.episode_id, model = %self.config.model.model, "starting agent session");
 
+        // Activate structural plan mode if a plan file is configured
+        if self.permission_gate.mode() == PermissionMode::Plan && self.plan_file.is_some() {
+            let activated = self.setup_plan_mode_guardrails().await;
+            self.permission_gate.set_plan_file_enforcement(activated);
+        }
+
         let full_system = self.build_full_system_prompt().await;
 
         self.session
@@ -305,10 +325,9 @@ impl Agent {
     }
 
     async fn inner_run(&mut self) -> Result<()> {
-        // Reset interrupt flag for this run. The ctrl-c handler uses a local AtomicU32 for
-        // two-press escalation (first press → finish current turn, second → force quit), and
-        // also sets the shared self.interrupted flag so the loop can observe it.
+        // Reset per-run state
         self.interrupted.store(false, Ordering::SeqCst);
+        self.plan_mode_violations = 0;
         let interrupt_count = Arc::new(AtomicU32::new(0));
         let flag_count = interrupt_count.clone();
         let flag_interrupted = self.interrupted.clone();
@@ -581,6 +600,11 @@ impl Agent {
                         let decision = self.permission_gate.check_permission(&name, &args);
 
                         if decision == PermissionDecision::Deny {
+                            if self.permission_gate.mode() == PermissionMode::Plan
+                                && !is_read_only(&name)
+                            {
+                                self.plan_mode_violations += 1;
+                            }
                             self.permission_gate.renderer().tool_denied(&name);
                             outcomes.push(ToolOutcome::Denied {
                                 index,
@@ -669,6 +693,18 @@ impl Agent {
                             Some(BuiltinTool::Recall) => {
                                 let t0 = std::time::Instant::now();
                                 let result = self.handle_recall(&ptc.args).await;
+                                outcomes.push(ToolOutcome::Result {
+                                    index: ptc.index,
+                                    id: ptc.id,
+                                    name: ptc.name,
+                                    args: ptc.args,
+                                    result,
+                                    elapsed_ms: t0.elapsed().as_millis(),
+                                });
+                            }
+                            Some(BuiltinTool::RecordDecision) => {
+                                let t0 = std::time::Instant::now();
+                                let result = self.handle_record_decision(&ptc.args).await;
                                 outcomes.push(ToolOutcome::Result {
                                     index: ptc.index,
                                     id: ptc.id,
@@ -972,6 +1008,11 @@ impl Agent {
             }
         }
 
+        // Clean up plan mode guardrails before returning
+        if self.permission_gate.mode() == PermissionMode::Plan && self.plan_file.is_some() {
+            self.teardown_plan_mode_guardrails().await;
+        }
+
         if stop_reason.is_none() {
             self.session.stop_reason = Some(AgentStopReason::MaxTurns.to_session_str().to_string());
             if let Err(e) = self.session.save(&self.config.session.sessions_dir) {
@@ -1048,20 +1089,12 @@ impl Agent {
         turns: u32,
         cost_usd: f64,
     ) {
-        let mut quality: f64 = 0.70;
-        match stop_reason {
-            Some(AgentStopReason::Stop) => quality += 0.15,
-            Some(AgentStopReason::Interrupt) => quality -= 0.30,
-            Some(AgentStopReason::CostCap) => quality -= 0.10,
-            Some(AgentStopReason::MaxTurns) => quality -= 0.20,
-            None => quality -= 0.20,
-        }
-        if let Some(tree) = &self.session.tree {
-            if tree.has_branches() {
-                quality -= 0.15;
-            }
-        }
-        quality = quality.clamp(0.0, 1.0);
+        let has_branches = self.session.tree.as_ref().is_some_and(|t| t.has_branches());
+        let quality = compute_implicit_quality(
+            stop_reason,
+            has_branches,
+            self.plan_mode_violations,
+        );
 
         let metadata = serde_json::json!({
             "source": "implicit",
@@ -1069,6 +1102,7 @@ impl Agent {
             "turns": turns,
             "cost_usd": cost_usd,
             "model": self.session.model,
+            "plan_mode_violations": self.plan_mode_violations,
         });
 
         let _ = self.client.post_feedback(
@@ -1080,13 +1114,109 @@ impl Agent {
         ).await;
     }
 
+    /// Set up uglyhat guardrails for structural plan mode enforcement.
+    /// Creates a thread (or reuses the current one) and restricts:
+    /// - `allowed_files` to the plan file only
+    /// - `allowed_tools` to everything except bash/run_command (shell escape vectors)
+    ///
+    /// Returns true if structural enforcement was activated.
+    async fn setup_plan_mode_guardrails(&mut self) -> bool {
+        use uglyhat::store::Store;
+
+        let plan_file = match self.plan_file.clone() {
+            Some(pf) => pf,
+            None => return false,
+        };
+
+        let store = match self.memory.store().cloned() {
+            Some(s) => s,
+            None => {
+                tracing::warn!("plan mode: no uglyhat context — falling back to prompt-for-everything");
+                return false;
+            }
+        };
+        let ws_id = match self.memory.workspace_id() {
+            Some(id) => id,
+            None => {
+                tracing::warn!("plan mode: no workspace — falling back to prompt-for-everything");
+                return false;
+            }
+        };
+
+        // Resolve or auto-create the thread
+        let thread_name = if let Some(ref t) = self.current_thread {
+            t.clone()
+        } else {
+            let id = format!("plan-{}", &Uuid::new_v4().to_string()[..8]);
+            match store
+                .create_thread(ws_id, &id, "auto-created for structural plan mode", vec![])
+                .await
+            {
+                Ok(_) => {
+                    self.current_thread = Some(id.clone());
+                    self.plan_thread_auto_created = true;
+                    id
+                }
+                Err(e) => {
+                    tracing::warn!("plan mode: failed to create thread: {e}");
+                    return false;
+                }
+            }
+        };
+
+        let allowed_tools = BuiltinTool::all_non_shell()
+            .iter()
+            .map(|t| t.as_str().to_string())
+            .collect();
+        let guardrails = make_guardrails(ws_id, vec![plan_file], allowed_tools);
+
+        match store.set_guardrails(ws_id, &thread_name, guardrails).await {
+            Ok(_) => {
+                tracing::info!(thread = %thread_name, "plan mode: structural guardrails active");
+                true
+            }
+            Err(e) => {
+                tracing::warn!("plan mode: failed to set guardrails: {e}");
+                false
+            }
+        }
+    }
+
+    /// Clean up plan mode guardrails at session end.
+    async fn teardown_plan_mode_guardrails(&self) {
+        use uglyhat::store::Store;
+
+        let thread_name = match self.current_thread.as_deref() {
+            Some(t) => t,
+            None => return,
+        };
+        let store = match self.memory.store().cloned() {
+            Some(s) => s,
+            None => return,
+        };
+        let ws_id = match self.memory.workspace_id() {
+            Some(id) => id,
+            None => return,
+        };
+
+        if self.plan_thread_auto_created {
+            let _ = store.archive_thread(ws_id, thread_name).await;
+        } else {
+            // Clear guardrails on the pre-existing thread
+            let _ = store
+                .set_guardrails(ws_id, thread_name, make_guardrails(ws_id, vec![], vec![]))
+                .await;
+        }
+    }
+
     /// Check thread-scoped guardrails. Returns Some(denial_message) if denied.
     async fn check_guardrails(&self, tool_name: &str, args: &serde_json::Value) -> Option<String> {
         let thread_name = self.current_thread.as_deref()?;
         let (store, ws_id, agent_name) = self.uh_context()?;
 
-        // Extract file path from tool args (covers read_file, write_file, edit_file, bash)
-        let file_path = args["path"].as_str();
+        // Only pass file_path for write tools — allowed_files semantically means "files you
+        // may mutate." Passing it for reads would block legitimate reads on restricted paths.
+        let file_path = guardrail_file_path(tool_name, args);
 
         match store
             .check_guardrail(ws_id, thread_name, &agent_name, tool_name, file_path)
@@ -1113,6 +1243,57 @@ impl Agent {
             .await;
     }
 
+    /// Handle the `record_decision` tool — persists a decision with rationale to uglyhat.
+    async fn handle_record_decision(&self, args: &serde_json::Value) -> String {
+        use uglyhat::model::DecisionScope;
+
+        let Some((store, ws_id, _agent_name)) = self.uh_context() else {
+            return json!({"error": "no uglyhat context store available"}).to_string();
+        };
+
+        let title = args["title"].as_str().unwrap_or("").to_string();
+        let content = args["content"].as_str().unwrap_or("").to_string();
+        if title.is_empty() {
+            return json!({"error": "title is required"}).to_string();
+        }
+
+        // Resolve thread: explicit arg takes precedence, then current_thread
+        let thread_name = args["thread"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .or(self.current_thread.as_deref());
+
+        let thread_id = if let Some(name) = thread_name {
+            match store.get_thread(ws_id, name).await {
+                Ok(t) => Some(t.id),
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+
+        let tags = common::parse_str_array(&args["tags"]);
+
+        let scope = match args["scope"].as_str() {
+            Some("workspace") => DecisionScope::Workspace,
+            _ => DecisionScope::Thread,
+        };
+
+        match store
+            .save_decision(ws_id, &title, &content, thread_id, tags, scope.clone())
+            .await
+        {
+            Ok(d) => json!({
+                "recorded": true,
+                "id": d.id.to_string(),
+                "title": d.title,
+                "scope": scope.to_string(),
+            })
+            .to_string(),
+            Err(e) => json!({"error": e.to_string()}).to_string(),
+        }
+    }
+
     /// Handle the `recall` tool — loads context from uglyhat store.
     async fn handle_recall(&self, args: &serde_json::Value) -> String {
         use uglyhat::store::Store;
@@ -1131,14 +1312,7 @@ impl Agent {
                 Err(e) => json!({"error": e.to_string()}).to_string(),
             }
         } else {
-            let tags: Vec<String> = args["tags"]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|v| v.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let tags = common::parse_str_array(&args["tags"]);
 
             let since = args["since"]
                 .as_str()
@@ -1155,6 +1329,58 @@ impl Agent {
 
 fn parse_duration_str(s: &str) -> Result<chrono::Duration> {
     uglyhat::util::parse_duration(s).map_err(|e| anyhow::anyhow!(e))
+}
+
+fn make_guardrails(
+    ws_id: uuid::Uuid,
+    allowed_files: Vec<String>,
+    allowed_tools: Vec<String>,
+) -> uglyhat::model::ThreadGuardrails {
+    uglyhat::model::ThreadGuardrails {
+        id: uuid::Uuid::new_v4(),
+        thread_id: uuid::Uuid::nil(),
+        workspace_id: ws_id,
+        owner_agent_id: None,
+        locked: false,
+        allowed_files,
+        allowed_tools,
+        cost_budget_usd: None,
+        cost_spent_usd: 0.0,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    }
+}
+
+fn compute_implicit_quality(
+    stop_reason: Option<AgentStopReason>,
+    has_branches: bool,
+    plan_mode_violations: u32,
+) -> f64 {
+    let mut quality: f64 = 0.70;
+    match stop_reason {
+        Some(AgentStopReason::Stop) => quality += 0.15,
+        Some(AgentStopReason::Interrupt) => quality -= 0.30,
+        Some(AgentStopReason::CostCap) => quality -= 0.10,
+        Some(AgentStopReason::MaxTurns) => quality -= 0.20,
+        None => quality -= 0.20,
+    }
+    if has_branches {
+        quality -= 0.15;
+    }
+    if plan_mode_violations > 0 {
+        quality -= 0.40;
+    }
+    quality.clamp(0.0, 1.0)
+}
+
+/// Extract the file path from tool args for guardrail checking.
+/// Only write tools carry a meaningful path restriction — reads are intentionally excluded
+/// so `allowed_files` doesn't block reading files outside the plan file.
+fn guardrail_file_path<'a>(tool_name: &str, args: &'a serde_json::Value) -> Option<&'a str> {
+    match BuiltinTool::from_str(tool_name) {
+        Some(BuiltinTool::WriteFile | BuiltinTool::EditFile) => args["path"].as_str(),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -1200,5 +1426,46 @@ mod tests {
         let s = "🦀".repeat(10_000);
         let result = truncate_tool_output("read_file", &s, 100);
         assert!(result.contains("chars omitted"));
+    }
+
+    #[test]
+    fn implicit_quality_baseline() {
+        let q = compute_implicit_quality(Some(AgentStopReason::Stop), false, 0);
+        assert!((q - 0.85).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn implicit_quality_plan_mode_violation_penalty() {
+        let without = compute_implicit_quality(Some(AgentStopReason::Stop), false, 0);
+        let with = compute_implicit_quality(Some(AgentStopReason::Stop), false, 1);
+        assert!((without - with - 0.40).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn implicit_quality_plan_violations_clamp_to_zero() {
+        // Interrupt (-0.30) + branches (-0.15) + plan violations (-0.40) = 0.70 - 0.85 < 0
+        let q = compute_implicit_quality(Some(AgentStopReason::Interrupt), true, 3);
+        assert!((q - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn implicit_quality_multiple_violations_same_as_one() {
+        // Penalty is flat -0.40 regardless of count
+        let one = compute_implicit_quality(Some(AgentStopReason::Stop), false, 1);
+        let many = compute_implicit_quality(Some(AgentStopReason::Stop), false, 5);
+        assert!((one - many).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn check_guardrails_only_passes_file_path_for_write_tools() {
+        use serde_json::json;
+        let args = json!({"path": "/sensitive/file.rs", "command": "cat /etc/passwd"});
+
+        // Write tools carry the path; reads and shell tools pass None
+        assert_eq!(guardrail_file_path("write_file", &args), Some("/sensitive/file.rs"));
+        assert_eq!(guardrail_file_path("edit_file", &args), Some("/sensitive/file.rs"));
+        for tool in ["read_file", "bash", "run_command", "glob_files", "grep_files"] {
+            assert_eq!(guardrail_file_path(tool, &args), None, "'{tool}' must not extract file_path");
+        }
     }
 }

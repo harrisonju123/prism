@@ -25,6 +25,9 @@ Complete the task fully — don't stop to ask for confirmation unless truly stuc
 - **grep_files** pattern [dir] [file_glob]: Search file contents by regex.
 - **web_fetch** url: Fetch a URL and return its text (HTML stripped). \
   Use for documentation, crate pages, or any web resource.
+- **record_decision** title content [thread] [tags] [scope]: Record an architectural or \
+  implementation decision with rationale. Persists across sessions and is visible to other agents. \
+  scope is 'thread' (default) or 'workspace' (notifies all agents).
 
 ## Guidelines
 
@@ -33,6 +36,7 @@ Complete the task fully — don't stop to ask for confirmation unless truly stuc
 - Use grep_files + glob_files to navigate unfamiliar codebases before reading individual files.
 - Use read_file with offset+limit for large files — avoid reading thousands of lines you don't need.
 - When done, provide a concise summary of what was changed and why.
+- When choosing between architectural approaches, use record_decision to persist the rationale.
 ";
 
 // --- System prompt assembly ---
@@ -159,6 +163,16 @@ pub fn reconstruct_tool_calls(
             })
             .collect(),
     )
+}
+
+// --- JSON arg helpers ---
+
+/// Parse a JSON array value into a `Vec<String>`, collecting only string elements.
+/// Returns an empty vec if the value is absent, null, or not an array.
+pub fn parse_str_array(v: &serde_json::Value) -> Vec<String> {
+    v.as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default()
 }
 
 // --- String truncation helpers ---

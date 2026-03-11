@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::Json;
 use axum::extract::State;
@@ -210,7 +210,8 @@ pub async fn anthropic_messages(
 
         // Wrap raw_stream with StreamRelay so we can capture final usage/completion
         // for token accounting after the stream ends.
-        let (relay, result_rx) = StreamRelay::start(raw_stream);
+        let idle_timeout = Duration::from_secs(state.config.streaming.stream_idle_timeout_secs);
+        let (relay, result_rx) = StreamRelay::start(raw_stream, idle_timeout);
 
         let msg_id = format!("msg_{}", Uuid::new_v4().simple());
         let anthropic_stream = openai_sse_to_anthropic_sse(relay, msg_id, model_id.clone());
@@ -243,7 +244,9 @@ pub async fn anthropic_messages(
                         })
                         .collect()
                 }
-                Err(_) => vec![],
+                Err(e) => {
+                    vec![Ok(crate::proxy::streaming::stream_error_event(&e))]
+                }
             };
             futures::stream::iter(events)
         });

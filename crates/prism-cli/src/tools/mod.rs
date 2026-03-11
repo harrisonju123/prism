@@ -44,6 +44,7 @@ pub enum BuiltinTool {
     SaveMemory,
     SpawnAgent,
     Recall,
+    RecordDecision,
     Skill,
     CheckBackgroundTasks,
 }
@@ -64,6 +65,7 @@ impl BuiltinTool {
             "save_memory" => Some(Self::SaveMemory),
             "spawn_agent" => Some(Self::SpawnAgent),
             "recall" => Some(Self::Recall),
+            "record_decision" => Some(Self::RecordDecision),
             "skill" => Some(Self::Skill),
             "check_background_tasks" => Some(Self::CheckBackgroundTasks),
             _ => None,
@@ -84,9 +86,30 @@ impl BuiltinTool {
             Self::SaveMemory => "save_memory",
             Self::SpawnAgent => "spawn_agent",
             Self::Recall => "recall",
+            Self::RecordDecision => "record_decision",
             Self::Skill => "skill",
             Self::CheckBackgroundTasks => "check_background_tasks",
         }
+    }
+
+    /// All tools that are not shell-execution tools (Bash, RunCommand).
+    /// Used by plan-mode guardrails to enumerate the permitted tool set.
+    pub fn all_non_shell() -> &'static [BuiltinTool] {
+        &[
+            Self::ReadFile,
+            Self::WriteFile,
+            Self::EditFile,
+            Self::ListDir,
+            Self::GlobFiles,
+            Self::GrepFiles,
+            Self::WebFetch,
+            Self::SaveMemory,
+            Self::SpawnAgent,
+            Self::Recall,
+            Self::RecordDecision,
+            Self::Skill,
+            Self::CheckBackgroundTasks,
+        ]
     }
 }
 
@@ -208,6 +231,17 @@ pub fn tool_definitions() -> Vec<Tool> {
                 "tags":   { "type": "array", "items": { "type": "string" }, "description": "Tags to search for (returns matching memories + decisions)" },
                 "since":  { "type": "string", "description": "Duration like '2h', '30m', '1d' — returns everything since that time" }
             } }),
+        ),
+        make_tool(
+            "record_decision",
+            "Record an architectural or implementation decision with rationale. Persists across sessions and is visible to other agents.",
+            json!({ "type": "object", "properties": {
+                "title":   { "type": "string", "description": "Short decision label (e.g. 'Use local table for rate limits')" },
+                "content": { "type": "string", "description": "Rationale — why this was chosen over alternatives" },
+                "thread":  { "type": "string", "description": "Thread name to associate with (defaults to current thread)" },
+                "tags":    { "type": "array", "items": { "type": "string" }, "description": "Tags for filtering" },
+                "scope":   { "type": "string", "description": "'thread' (default) or 'workspace' — workspace-scoped decisions notify all agents" }
+            }, "required": ["title", "content"] }),
         ),
         make_tool(
             "skill",
@@ -435,14 +469,7 @@ async fn dispatch_inner(name: &str, args: &serde_json::Value, session_cwd: Optio
         }
         Some(BuiltinTool::RunCommand) => {
             let cmd = args["command"].as_str().unwrap_or("");
-            let raw_args: Vec<String> = args["args"]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|v| v.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let raw_args = crate::common::parse_str_array(&args["args"]);
             let timeout = args["timeout_secs"].as_u64().unwrap_or(30).min(120);
             let cwd = resolve_shell_cwd(args["cwd"].as_str(), session_cwd);
             ToolResult::Text(shell::run_command(cmd, &raw_args, timeout, cwd.as_deref()).await)
@@ -496,6 +523,7 @@ async fn dispatch_inner(name: &str, args: &serde_json::Value, session_cwd: Optio
             BuiltinTool::SaveMemory
             | BuiltinTool::SpawnAgent
             | BuiltinTool::Recall
+            | BuiltinTool::RecordDecision
             | BuiltinTool::Skill
             | BuiltinTool::CheckBackgroundTasks,
         ) => {
