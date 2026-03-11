@@ -3,7 +3,7 @@ use chrono::Utc;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::{
     openapi, AuthScheme, AuthSpec, BodySpec, ExpectedResponse, HeaderParam, PathParam, QueryParam,
@@ -13,7 +13,7 @@ use super::{
 
 const DEFAULT_LOCAL_URL: &str = "http://localhost:9100";
 
-pub fn generate(
+pub async fn generate(
     output_dir: &str,
     overwrite: bool,
     include_private: bool,
@@ -25,12 +25,12 @@ pub fn generate(
     ensure_dir(&output_dir.join("requests"))?;
     ensure_dir(&output_dir.join("schemas"))?;
 
-    let discovery = openapi::discover_or_generate(&output_dir).map_err(|e| {
+    let discovery = openapi::discover_or_generate(&output_dir).await.map_err(|e| {
         anyhow!(
             "{e}\n\nHint: set PRISM_OPENAPI_PATH or PRISM_OPENAPI_URL, or install swag for Go projects."
         )
     })?;
-    let spec = load_openapi_spec(&discovery.spec_path)?;
+    let spec = openapi::read_openapi_value(&discovery.spec_path)?;
 
     let (service_name, service_description) = extract_service_info(&spec);
     let openapi_source = discovery.source;
@@ -65,13 +65,6 @@ pub fn generate(
     write_json(&index_path, &bundle, overwrite)?;
 
     Ok(())
-}
-
-fn load_openapi_spec(path: &Path) -> Result<Value> {
-    let data = fs::read_to_string(path)
-        .with_context(|| format!("failed to read OpenAPI JSON at {}", path.display()))?;
-    serde_json::from_str(&data)
-        .with_context(|| format!("invalid OpenAPI JSON at {}", path.display()))
 }
 
 fn extract_service_info(spec: &Value) -> (String, Option<String>) {
@@ -151,10 +144,8 @@ fn extract_auth_spec(spec: &Value) -> AuthSpec {
         });
     }
 
-    AuthSpec {
-        schemes,
-        default: Some("bearerAuth".to_string()),
-    }
+    let default = schemes.first().map(|s| s.id.clone());
+    AuthSpec { schemes, default }
 }
 
 fn write_component_schemas(
@@ -172,9 +163,7 @@ fn write_component_schemas(
         for (name, schema) in schemas {
             let file_name = format!("{name}.json");
             let path = output_dir.join("schemas").join(&file_name);
-            if write_json(&path, schema, overwrite)? {
-                schema_map.insert(name.clone(), format!("schemas/{file_name}"));
-            } else if path.exists() {
+            if write_json(&path, schema, overwrite)? || path.exists() {
                 schema_map.insert(name.clone(), format!("schemas/{file_name}"));
             }
         }
@@ -241,7 +230,7 @@ fn build_requests(
                             .filter_map(|v| v.as_str().map(|s| s.to_string()))
                             .collect()
                     })
-                    .unwrap_or_else(|| vec![]);
+                    .unwrap_or_default();
 
                 let params =
                     collect_parameters(path_item_params.as_ref(), op_obj.get("parameters"));
@@ -275,30 +264,22 @@ fn build_requests(
                         required: true,
                     });
 
-                let mut happy_query = BTreeMap::new();
-                for p in &path_params {
-                    if let Some(v) = p.example.clone() {
-                        happy_query.insert(p.name.clone(), v);
-                    }
-                }
-                for p in &query {
-                    if let Some(v) = p.example.clone() {
-                        happy_query.insert(p.name.clone(), v);
-                    }
-                }
+                let path_param_map: BTreeMap<String, serde_json::Value> = path_params
+                    .iter()
+                    .filter_map(|p| p.example.clone().map(|v| (p.name.clone(), v)))
+                    .collect();
 
-                let mut edge_query = BTreeMap::new();
-                for p in &path_params {
-                    if let Some(v) = p.example.clone() {
-                        edge_query.insert(p.name.clone(), v);
-                    }
-                }
+                let happy_query: BTreeMap<String, serde_json::Value> = query
+                    .iter()
+                    .filter_map(|p| p.example.clone().map(|v| (p.name.clone(), v)))
+                    .collect();
 
                 let happy_variant = RequestVariant {
                     id: "happy-path".to_string(),
                     name: "Happy path".to_string(),
                     description: Some("Expected successful request".to_string()),
                     request: VariantRequest {
+                        path_params: path_param_map.clone(),
                         query: happy_query,
                         headers: headers
                             .iter()
@@ -313,7 +294,8 @@ fn build_requests(
                     name: "Edge case".to_string(),
                     description: Some("Missing optional fields or empty payload".to_string()),
                     request: VariantRequest {
-                        query: edge_query,
+                        path_params: path_param_map,
+                        query: BTreeMap::new(),
                         headers: BTreeMap::new(),
                         body: None,
                     },
@@ -440,16 +422,17 @@ fn build_body_spec(
     });
 
     let schema = media.get("schema");
-    let schema_ref = schema.and_then(|s| {
-        resolve_schema_ref(
+    let schema_ref = match schema {
+        Some(s) => resolve_schema_ref(
             s,
             include_full,
             output_dir,
             overwrite,
             format!("{request_id}-request"),
             schema_map,
-        )?
-    });
+        )?,
+        None => None,
+    };
 
     Ok((
         Some(BodySpec {
@@ -486,32 +469,29 @@ fn build_expected_response(
             status = code;
         }
 
-        if let Some(resp) = responses.get(&status_key) {
-            if let Some(content) = resp.get("content").and_then(|v| v.as_object()) {
-                if let Some((ct, media)) = content.iter().next() {
-                    content_type = Some(ct.to_string());
-                    if let Some(schema) = media.get("schema") {
-                        schema_ref = resolve_schema_ref(
-                            schema,
-                            include_full,
-                            output_dir,
-                            overwrite,
-                            format!("{request_id}-response"),
-                            schema_map,
-                        )
-                        .transpose()?;
-                        if schema_ref.is_none() && !include_full {
-                            schema_ref = resolve_schema_ref(
-                                schema,
-                                true,
-                                output_dir,
-                                overwrite,
-                                format!("{request_id}-response"),
-                                schema_map,
-                            )
-                            .transpose()?;
-                        }
-                    }
+        if let Some(resp) = responses.get(&status_key)
+            && let Some(content) = resp.get("content").and_then(|v| v.as_object())
+            && let Some((ct, media)) = content.iter().next()
+        {
+            content_type = Some(ct.to_string());
+            if let Some(schema) = media.get("schema") {
+                schema_ref = resolve_schema_ref(
+                    schema,
+                    include_full,
+                    output_dir,
+                    overwrite,
+                    format!("{request_id}-response"),
+                    schema_map,
+                )?;
+                if schema_ref.is_none() && !include_full {
+                    schema_ref = resolve_schema_ref(
+                        schema,
+                        true,
+                        output_dir,
+                        overwrite,
+                        format!("{request_id}-response"),
+                        schema_map,
+                    )?;
                 }
             }
         }
@@ -531,32 +511,30 @@ fn resolve_schema_ref(
     overwrite: bool,
     inline_id: String,
     schema_map: &mut HashMap<String, String>,
-) -> Option<Result<String>> {
+) -> Result<Option<String>> {
     if let Some(ref_str) = schema.get("$ref").and_then(|v| v.as_str()) {
-        let name = ref_str.split('/').last().unwrap_or(ref_str).to_string();
+        let name = ref_str.split('/').next_back().unwrap_or(ref_str).to_string();
         if let Some(path) = schema_map.get(&name) {
-            return Some(Ok(path.clone()));
+            return Ok(Some(path.clone()));
         }
         let file_name = format!("{name}.json");
         let path = output_dir.join("schemas").join(&file_name);
-        if write_json(&path, schema, overwrite).ok()? {
+        if write_json(&path, schema, overwrite)? {
             let rel = format!("schemas/{file_name}");
             schema_map.insert(name.clone(), rel.clone());
-            return Some(Ok(rel));
+            return Ok(Some(rel));
         }
-        return Some(Ok(format!("schemas/{file_name}")));
+        return Ok(Some(format!("schemas/{file_name}")));
     }
 
     if include_full {
         let file_name = format!("inline-{inline_id}.json");
         let path = output_dir.join("schemas").join(&file_name);
-        if write_json(&path, schema, overwrite).ok()? {
-            return Some(Ok(format!("schemas/{file_name}")));
-        }
-        return Some(Ok(format!("schemas/{file_name}")));
+        write_json(&path, schema, overwrite)?;
+        return Ok(Some(format!("schemas/{file_name}")));
     }
 
-    None
+    Ok(None)
 }
 
 fn example_from_schema(schema: &Value) -> Option<Value> {
@@ -641,4 +619,128 @@ fn write_json(path: &Path, value: &impl serde::Serialize, overwrite: bool) -> Re
     let payload = serde_json::to_string_pretty(value)?;
     fs::write(path, payload).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_slugify() {
+        assert_eq!(slugify("getUser"), "getuser");
+        assert_eq!(slugify("GET /users/{id}"), "get-users-id");
+        assert_eq!(slugify("hello world"), "hello-world");
+        assert_eq!(slugify("--foo--"), "foo");
+        assert_eq!(slugify("CamelCase"), "camelcase");
+    }
+
+    #[test]
+    fn test_example_from_schema_types() {
+        assert_eq!(
+            example_from_schema(&json!({"type": "string"})),
+            Some(json!("example"))
+        );
+        assert_eq!(
+            example_from_schema(&json!({"type": "integer"})),
+            Some(json!(0))
+        );
+        assert_eq!(
+            example_from_schema(&json!({"type": "boolean"})),
+            Some(json!(true))
+        );
+        assert_eq!(
+            example_from_schema(&json!({"type": "array"})),
+            Some(json!([]))
+        );
+        assert_eq!(
+            example_from_schema(&json!({"type": "object"})),
+            Some(json!({}))
+        );
+        assert_eq!(example_from_schema(&json!({})), None);
+    }
+
+    #[test]
+    fn test_example_from_schema_explicit() {
+        assert_eq!(
+            example_from_schema(&json!({"example": "foo"})),
+            Some(json!("foo"))
+        );
+        assert_eq!(
+            example_from_schema(&json!({"default": 42})),
+            Some(json!(42))
+        );
+        assert_eq!(
+            example_from_schema(&json!({"enum": ["a", "b"]})),
+            Some(json!("a"))
+        );
+    }
+
+    #[test]
+    fn test_split_parameters() {
+        let params = vec![
+            json!({"name": "id", "in": "path", "required": true}),
+            json!({"name": "limit", "in": "query", "required": false, "schema": {"type": "integer"}}),
+            json!({"name": "X-Request-Id", "in": "header"}),
+        ];
+        let (path, query, headers) = split_parameters(params);
+        assert_eq!(path.len(), 1);
+        assert_eq!(path[0].name, "id");
+        assert!(path[0].required);
+        assert_eq!(query.len(), 1);
+        assert_eq!(query[0].name, "limit");
+        assert_eq!(headers.len(), 1);
+        assert_eq!(headers[0].name, "X-Request-Id");
+    }
+
+    #[test]
+    fn test_is_http_method() {
+        assert!(is_http_method("get"));
+        assert!(is_http_method("POST"));
+        assert!(is_http_method("Delete"));
+        assert!(!is_http_method("parameters"));
+        assert!(!is_http_method("summary"));
+    }
+
+    #[test]
+    fn test_is_private_operation() {
+        let op: Map<String, Value> =
+            serde_json::from_value(json!({"tags": ["internal"]})).unwrap();
+        assert!(is_private_operation(&op, None));
+
+        let op: Map<String, Value> =
+            serde_json::from_value(json!({"x-internal": true})).unwrap();
+        assert!(is_private_operation(&op, None));
+
+        let op: Map<String, Value> = serde_json::from_value(json!({"tags": ["users"]})).unwrap();
+        assert!(!is_private_operation(&op, None));
+    }
+
+    #[test]
+    fn test_extract_auth_spec_with_schemes() {
+        let spec = json!({
+            "components": {
+                "securitySchemes": {
+                    "apiKey": {
+                        "type": "apiKey",
+                        "name": "X-API-Key",
+                        "in": "header"
+                    }
+                }
+            }
+        });
+        let auth = extract_auth_spec(&spec);
+        assert_eq!(auth.schemes.len(), 1);
+        assert_eq!(auth.schemes[0].id, "apiKey");
+        assert_eq!(auth.default, Some("apiKey".to_string()));
+    }
+
+    #[test]
+    fn test_extract_auth_spec_fallback() {
+        let spec = json!({});
+        let auth = extract_auth_spec(&spec);
+        assert_eq!(auth.schemes.len(), 1);
+        assert_eq!(auth.schemes[0].id, "bearerAuth");
+        assert_eq!(auth.default, Some("bearerAuth".to_string()));
+    }
 }

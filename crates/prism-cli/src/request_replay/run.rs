@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
-use reqwest::blocking::Client;
+use reqwest::Client;
 use reqwest::Url;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -12,7 +12,7 @@ use super::{CapturedLog, ReplayRun, RequestReplay, RequestReplayBundle};
 
 const DEFAULT_REPLAY_DIR: &str = "request-replay";
 
-pub fn run(request_id: &str, env: &str, log_dir: Option<&str>) -> Result<()> {
+pub async fn run(request_id: &str, env: &str, log_dir: Option<&str>) -> Result<()> {
     let replay_dir =
         std::env::var("PRISM_REPLAY_DIR").unwrap_or_else(|_| DEFAULT_REPLAY_DIR.into());
     let replay_dir = PathBuf::from(replay_dir);
@@ -35,17 +35,21 @@ pub fn run(request_id: &str, env: &str, log_dir: Option<&str>) -> Result<()> {
         .or_else(|| request.variants.first())
         .with_context(|| format!("no variants defined for request '{request_id}'"))?;
 
-    let url = build_url(&base_url, &request.path, &variant.request.query)?;
+    let url = build_url(
+        &base_url,
+        &request.path,
+        &variant.request.path_params,
+        &variant.request.query,
+    )?;
     let client = Client::new();
 
     let mut req = client.request(request.method.parse()?, url.clone());
 
-    if let Some(auth) = request.auth.as_ref() {
-        if auth.required {
-            if let Some((header, value)) = resolve_auth_header(&bundle, &auth.scheme_id)? {
-                req = req.header(header, value);
-            }
-        }
+    if let Some(auth) = request.auth.as_ref()
+        && auth.required
+        && let Some((header, value)) = resolve_auth_header(&bundle, &auth.scheme_id)?
+    {
+        req = req.header(header, value);
     }
 
     for (name, value) in &variant.request.headers {
@@ -61,13 +65,13 @@ pub fn run(request_id: &str, env: &str, log_dir: Option<&str>) -> Result<()> {
     }
 
     let start = Instant::now();
-    let response = req.send();
+    let response = req.send().await;
     let latency_ms = start.elapsed().as_millis();
 
     let (status, response_body, error) = match response {
         Ok(resp) => {
             let status = resp.status().as_u16();
-            let text = resp.text().unwrap_or_default();
+            let text = resp.text().await.unwrap_or_default();
             let json = serde_json::from_str::<Value>(&text).ok();
             (Some(status), json, None)
         }
@@ -161,27 +165,22 @@ fn resolve_auth_header(
     Ok(Some((header, value)))
 }
 
-fn build_url(base: &str, path: &str, query: &BTreeMap<String, Value>) -> Result<Url> {
+fn build_url(
+    base: &str,
+    path: &str,
+    path_params: &BTreeMap<String, Value>,
+    query: &BTreeMap<String, Value>,
+) -> Result<Url> {
     let mut url = Url::parse(base).with_context(|| format!("invalid base url '{base}'"))?;
 
     let mut resolved_path = path.to_string();
-    let mut query_map = query.clone();
-    let mut to_remove = Vec::new();
-
-    for (key, value) in query {
+    for (key, value) in path_params {
         let placeholder = format!("{{{}}}", key);
-        if resolved_path.contains(&placeholder) {
-            let value_str = value
-                .as_str()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| value.to_string());
-            resolved_path = resolved_path.replace(&placeholder, &value_str);
-            to_remove.push(key.clone());
-        }
-    }
-
-    for key in to_remove {
-        query_map.remove(&key);
+        let value_str = value
+            .as_str()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| value.to_string());
+        resolved_path = resolved_path.replace(&placeholder, &value_str);
     }
 
     let full_path = if resolved_path.starts_with('/') {
@@ -191,9 +190,9 @@ fn build_url(base: &str, path: &str, query: &BTreeMap<String, Value>) -> Result<
     };
     url.set_path(&full_path);
 
-    {
+    if !query.is_empty() {
         let mut pairs = url.query_pairs_mut();
-        for (key, value) in query_map.iter() {
+        for (key, value) in query {
             if let Some(s) = value.as_str() {
                 pairs.append_pair(key, s);
             } else {
@@ -218,4 +217,49 @@ fn write_run_log(replay_dir: &Path, log_dir: Option<&str>, run: &ReplayRun) -> R
     fs::write(&path, serde_json::to_string_pretty(run)?)
         .with_context(|| format!("failed to write {}", path.display()))?;
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_build_url_path_params() {
+        let path_params = BTreeMap::from([
+            ("user_id".to_string(), json!("abc")),
+        ]);
+        let query = BTreeMap::new();
+        let url = build_url("http://localhost:9100", "/users/{user_id}", &path_params, &query).unwrap();
+        assert_eq!(url.path(), "/users/abc");
+        assert_eq!(url.query(), None);
+    }
+
+    #[test]
+    fn test_build_url_query_params() {
+        let path_params = BTreeMap::new();
+        let query = BTreeMap::from([
+            ("limit".to_string(), json!(10)),
+            ("offset".to_string(), json!(0)),
+        ]);
+        let url = build_url("http://localhost:9100", "/users", &path_params, &query).unwrap();
+        assert_eq!(url.path(), "/users");
+        assert!(url.query().unwrap().contains("limit=10"));
+        assert!(url.query().unwrap().contains("offset=0"));
+    }
+
+    #[test]
+    fn test_build_url_leading_slash() {
+        let url = build_url("http://localhost:9100", "users", &BTreeMap::new(), &BTreeMap::new()).unwrap();
+        assert_eq!(url.path(), "/users");
+    }
+
+    #[test]
+    fn test_build_url_combined() {
+        let path_params = BTreeMap::from([("id".to_string(), json!("42"))]);
+        let query = BTreeMap::from([("fields".to_string(), json!("name,email"))]);
+        let url = build_url("http://localhost:9100", "/users/{id}", &path_params, &query).unwrap();
+        assert_eq!(url.path(), "/users/42");
+        assert!(url.query().unwrap().contains("fields=name%2Cemail"));
+    }
 }

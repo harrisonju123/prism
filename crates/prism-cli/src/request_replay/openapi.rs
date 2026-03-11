@@ -1,7 +1,7 @@
 /// OpenAPI discovery for agent-first request replay workflows.
 /// Priority: explicit env → repo files → running server → swaggo generation.
 use anyhow::{Context, Result};
-use reqwest::blocking::Client;
+use reqwest::Client;
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,7 +21,7 @@ pub struct OpenApiDiscoveryResult {
 
 /// Discover or generate an OpenAPI spec and normalize to JSON for replay.
 /// Designed to be called by agents as part of endpoint validation flows.
-pub fn discover_or_generate(output_dir: &Path) -> Result<OpenApiDiscoveryResult> {
+pub async fn discover_or_generate(output_dir: &Path) -> Result<OpenApiDiscoveryResult> {
     fs::create_dir_all(output_dir)
         .with_context(|| format!("failed to create {}", output_dir.display()))?;
 
@@ -37,7 +37,7 @@ pub fn discover_or_generate(output_dir: &Path) -> Result<OpenApiDiscoveryResult>
     }
 
     if let Ok(url) = std::env::var("PRISM_OPENAPI_URL") {
-        let value = fetch_openapi_value(&url)?;
+        let value = fetch_openapi_value(&url).await?;
         let output_path = output_dir.join(DEFAULT_OUTPUT_NAME);
         write_openapi_json(&value, &output_path)?;
         return Ok(OpenApiDiscoveryResult {
@@ -56,7 +56,7 @@ pub fn discover_or_generate(output_dir: &Path) -> Result<OpenApiDiscoveryResult>
         });
     }
 
-    if let Some((url, value)) = scrape_openapi_from_running()? {
+    if let Some((url, value)) = scrape_openapi_from_running().await? {
         let output_path = output_dir.join(DEFAULT_OUTPUT_NAME);
         write_openapi_json(&value, &output_path)?;
         return Ok(OpenApiDiscoveryResult {
@@ -109,10 +109,24 @@ fn discover_openapi_file(root: &Path) -> Option<PathBuf> {
         }
     }
 
+    const SKIP_DIRS: &[&str] = &[
+        "node_modules",
+        ".git",
+        "target",
+        "vendor",
+        ".next",
+        "dist",
+        "build",
+    ];
+
     for entry in WalkDir::new(root)
         .max_depth(4)
         .follow_links(true)
         .into_iter()
+        .filter_entry(|e| {
+            !e.file_type().is_dir()
+                || !SKIP_DIRS.contains(&e.file_name().to_string_lossy().as_ref())
+        })
         .flatten()
     {
         if !entry.file_type().is_file() {
@@ -133,7 +147,7 @@ fn discover_openapi_file(root: &Path) -> Option<PathBuf> {
     None
 }
 
-fn scrape_openapi_from_running() -> Result<Option<(String, Value)>> {
+async fn scrape_openapi_from_running() -> Result<Option<(String, Value)>> {
     let base = std::env::var("PRISM_LOCAL_URL")
         .or_else(|_| std::env::var("PRISM_URL"))
         .unwrap_or_else(|_| DEFAULT_LOCAL_URL.to_string());
@@ -152,14 +166,12 @@ fn scrape_openapi_from_running() -> Result<Option<(String, Value)>> {
         .context("failed to build OpenAPI scrape client")?;
     for endpoint in endpoints {
         let url = format!("{base}{endpoint}");
-        if let Ok(resp) = client.get(&url).send() {
-            if resp.status().is_success() {
-                if let Ok(text) = resp.text() {
-                    if let Ok(value) = parse_openapi_text(&text, &url) {
-                        return Ok(Some((url, value)));
-                    }
-                }
-            }
+        if let Ok(resp) = client.get(&url).send().await
+            && resp.status().is_success()
+            && let Ok(text) = resp.text().await
+            && let Ok(value) = parse_openapi_text(&text, &url)
+        {
+            return Ok(Some((url, value)));
         }
     }
 
@@ -209,19 +221,21 @@ fn generate_openapi_with_swag(output_dir: &Path) -> Result<Option<PathBuf>> {
     Ok(None)
 }
 
-fn read_openapi_value(path: &Path) -> Result<Value> {
+pub(super) fn read_openapi_value(path: &Path) -> Result<Value> {
     let contents =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     parse_openapi_text(&contents, &path.display().to_string())
 }
 
-fn fetch_openapi_value(url: &str) -> Result<Value> {
+async fn fetch_openapi_value(url: &str) -> Result<Value> {
     let resp = Client::new()
         .get(url)
         .send()
+        .await
         .with_context(|| format!("failed to fetch OpenAPI from {url}"))?;
     let text = resp
         .text()
+        .await
         .with_context(|| format!("failed to read OpenAPI response from {url}"))?;
     parse_openapi_text(&text, url)
 }
@@ -242,10 +256,50 @@ fn write_openapi_json(value: &Value, output_path: &Path) -> Result<()> {
 }
 
 fn has_command(name: &str) -> bool {
-    Command::new("sh")
-        .arg("-c")
-        .arg(format!("command -v {name} >/dev/null 2>&1"))
+    Command::new(name)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_openapi_text_json() {
+        let json = r#"{"openapi": "3.0.0", "info": {"title": "Test"}}"#;
+        let value = parse_openapi_text(json, "test").unwrap();
+        assert_eq!(value["openapi"], "3.0.0");
+        assert_eq!(value["info"]["title"], "Test");
+    }
+
+    #[test]
+    fn test_parse_openapi_text_yaml() {
+        let yaml = "openapi: '3.0.0'\ninfo:\n  title: Test\n";
+        let value = parse_openapi_text(yaml, "test").unwrap();
+        assert_eq!(value["openapi"], "3.0.0");
+        assert_eq!(value["info"]["title"], "Test");
+    }
+
+    #[test]
+    fn test_parse_openapi_text_invalid() {
+        // YAML is very permissive — plain strings parse as valid scalars.
+        // Use unbalanced brackets to trigger a real parse error.
+        let result = parse_openapi_text("{ unclosed: [", "test");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_has_command_exists() {
+        assert!(has_command("cargo"));
+    }
+
+    #[test]
+    fn test_has_command_missing() {
+        assert!(!has_command("definitely_not_a_real_command_xyz"));
+    }
 }

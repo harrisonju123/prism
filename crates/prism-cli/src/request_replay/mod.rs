@@ -109,6 +109,7 @@ pub struct RequestVariant {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VariantRequest {
+    pub path_params: BTreeMap<String, serde_json::Value>,
     pub query: BTreeMap<String, serde_json::Value>,
     pub headers: BTreeMap<String, serde_json::Value>,
     pub body: Option<serde_json::Value>,
