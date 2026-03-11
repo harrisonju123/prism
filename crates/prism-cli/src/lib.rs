@@ -15,6 +15,7 @@ pub mod permissions;
 pub mod persona;
 pub mod render;
 pub mod repl;
+pub mod request_replay;
 pub mod session;
 pub mod skills;
 pub mod tools;

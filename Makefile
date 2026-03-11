@@ -99,6 +99,12 @@ health:
 models:
 	curl -s http://localhost:9100/v1/models | jq .
 
+request-replay:
+	$(CARGO) run -p prism-cli -- request-replay generate
+
+request-replay-openapi:
+	$(CARGO) run -p prism-cli -- request-replay openapi --output-dir request-replay
+
 uh-health:
 	~/.cargo/bin/uh context
 
@@ -226,4 +232,3 @@ disk-usage:
 	@echo ""
 	@echo "=== Active worktrees ==="
 	@git worktree list
-
