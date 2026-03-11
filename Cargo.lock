@@ -14064,6 +14064,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2",
  "shellexpand 3.1.2",
  "similar",

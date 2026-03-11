@@ -22,6 +22,7 @@ or need to choose between materially different approaches.
   Prefer this for builds, tests, git operations, and multi-step shell pipelines.
 - **run_command** command args [timeout_secs] [cwd]: Run a command with separate args array. \
   Same output as bash. Use bash for most cases.
+- **skill** name args: Invoke a project skill (e.g. `/request-replay`) for agent-first workflows.
 - **glob_files** pattern [dir]: Find files matching a glob (e.g. '**/*.rs').
 - **grep_files** pattern [dir] [file_glob]: Search file contents by regex.
 - **web_fetch** url: Fetch a URL and return its text (HTML stripped). \
