@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashMap};
@@ -6,9 +6,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::{
-    openapi, AuthScheme, AuthSpec, BodySpec, ExpectedResponse, HeaderParam, PathParam, QueryParam,
+    AuthScheme, AuthSpec, BodySpec, ExpectedResponse, HeaderParam, PathParam, QueryParam,
     RequestAuth, RequestReplay, RequestReplayBundle, RequestVariant, ServiceMetadata,
-    VariantRequest,
+    VariantRequest, openapi,
 };
 
 const DEFAULT_LOCAL_URL: &str = "http://localhost:9100";
@@ -513,7 +513,11 @@ fn resolve_schema_ref(
     schema_map: &mut HashMap<String, String>,
 ) -> Result<Option<String>> {
     if let Some(ref_str) = schema.get("$ref").and_then(|v| v.as_str()) {
-        let name = ref_str.split('/').next_back().unwrap_or(ref_str).to_string();
+        let name = ref_str
+            .split('/')
+            .next_back()
+            .unwrap_or(ref_str)
+            .to_string();
         if let Some(path) = schema_map.get(&name) {
             return Ok(Some(path.clone()));
         }
@@ -704,12 +708,10 @@ mod tests {
 
     #[test]
     fn test_is_private_operation() {
-        let op: Map<String, Value> =
-            serde_json::from_value(json!({"tags": ["internal"]})).unwrap();
+        let op: Map<String, Value> = serde_json::from_value(json!({"tags": ["internal"]})).unwrap();
         assert!(is_private_operation(&op, None));
 
-        let op: Map<String, Value> =
-            serde_json::from_value(json!({"x-internal": true})).unwrap();
+        let op: Map<String, Value> = serde_json::from_value(json!({"x-internal": true})).unwrap();
         assert!(is_private_operation(&op, None));
 
         let op: Map<String, Value> = serde_json::from_value(json!({"tags": ["users"]})).unwrap();

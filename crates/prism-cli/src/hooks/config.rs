@@ -7,6 +7,26 @@ pub struct HooksConfig {
     pub pre_tool_use: Vec<HookEntry>,
     #[serde(default)]
     pub post_tool_use: Vec<HookEntry>,
+    #[serde(default)]
+    pub auto_save: Option<AutoSaveConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AutoSaveConfig {
+    /// Shell command to trigger save. Receives JSON stdin: {"hook":"auto_save","tool_name":"...","path":"..."}
+    pub command: Option<String>,
+    #[serde(default = "default_auto_save_timeout")]
+    pub timeout_secs: u64,
+    /// Also trigger before read_file (default: false)
+    #[serde(default)]
+    pub before_read: bool,
+    /// Proceed if save command fails (default: true)
+    #[serde(default = "default_true")]
+    pub fail_open: bool,
+}
+
+fn default_auto_save_timeout() -> u64 {
+    3
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -130,5 +150,40 @@ mod tests {
     fn load_missing_file_returns_default() {
         let config = HooksConfig::load(Path::new("/nonexistent/hooks.json"));
         assert!(config.pre_tool_use.is_empty());
+    }
+
+    #[test]
+    fn parse_auto_save_full() {
+        let json = r#"{
+            "auto_save": {
+                "command": "osascript -e 'save'",
+                "timeout_secs": 5,
+                "before_read": true,
+                "fail_open": false
+            }
+        }"#;
+        let config: HooksConfig = serde_json::from_str(json).unwrap();
+        let auto = config.auto_save.unwrap();
+        assert_eq!(auto.command.as_deref(), Some("osascript -e 'save'"));
+        assert_eq!(auto.timeout_secs, 5);
+        assert!(auto.before_read);
+        assert!(!auto.fail_open);
+    }
+
+    #[test]
+    fn parse_auto_save_defaults() {
+        let json = r#"{ "auto_save": { "command": "echo save" } }"#;
+        let config: HooksConfig = serde_json::from_str(json).unwrap();
+        let auto = config.auto_save.unwrap();
+        assert_eq!(auto.timeout_secs, 3);
+        assert!(!auto.before_read);
+        assert!(auto.fail_open);
+    }
+
+    #[test]
+    fn parse_config_without_auto_save() {
+        let json = r#"{ "pre_tool_use": [] }"#;
+        let config: HooksConfig = serde_json::from_str(json).unwrap();
+        assert!(config.auto_save.is_none());
     }
 }

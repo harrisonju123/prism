@@ -195,6 +195,12 @@ enum Commands {
         #[command(subcommand)]
         action: WpAction,
     },
+
+    /// File claim management (advisory locking)
+    Files {
+        #[command(subcommand)]
+        action: FilesAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -382,6 +388,27 @@ enum WpAction {
         wp_id: String,
         /// New status: planned | ready | in_progress | review | done | cancelled
         status: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum FilesAction {
+    /// Claim a file for editing (advisory lock)
+    Claim {
+        path: String,
+        /// TTL in seconds; claim auto-expires after this duration
+        #[arg(long)]
+        ttl: Option<i64>,
+    },
+    /// Release your claim on a file
+    Release { path: String },
+    /// Check if a file is claimed (exit 0=free, exit 1=claimed)
+    Check { path: String },
+    /// List active file claims
+    List {
+        /// Filter to a specific agent
+        #[arg(long)]
+        agent: Option<String>,
     },
 }
 
@@ -1028,6 +1055,49 @@ async fn run(cli: Cli) -> Result<(), String> {
                     .await
                     .map_err(|e| e.to_string())?;
                 print_json(&plan);
+            }
+        },
+        Commands::Files { action } => match action {
+            FilesAction::Claim { path, ttl } => {
+                let agent = agent_name();
+                match store.claim_file(workspace_id, &agent, &path, ttl).await {
+                    Ok(claim) => print_json(&claim),
+                    Err(uglyhat::error::Error::Conflict(msg)) => {
+                        eprintln!("WARNING: file claimed by another agent: {msg}");
+                        process::exit(1);
+                    }
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+            FilesAction::Release { path } => {
+                let agent = agent_name();
+                store
+                    .release_file(workspace_id, &path, &agent)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                println!("{{\"released\":{:?}}}", path);
+            }
+            FilesAction::Check { path } => {
+                let claim = store
+                    .check_file_claim(workspace_id, &path)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                match claim {
+                    Some(c) => {
+                        print_json(&c);
+                        process::exit(1);
+                    }
+                    None => {
+                        println!("null");
+                    }
+                }
+            }
+            FilesAction::List { agent } => {
+                let claims = store
+                    .list_file_claims(workspace_id, agent.as_deref())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&claims);
             }
         },
         Commands::Wp { action } => match action {

@@ -4,6 +4,7 @@ mod activity;
 mod agent;
 mod context;
 mod decision;
+mod file_claim;
 mod guardrail;
 mod handoff;
 mod inbox;
@@ -525,5 +526,42 @@ impl Store for SqliteStore {
     ) -> Result<Vec<WorkPackage>> {
         self.refresh_work_package_readiness_impl(workspace_id, plan_id)
             .await
+    }
+
+    async fn claim_file(
+        &self,
+        workspace_id: Uuid,
+        agent_name: &str,
+        file_path: &str,
+        ttl_secs: Option<i64>,
+    ) -> Result<FileClaim> {
+        self.claim_file_impl(workspace_id, agent_name, file_path, ttl_secs)
+            .await
+    }
+
+    async fn release_file(
+        &self,
+        workspace_id: Uuid,
+        file_path: &str,
+        agent_name: &str,
+    ) -> Result<()> {
+        self.release_file_impl(workspace_id, file_path, agent_name)
+            .await
+    }
+
+    async fn check_file_claim(
+        &self,
+        workspace_id: Uuid,
+        file_path: &str,
+    ) -> Result<Option<FileClaim>> {
+        self.check_file_claim_impl(workspace_id, file_path).await
+    }
+
+    async fn list_file_claims(
+        &self,
+        workspace_id: Uuid,
+        agent_name: Option<&str>,
+    ) -> Result<Vec<FileClaim>> {
+        self.list_file_claims_impl(workspace_id, agent_name).await
     }
 }

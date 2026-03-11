@@ -158,7 +158,11 @@ impl Render for PlanViewItem {
                             .size(LabelSize::XSmall)
                             .color(Color::Muted),
                     )
-                    .child(div().flex_1().child(Label::new(intent).size(LabelSize::Small)))
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(Label::new(intent).size(LabelSize::Small)),
+                    )
                     .child(
                         Label::new(status_label)
                             .size(LabelSize::XSmall)
@@ -187,7 +191,11 @@ impl Render for PlanViewItem {
                                 .size(LabelSize::XSmall)
                                 .color(plan_status_color),
                         )
-                        .child(div().flex_1().child(Label::new(intent_preview).size(LabelSize::Small)))
+                        .child(
+                            div()
+                                .flex_1()
+                                .child(Label::new(intent_preview).size(LabelSize::Small)),
+                        )
                         .child(
                             Label::new(format!("{done}/{total}"))
                                 .size(LabelSize::XSmall)

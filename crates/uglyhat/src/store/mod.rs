@@ -313,4 +313,29 @@ pub trait Store: Send + Sync {
         workspace_id: Uuid,
     ) -> Result<std::collections::HashMap<String, i64>>;
     async fn prune_old_messages(&self, workspace_id: Uuid) -> Result<()>;
+
+    // --- FileClaim (4) ---
+    async fn claim_file(
+        &self,
+        workspace_id: Uuid,
+        agent_name: &str,
+        file_path: &str,
+        ttl_secs: Option<i64>,
+    ) -> Result<FileClaim>;
+    async fn release_file(
+        &self,
+        workspace_id: Uuid,
+        file_path: &str,
+        agent_name: &str,
+    ) -> Result<()>;
+    async fn check_file_claim(
+        &self,
+        workspace_id: Uuid,
+        file_path: &str,
+    ) -> Result<Option<FileClaim>>;
+    async fn list_file_claims(
+        &self,
+        workspace_id: Uuid,
+        agent_name: Option<&str>,
+    ) -> Result<Vec<FileClaim>>;
 }

@@ -376,7 +376,8 @@ async fn run(cli: Cli) -> Result<()> {
                 include_private,
                 include_full,
             } => {
-                request_replay::generate(&output_dir, overwrite, include_private, include_full).await?;
+                request_replay::generate(&output_dir, overwrite, include_private, include_full)
+                    .await?;
             }
             RequestReplayCmd::OpenApi { output_dir } => {
                 request_replay::openapi::discover_or_generate(Path::new(&output_dir)).await?;

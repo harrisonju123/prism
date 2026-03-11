@@ -705,25 +705,56 @@ impl PrismAgent {
                             }
                         }
 
+                        // Auto-save: flush IDE buffers to disk before file operations
+                        if let Err(msg) = self.hook_runner.run_auto_save(&name, &args).await {
+                            messages.push(Message {
+                                role: MessageRole::Tool,
+                                content: Some(json!(msg)),
+                                name: None,
+                                tool_calls: None,
+                                tool_call_id: Some(id),
+                                extra: Default::default(),
+                            });
+                            continue;
+                        }
+
                         // Detect external file modifications since last read.
                         // Stores (path, is_write) so we can decide post-tool whether to warn.
-                        let staleness_info: Option<(String, bool)> = if matches!(bt, Some(BuiltinTool::EditFile | BuiltinTool::WriteFile)) {
-                            if let Some(path) = args["path"].as_str() {
-                                let stored = {
-                                    let sessions = self.sessions.borrow();
-                                    sessions.get(session_id).and_then(|s| s.file_read_mtimes.get(path).copied())
-                                };
-                                if let Some(stored_mtime) = stored {
-                                    if let Ok(meta) = tokio::fs::metadata(path).await {
-                                        if let Ok(current_mtime) = meta.modified() {
-                                            if current_mtime != stored_mtime {
-                                                Some((path.to_owned(), matches!(bt, Some(BuiltinTool::WriteFile))))
-                                            } else { None }
-                                        } else { None }
-                                    } else { None }
-                                } else { None }
-                            } else { None }
-                        } else { None };
+                        let staleness_info: Option<(String, bool)> =
+                            if matches!(bt, Some(BuiltinTool::EditFile | BuiltinTool::WriteFile)) {
+                                if let Some(path) = args["path"].as_str() {
+                                    let stored = {
+                                        let sessions = self.sessions.borrow();
+                                        sessions
+                                            .get(session_id)
+                                            .and_then(|s| s.file_read_mtimes.get(path).copied())
+                                    };
+                                    if let Some(stored_mtime) = stored {
+                                        if let Ok(meta) = tokio::fs::metadata(path).await {
+                                            if let Ok(current_mtime) = meta.modified() {
+                                                if current_mtime != stored_mtime {
+                                                    Some((
+                                                        path.to_owned(),
+                                                        matches!(bt, Some(BuiltinTool::WriteFile)),
+                                                    ))
+                                                } else {
+                                                    None
+                                                }
+                                            } else {
+                                                None
+                                            }
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
 
                         let mut skill_injection: Option<String> = None;
                         let result = match bt {
@@ -797,7 +828,14 @@ impl PrismAgent {
                         let result = self.hook_runner.run_post_hooks(name, &args, &result).await;
 
                         // Update stored mtime after read/write/edit so own-writes don't trigger false positives
-                        if matches!(bt, Some(BuiltinTool::ReadFile | BuiltinTool::WriteFile | BuiltinTool::EditFile)) {
+                        if matches!(
+                            bt,
+                            Some(
+                                BuiltinTool::ReadFile
+                                    | BuiltinTool::WriteFile
+                                    | BuiltinTool::EditFile
+                            )
+                        ) {
                             if let Some(path) = args["path"].as_str() {
                                 if let Ok(meta) = tokio::fs::metadata(path).await {
                                     if let Ok(mtime) = meta.modified() {
@@ -816,13 +854,18 @@ impl PrismAgent {
                         // - EditFile failure + stale: embed fresh content so agent can retry inline
                         let result = if let Some((stale_path, is_write)) = staleness_info {
                             if is_write {
-                                format!("Warning: `{stale_path}` was modified externally since last read. Re-read the file first to avoid overwriting changes.\n\n{result}")
+                                format!(
+                                    "Warning: `{stale_path}` was modified externally since last read. Re-read the file first to avoid overwriting changes.\n\n{result}"
+                                )
                             } else if result.starts_with("edited ") {
                                 result
                             } else {
-                                let fresh = tokio::fs::read_to_string(&stale_path).await
+                                let fresh = tokio::fs::read_to_string(&stale_path)
+                                    .await
                                     .unwrap_or_else(|e| format!("(could not read file: {e})"));
-                                format!("Warning: `{stale_path}` was modified since your last read. Your edit did not apply. Current file contents:\n\n{fresh}")
+                                format!(
+                                    "Warning: `{stale_path}` was modified since your last read. Your edit did not apply. Current file contents:\n\n{fresh}"
+                                )
                             }
                         } else {
                             result

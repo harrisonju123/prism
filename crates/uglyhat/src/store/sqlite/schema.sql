@@ -212,6 +212,18 @@ CREATE INDEX IF NOT EXISTS idx_work_packages_workspace ON work_packages(workspac
 CREATE INDEX IF NOT EXISTS idx_work_packages_plan ON work_packages(plan_id) WHERE plan_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_work_packages_status ON work_packages(workspace_id, status);
 
+-- File claims (advisory file locking for multi-agent coordination)
+CREATE TABLE IF NOT EXISTS file_claims (
+    id           TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    file_path    TEXT NOT NULL,
+    agent_name   TEXT NOT NULL,
+    claimed_at   TEXT NOT NULL,
+    expires_at   TEXT,
+    UNIQUE(workspace_id, file_path)
+);
+CREATE INDEX IF NOT EXISTS idx_file_claims_workspace ON file_claims(workspace_id, agent_name);
+
 -- Snapshots
 CREATE TABLE IF NOT EXISTS snapshots (
     id            TEXT PRIMARY KEY,

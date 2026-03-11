@@ -124,6 +124,53 @@ impl HookRunner {
         current_result
     }
 
+    /// Run auto-save before file operations to sync IDE buffers to disk.
+    /// Returns Ok(()) if not configured, tool doesn't match, or save succeeded.
+    /// Returns Err(message) only when fail_open=false and the command fails.
+    pub async fn run_auto_save(&self, tool_name: &str, args: &Value) -> Result<(), String> {
+        let auto = match &self.config.auto_save {
+            Some(a) => a,
+            None => return Ok(()),
+        };
+        let command = match &auto.command {
+            Some(c) if !c.is_empty() => c,
+            _ => return Ok(()),
+        };
+
+        // Only trigger for file-mutating tools (and optionally read_file)
+        let should_trigger = match tool_name {
+            "edit_file" | "write_file" => true,
+            "read_file" => auto.before_read,
+            _ => false,
+        };
+        if !should_trigger {
+            return Ok(());
+        }
+
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        let input = serde_json::json!({
+            "hook": "auto_save",
+            "tool_name": tool_name,
+            "path": path,
+        });
+
+        match run_hook_process(command, &input, auto.timeout_secs).await {
+            Ok(_) => {
+                // Brief pause for filesystem propagation (macOS FSEvents can lag)
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Ok(())
+            }
+            Err(e) => {
+                if auto.fail_open {
+                    tracing::warn!(command, "auto_save hook failed, proceeding anyway: {e}");
+                    Ok(())
+                } else {
+                    Err(format!("auto_save failed: {e}"))
+                }
+            }
+        }
+    }
+
     pub fn has_pre_hooks(&self) -> bool {
         !self.config.pre_tool_use.is_empty()
     }
@@ -255,5 +302,151 @@ mod tests {
             .run_post_hooks("bash", &serde_json::json!({}), "original")
             .await;
         assert_eq!(result, "original");
+    }
+
+    #[tokio::test]
+    async fn auto_save_not_configured_is_ok() {
+        let runner = HookRunner::new(HooksConfig::default());
+        let result = runner
+            .run_auto_save("edit_file", &serde_json::json!({"path": "/tmp/f.rs"}))
+            .await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn auto_save_triggers_for_edit_and_write() {
+        use config::AutoSaveConfig;
+        let config = HooksConfig {
+            auto_save: Some(AutoSaveConfig {
+                command: Some("echo saved".into()),
+                timeout_secs: 3,
+                before_read: false,
+                fail_open: true,
+            }),
+            ..Default::default()
+        };
+        let runner = HookRunner::new(config);
+        assert!(
+            runner
+                .run_auto_save("edit_file", &serde_json::json!({"path": "/tmp/f.rs"}))
+                .await
+                .is_ok()
+        );
+        assert!(
+            runner
+                .run_auto_save("write_file", &serde_json::json!({"path": "/tmp/f.rs"}))
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_save_skips_unrelated_tools() {
+        use config::AutoSaveConfig;
+        let config = HooksConfig {
+            auto_save: Some(AutoSaveConfig {
+                // Command that would fail if actually run
+                command: Some("exit 1".into()),
+                timeout_secs: 3,
+                before_read: false,
+                fail_open: false,
+            }),
+            ..Default::default()
+        };
+        let runner = HookRunner::new(config);
+        // Non-file tools should skip entirely (return Ok even with fail_open=false)
+        assert!(
+            runner
+                .run_auto_save("list_dir", &serde_json::json!({}))
+                .await
+                .is_ok()
+        );
+        assert!(
+            runner
+                .run_auto_save("bash", &serde_json::json!({}))
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_save_read_file_respects_before_read() {
+        use config::AutoSaveConfig;
+        // before_read=false: read_file should not trigger
+        let config = HooksConfig {
+            auto_save: Some(AutoSaveConfig {
+                command: Some("exit 1".into()),
+                timeout_secs: 3,
+                before_read: false,
+                fail_open: false,
+            }),
+            ..Default::default()
+        };
+        let runner = HookRunner::new(config);
+        assert!(
+            runner
+                .run_auto_save("read_file", &serde_json::json!({"path": "/tmp/f.rs"}))
+                .await
+                .is_ok()
+        );
+
+        // before_read=true: read_file should trigger (and fail here)
+        let config2 = HooksConfig {
+            auto_save: Some(AutoSaveConfig {
+                command: Some("exit 1".into()),
+                timeout_secs: 3,
+                before_read: true,
+                fail_open: false,
+            }),
+            ..Default::default()
+        };
+        let runner2 = HookRunner::new(config2);
+        assert!(
+            runner2
+                .run_auto_save("read_file", &serde_json::json!({"path": "/tmp/f.rs"}))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_save_fail_open_swallows_error() {
+        use config::AutoSaveConfig;
+        let config = HooksConfig {
+            auto_save: Some(AutoSaveConfig {
+                command: Some("exit 1".into()),
+                timeout_secs: 3,
+                before_read: false,
+                fail_open: true,
+            }),
+            ..Default::default()
+        };
+        let runner = HookRunner::new(config);
+        assert!(
+            runner
+                .run_auto_save("edit_file", &serde_json::json!({"path": "/tmp/f.rs"}))
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn auto_save_fail_closed_returns_error() {
+        use config::AutoSaveConfig;
+        let config = HooksConfig {
+            auto_save: Some(AutoSaveConfig {
+                command: Some("exit 1".into()),
+                timeout_secs: 3,
+                before_read: false,
+                fail_open: false,
+            }),
+            ..Default::default()
+        };
+        let runner = HookRunner::new(config);
+        let result = runner
+            .run_auto_save("edit_file", &serde_json::json!({"path": "/tmp/f.rs"}))
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("auto_save failed"));
     }
 }

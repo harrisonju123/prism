@@ -663,6 +663,22 @@ pub struct WorkPackage {
 }
 
 // ---------------------------------------------------------------------------
+// File claims (advisory locking for multi-agent coordination)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileClaim {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    pub file_path: String,
+    /// Denormalized agent name — no FK needed, stable identity across sessions.
+    pub agent_name: String,
+    pub claimed_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+// ---------------------------------------------------------------------------
 // Thread guardrails
 // ---------------------------------------------------------------------------
 

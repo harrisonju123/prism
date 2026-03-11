@@ -264,6 +264,18 @@ impl Renderer {
             eprintln!("[exploration nudge]");
         }
     }
+
+    pub fn write_coalesce_nudge(&self) {
+        if self.colored {
+            eprintln!(
+                "{}[write coalesce nudge]{}",
+                SetForegroundColor(Color::Yellow),
+                ResetColor,
+            );
+        } else {
+            eprintln!("[write coalesce nudge]");
+        }
+    }
 }
 
 #[cfg(test)]

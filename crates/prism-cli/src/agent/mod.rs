@@ -126,6 +126,48 @@ impl ExplorationBudget {
     }
 }
 
+/// Fires a nudge when the same file is written twice within `window` turns.
+struct WriteCoalesceTracker {
+    /// path → turn number of last write
+    last_write_turn: HashMap<String, u32>,
+    window: u32,
+    /// Paths already nudged in the current window to avoid repeat spam.
+    nudged: HashSet<String>,
+}
+
+impl WriteCoalesceTracker {
+    fn new(window: u32) -> Self {
+        Self {
+            last_write_turn: HashMap::new(),
+            window,
+            nudged: HashSet::new(),
+        }
+    }
+
+    /// Record a write. Returns `Some(nudge)` if this is a repeat within the window.
+    fn record_write(&mut self, path: &str, current_turn: u32) -> Option<String> {
+        if self.window == 0 {
+            return None; // disabled
+        }
+        let prev = self.last_write_turn.insert(path.to_string(), current_turn);
+        if let Some(prev_turn) = prev {
+            if current_turn - prev_turn < self.window && !self.nudged.contains(path) {
+                self.nudged.insert(path.to_string());
+                return Some(format!(
+                    "[System] You've rewritten `{path}` twice within {} turns. \
+                     Consider using edit_file to make targeted changes instead of full rewrites.",
+                    self.window
+                ));
+            }
+        }
+        // Reset nudge suppression when the file moves outside the window
+        if prev.map_or(true, |p| current_turn - p >= self.window) {
+            self.nudged.remove(path);
+        }
+        None
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FinishReason {
     Stop,
@@ -520,6 +562,11 @@ impl Agent {
         let tool_defs = tools::all_tool_definitions(self.mcp_registry.as_deref());
         let mut exploration_budget =
             ExplorationBudget::new(self.config.model.exploration_nudge_turns);
+        let write_coalesce_window = std::env::var("PRISM_WRITE_COALESCE_WINDOW")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3u32);
+        let mut write_coalesce = WriteCoalesceTracker::new(write_coalesce_window);
         let decision_threshold = decision_checkpoint_threshold();
         let q_interval = question_checkpoint_interval();
 
@@ -875,6 +922,17 @@ If you have questions, ask them now. If you're confident, continue."
                                     continue;
                                 }
                             }
+                        }
+
+                        // Auto-save: flush IDE buffers to disk before file operations
+                        if let Err(msg) = self.hook_runner.run_auto_save(&name, &args).await {
+                            self.permission_gate.renderer().tool_denied(&name);
+                            outcomes.push(ToolOutcome::Denied {
+                                index,
+                                id,
+                                message: msg,
+                            });
+                            continue;
                         }
 
                         // Staleness guard: deny write/edit if the file was modified since last read
@@ -1315,6 +1373,12 @@ If you have questions, ask them now. If you're confident, continue."
                                         if let Ok(mtime) = meta.modified() {
                                             self.files_read_mtime.insert(normed.clone(), mtime);
                                         }
+                                    }
+                                    if let Some(nudge) = write_coalesce.record_write(&normed, turns)
+                                    {
+                                        tracing::info!(path = %normed, "write coalesce nudge triggered");
+                                        self.permission_gate.renderer().write_coalesce_nudge();
+                                        self.session.push_message(common::user_message(nudge));
                                     }
                                     turn_files.push(normed);
                                 }

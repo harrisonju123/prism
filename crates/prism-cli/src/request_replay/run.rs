@@ -226,11 +226,15 @@ mod tests {
 
     #[test]
     fn test_build_url_path_params() {
-        let path_params = BTreeMap::from([
-            ("user_id".to_string(), json!("abc")),
-        ]);
+        let path_params = BTreeMap::from([("user_id".to_string(), json!("abc"))]);
         let query = BTreeMap::new();
-        let url = build_url("http://localhost:9100", "/users/{user_id}", &path_params, &query).unwrap();
+        let url = build_url(
+            "http://localhost:9100",
+            "/users/{user_id}",
+            &path_params,
+            &query,
+        )
+        .unwrap();
         assert_eq!(url.path(), "/users/abc");
         assert_eq!(url.query(), None);
     }
@@ -250,7 +254,13 @@ mod tests {
 
     #[test]
     fn test_build_url_leading_slash() {
-        let url = build_url("http://localhost:9100", "users", &BTreeMap::new(), &BTreeMap::new()).unwrap();
+        let url = build_url(
+            "http://localhost:9100",
+            "users",
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .unwrap();
         assert_eq!(url.path(), "/users");
     }
 

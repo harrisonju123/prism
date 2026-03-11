@@ -130,9 +130,7 @@ impl HqState {
                         .list_plans(None)
                         .unwrap_or_default()
                         .into_iter()
-                        .filter(|p| {
-                            matches!(p.status, PlanStatus::Active | PlanStatus::Approved)
-                        })
+                        .filter(|p| matches!(p.status, PlanStatus::Active | PlanStatus::Approved))
                         .collect::<Vec<_>>();
                     // Only load WPs for the plans we're actually displaying.
                     let active_plan_ids: std::collections::HashSet<uuid::Uuid> =

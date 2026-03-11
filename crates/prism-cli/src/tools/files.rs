@@ -51,7 +51,9 @@ pub async fn edit_file(path: &str, old_string: &str, new_string: &str) -> String
     };
     let count = contents.matches(old_string).count();
     if count == 0 {
-        return format!("error: old_string not found in {path}\n\nCurrent file contents:\n{contents}");
+        return format!(
+            "error: old_string not found in {path}\n\nCurrent file contents:\n{contents}"
+        );
     }
     if count > 1 {
         return format!(

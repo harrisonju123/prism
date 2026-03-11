@@ -241,8 +241,7 @@ impl Render for NavigatorPanel {
                     .plans
                     .iter()
                     .map(|p| {
-                        let (total, done) =
-                            wp_stats.get(&p.id).copied().unwrap_or_default();
+                        let (total, done) = wp_stats.get(&p.id).copied().unwrap_or_default();
                         let preview = if p.intent.len() > 36 {
                             format!("{}…", &p.intent[..36])
                         } else {
