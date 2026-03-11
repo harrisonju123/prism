@@ -272,14 +272,17 @@ pub async fn chat_completions(
     };
 
     // Resolve aliases (DB cache first, then static) before routing
-    if let Some(resolved) = models::resolve_alias_cached(
-        &request.model,
-        state.alias_cache.as_deref(),
-    )
-    .await
-    {
-        tracing::debug!(alias = %request.model, resolved = %resolved, "model alias resolved");
-        request.model = resolved;
+    // Skip if the model name is already a config-defined model — config takes priority
+    if !state.config.models.contains_key(&request.model) {
+        if let Some(resolved) = models::resolve_alias_cached(
+            &request.model,
+            state.alias_cache.as_deref(),
+        )
+        .await
+        {
+            tracing::debug!(alias = %request.model, resolved = %resolved, "model alias resolved");
+            request.model = resolved;
+        }
     }
 
     // Resolve which provider and model_id to use (with fallbacks)
@@ -424,6 +427,20 @@ pub async fn chat_completions(
                 .insert("x-cache", "HIT".parse().unwrap());
             return Ok(response);
         }
+    }
+
+    // Strip tools/tool_choice for models that don't support them
+    let model_supports_tools = state
+        .config
+        .models
+        .get(&request_model)
+        .map(|mc| mc.supports_tools)
+        .or_else(|| models::lookup_model(&request_model).map(|m| m.supports_tools))
+        .unwrap_or(true);
+    if !model_supports_tools && request.tools.is_some() {
+        tracing::debug!(model = %request_model, "stripping unsupported tools param");
+        request.tools = None;
+        request.tool_choice = None;
     }
 
     // Inject stream_options to request usage data in the final streaming chunk
@@ -1530,6 +1547,7 @@ mod tests {
                         model: "claude-sonnet-4".to_string(),
                     },
                 ],
+                supports_tools: true,
             },
         );
 
@@ -1558,6 +1576,7 @@ mod tests {
                 max_tokens: None,
                 context_window: None,
                 fallback_providers: vec![],
+                supports_tools: true,
             },
         );
 

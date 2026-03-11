@@ -1,3 +1,6 @@
+CARGO := $(HOME)/.cargo/bin/cargo
+export CARGO_TARGET_DIR ?= $(HOME)/.cache/prism-build
+
 .PHONY: build run check test lint dev fmt ci clean \
         run-prism run-uh install-uh install-prism-cli \
         docker-up docker-down docker-build docker-logs docker-deps \
@@ -5,46 +8,50 @@
         dev-setup dev dev-min \
         dashboard-install dashboard-build dashboard-dev \
         sync-zed sync-zed-dry check-prism check-zed check-all reconcile-cargo verify-patches regenerate-patches check-upstream-drift \
-        disk-usage clean-worktree-targets prune-worktrees \
+        disk-usage prune-build-cache \
         build-zed run-zed dogfood
 
 # Development
 build:
-	cargo build --workspace
+	$(CARGO) build --workspace
 
 check:
-	cargo check --workspace
+	$(CARGO) check --workspace
 
 test:
-	cargo test --workspace
+	$(CARGO) test --workspace
 
 lint:
-	cargo clippy --workspace -- -W clippy::all
+	$(CARGO) clippy --workspace -- -W clippy::all
 
 fmt:
-	cargo fmt --all
+	$(CARGO) fmt --all
 
 # Full CI
 ci: fmt lint test
 
-# Clean
+# Clean everything: shared cache, legacy ./target, worktree targets
 clean:
-	cargo clean
+	$(CARGO) clean
+	@[ ! -d ./target ] || (echo "Removing legacy ./target ..." && rm -rf ./target)
+	@for wt in .worktrees/*/; do \
+		[ -d "$$wt/target" ] && echo "Removing $$wt/target ..." && rm -rf "$$wt/target"; \
+	done; true
 
 # Run individual crates
 run-prism:
-	cargo run -p prism
+	$(CARGO) run -p prism
 
 run-uh:
-	cargo run -p uglyhat --bin uglyhat
+	$(CARGO) run -p uglyhat --bin uglyhat
 
 # Install the uh CLI
 install-uh:
-	cargo install --path crates/uglyhat --bin uh
+	$(CARGO) install --path crates/uglyhat --bin uh
 
 # Install prism-cli to ~/.cargo/bin
 install-prism-cli:
-	cargo install --path crates/prism-cli
+	$(CARGO) install --path crates/prism-cli
 
 # Docker
 docker-up:
@@ -69,7 +76,7 @@ dev-setup:
 
 # Daily driver: start deps then run prism locally
 dev: docker-deps
-	cargo run -p prism
+	$(CARGO) run -p prism
 
 # Minimal local dev: no Docker, no virtual keys — routes to a LiteLLM proxy.
 # Requires:
@@ -79,7 +86,7 @@ dev-min:
 	@[ -n "$$LITELLM_BASE_URL" ] || (echo "Error: LITELLM_BASE_URL is not set"; exit 1)
 	@[ -n "$$LITELLM_API_KEY" ] || (echo "Error: LITELLM_API_KEY is not set"; exit 1)
 	@[ -f config/prism.toml ] || cp config/prism.min.toml config/prism.toml
-	cargo run -p prism
+	$(CARGO) run -p prism
 
 # Quick health check against running server
 health:
@@ -109,23 +116,41 @@ sync-zed-dry:
 	./scripts/sync-zed-upstream.sh --dry-run
 
 check-prism:
-	cargo check -p prism
+	$(CARGO) check -p prism
 
 check-zed:
-	cargo check -p zed
+	$(CARGO) check -p zed
 
 check-all: check-prism check-zed
 
 # Build Zed from source (release build)
 build-zed:
-	cargo build -p zed --release
+	$(CARGO) build -p zed --release
 
 # Run Zed from source (debug build — faster compile, slower runtime)
 run-zed:
-	cargo run -p zed
+	$(CARGO) run -p zed
+
+# Prune incremental cache when it exceeds threshold, plus remove legacy target dirs
+CACHE_PRUNE_THRESHOLD_GB ?= 5
+prune-build-cache:
+	@cache_dir="$(HOME)/.cache/prism-build/debug/incremental"; \
+	if [ -d "$$cache_dir" ]; then \
+		size_kb=$$(du -sk "$$cache_dir" 2>/dev/null | cut -f1); \
+		size_gb=$$((size_kb / 1048576)); \
+		if [ "$$size_gb" -ge "$(CACHE_PRUNE_THRESHOLD_GB)" ]; then \
+			echo "  Build cache incremental dir is $${size_gb}GB (threshold $(CACHE_PRUNE_THRESHOLD_GB)GB) — pruning..."; \
+			rm -rf "$$cache_dir"; \
+			echo "  ✓ Pruned incremental cache"; \
+		fi; \
+	fi
+	@[ ! -d ./target ] || (echo "  Removing stale ./target ..." && rm -rf ./target && echo "  ✓ Removed legacy ./target")
+	@for wt in .worktrees/*/; do \
+		[ -d "$$wt/target" ] && echo "  Removing $$wt/target ..." && rm -rf "$$wt/target"; \
+	done; true
 
 # Dogfood: validate env then launch Zed with PrisM embedded gateway
-dogfood:
+dogfood: prune-build-cache
 	@echo "=== PrisM Dogfood ==="
 	@echo "Checking prerequisites..."
 	@( [ -n "$$ANTHROPIC_API_KEY" ] || [ -n "$$OPENAI_API_KEY" ] || [ -n "$$GOOGLE_AI_STUDIO_API_KEY" ] ) \
@@ -137,7 +162,7 @@ dogfood:
 	@echo "  - Assistant panel: select a PrisM model to chat"
 	@echo "  - Agent roster: spawn prism-cli agents in worktrees"
 	@echo ""
-	cargo run -p zed
+	$(CARGO) run -p zed
 
 check-upstream-drift:
 	bash scripts/check-upstream-drift.sh
@@ -175,21 +200,3 @@ disk-usage:
 	@echo "=== Active worktrees ==="
 	@git worktree list
 
-clean-worktree-targets:
-	@echo "Removing per-worktree target/ directories..."
-	@for wt in .worktrees/*/; do \
-		if [ -d "$$wt/target" ]; then \
-			printf "  Cleaning %s ... " "$$(basename $$wt)"; \
-			rm -rf "$$wt/target"; \
-			echo "done"; \
-		fi; \
-	done
-	@echo "Done. Next build will use shared cache at ~/.cache/prism-build"
-
-prune-worktrees:
-	@echo "=== Worktree status ==="
-	@git worktree list
-	@echo ""
-	@echo "To remove a stale worktree: git worktree remove .worktrees/<name>"
-	@echo "To remove all sprint1 worktrees (if merged):"
-	@echo "  for wt in sprint1-track-{a,b,c,d}; do git worktree remove .worktrees/\$$wt --force; done"

@@ -746,7 +746,7 @@ impl settings::Settings for AllLanguageSettings {
                 prompt_format: openai_compatible_settings.prompt_format.unwrap(),
             });
 
-        let prism_content = edit_predictions.prism.unwrap();
+        let prism_content = edit_predictions.prism.unwrap_or_default();
         let prism_model = prism_content.model;
         let prism_api_url = prism_content.api_url;
         let prism_max_tokens = prism_content.max_output_tokens;
@@ -768,16 +768,38 @@ impl settings::Settings for AllLanguageSettings {
         let mut file_types: FxHashMap<Arc<str>, (GlobSet, Vec<String>)> = FxHashMap::default();
 
         for (language, patterns) in all_languages.file_types.iter().flatten() {
+            log::info!(
+                "building glob set for language {language}: {patterns:?}"
+            );
             let mut builder = GlobSetBuilder::new();
+            let mut valid_patterns = Vec::new();
 
             for pattern in &patterns.0 {
-                builder.add(Glob::new(pattern).unwrap());
+                log::info!("compiling glob pattern: {pattern:?}");
+                match Glob::new(pattern) {
+                    Ok(glob) => {
+                        builder.add(glob);
+                        valid_patterns.push(pattern.clone());
+                    }
+                    Err(err) => {
+                        log::warn!(
+                            "Skipping invalid file_type glob {pattern:?} for {language}: {err}"
+                        );
+                    }
+                }
             }
 
-            file_types.insert(
-                language.clone(),
-                (builder.build().unwrap(), patterns.0.clone()),
-            );
+            log::info!("building GlobSet with {} patterns for {language}", valid_patterns.len());
+            match builder.build() {
+                Ok(glob_set) => {
+                    file_types.insert(language.clone(), (glob_set, valid_patterns));
+                }
+                Err(err) => {
+                    log::warn!(
+                        "Failed to build GlobSet for language {language}: {err}"
+                    );
+                }
+            }
         }
 
         Self {
