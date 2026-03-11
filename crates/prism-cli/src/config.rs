@@ -160,7 +160,13 @@ impl Config {
         let denied_paths = std::env::var("PRISM_DENIED_PATHS")
             .ok()
             .map(|s| s.split(',').map(|p| p.trim().to_string()).collect())
-            .unwrap_or_else(|| vec![".env".to_string(), "*.key".to_string(), "~/.ssh/**".to_string()]);
+            .unwrap_or_else(|| {
+                vec![
+                    ".env".to_string(),
+                    "*.key".to_string(),
+                    "~/.ssh/**".to_string(),
+                ]
+            });
 
         let denied_commands = std::env::var("PRISM_DENIED_COMMANDS")
             .ok()
@@ -207,7 +213,11 @@ impl Config {
             .unwrap_or(20);
 
         Ok(Self {
-            gateway: GatewayConfig { url, api_key, max_retries },
+            gateway: GatewayConfig {
+                url,
+                api_key,
+                max_retries,
+            },
             model: ModelConfig {
                 model,
                 max_turns,

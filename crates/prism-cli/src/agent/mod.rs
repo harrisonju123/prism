@@ -17,8 +17,8 @@ use uuid::Uuid;
 use background::BackgroundTaskManager;
 
 use crate::common::{
-    self, ToolCallBuilder, accumulate_tool_call_deltas, additional_dirs_section, build_system_prompt,
-    reconstruct_tool_calls, truncate_tool_output,
+    self, ToolCallBuilder, accumulate_tool_call_deltas, additional_dirs_section,
+    build_system_prompt, reconstruct_tool_calls, truncate_tool_output,
 };
 use crate::compression::{self, ContextCompressor};
 use crate::config::Config;
@@ -26,7 +26,9 @@ use crate::hooks::HookRunner;
 use crate::hooks::config::PreToolAction;
 use crate::mcp::McpRegistry;
 use crate::memory::MemoryManager;
-use crate::permissions::{self, PermissionDecision, PermissionMode, ToolPermissionGate, is_read_only};
+use crate::permissions::{
+    self, PermissionDecision, PermissionMode, ToolPermissionGate, is_read_only,
+};
 use crate::session::Session;
 use crate::skills::SkillRegistry;
 use crate::tools::{self, BuiltinTool};
@@ -41,20 +43,63 @@ fn normalize_path(path: &str) -> String {
     path.to_string()
 }
 
+/// Returns true if the user's prompt contains signals that a decision is required
+/// before implementation (e.g. "decide between", "option A vs B", "trade-offs").
+fn has_decision_signals(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    const SIGNALS: &[&str] = &[
+        "decide between",
+        "choose between",
+        "option a",
+        "option b",
+        "before implementation",
+        "before implementing",
+        "trade-off",
+        "tradeoff",
+        "compare approaches",
+        "which approach",
+        "pros and cons",
+        "evaluate alternatives",
+    ];
+    SIGNALS.iter().any(|s| lower.contains(s))
+}
+
+const DECISION_CHECKPOINT_THRESHOLD_DEFAULT: u32 = 8;
+const QUESTION_CHECKPOINT_INTERVAL_DEFAULT: u32 = 5;
+
+fn decision_checkpoint_threshold() -> u32 {
+    std::env::var("PRISM_DECISION_CHECKPOINT_THRESHOLD")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DECISION_CHECKPOINT_THRESHOLD_DEFAULT)
+}
+
+fn question_checkpoint_interval() -> u32 {
+    std::env::var("PRISM_QUESTION_CHECKPOINT_INTERVAL")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(QUESTION_CHECKPOINT_INTERVAL_DEFAULT)
+}
+
 /// Tracks consecutive read-only turns and emits a convergence nudge when the threshold is reached.
 struct ExplorationBudget {
     consecutive_readonly_turns: u32,
     threshold: u32,
-    nudged: bool,
+    /// True after the nudge has fired for the current streak; clears on streak reset.
+    streak_nudged: bool,
 }
 
 impl ExplorationBudget {
     fn new(threshold: u32) -> Self {
-        Self { consecutive_readonly_turns: 0, threshold, nudged: false }
+        Self {
+            consecutive_readonly_turns: 0,
+            threshold,
+            streak_nudged: false,
+        }
     }
 
-    /// Record a turn. Returns `Some(nudge message)` if the threshold is reached for the first time.
-    /// Resets when a write or substantive text turn occurs.
+    /// Record a turn. Returns `Some(nudge message)` if the threshold is reached for the first time
+    /// in the current streak. Resets when a write tool is used or the model produces substantive text.
     fn record_turn(&mut self, all_readonly: bool, had_substantive_text: bool) -> Option<String> {
         if self.threshold == 0 {
             return None; // disabled
@@ -64,16 +109,16 @@ impl ExplorationBudget {
             self.consecutive_readonly_turns += 1;
         } else {
             self.consecutive_readonly_turns = 0;
-            self.nudged = false;
+            self.streak_nudged = false;
         }
 
-        if self.consecutive_readonly_turns >= self.threshold && !self.nudged {
-            self.nudged = true;
+        if self.consecutive_readonly_turns >= self.threshold && !self.streak_nudged {
+            self.streak_nudged = true;
             Some(format!(
                 "[System] You have made {} consecutive exploration turns without proposing an approach. \
                  Summarize what you have learned so far and either propose a specific implementation plan \
                  or explain what specific information is still missing.",
-                self.consecutive_readonly_turns
+                self.threshold
             ))
         } else {
             None
@@ -181,6 +226,14 @@ pub struct Agent {
     cancel_interrupt: Arc<AtomicBool>,
     /// Directories added via `add_dir` — ephemeral, scoped to this session.
     additional_dirs: Vec<std::path::PathBuf>,
+    /// True when the user's prompt contains decision-required signals.
+    decision_checkpoint_armed: bool,
+    /// Cumulative count of read-only exploration tool calls in current run.
+    exploration_count: u32,
+    /// True after the decision checkpoint nudge has fired (one-shot per run).
+    decision_checkpoint_fired: bool,
+    /// Turn number at which the last question checkpoint fired (0 = never).
+    last_question_checkpoint_turn: u32,
 }
 
 const UH_AGENT_NAME_ENV: &str = "UH_AGENT_NAME";
@@ -223,6 +276,10 @@ impl Agent {
             files_touched: HashSet::new(),
             cancel_interrupt: Arc::new(AtomicBool::new(false)),
             additional_dirs: Vec::new(),
+            decision_checkpoint_armed: false,
+            exploration_count: 0,
+            decision_checkpoint_fired: false,
+            last_question_checkpoint_turn: 0,
         }
     }
 
@@ -259,6 +316,10 @@ impl Agent {
             files_touched: HashSet::new(),
             cancel_interrupt: Arc::new(AtomicBool::new(false)),
             additional_dirs: Vec::new(),
+            decision_checkpoint_armed: false,
+            exploration_count: 0,
+            decision_checkpoint_fired: false,
+            last_question_checkpoint_turn: 0,
         }
     }
 
@@ -366,6 +427,7 @@ impl Agent {
             tool_call_id: None,
             extra: Default::default(),
         });
+        self.decision_checkpoint_armed = has_decision_signals(task);
 
         self.inner_run().await
     }
@@ -387,6 +449,7 @@ impl Agent {
                 tool_call_id: None,
                 extra: Default::default(),
             });
+            self.decision_checkpoint_armed = has_decision_signals(task);
         }
 
         self.inner_run().await
@@ -406,6 +469,9 @@ impl Agent {
         self.interrupted.store(false, Ordering::SeqCst);
         self.plan_mode_violations = 0;
         self.interrupt_count.store(0, Ordering::SeqCst);
+        self.exploration_count = 0;
+        self.decision_checkpoint_fired = false;
+        self.last_question_checkpoint_turn = 0;
         // Signal the previous run's ctrl-c task to exit, then create a fresh token for this run.
         self.cancel_interrupt.store(true, Ordering::SeqCst);
         self.cancel_interrupt = Arc::new(AtomicBool::new(false));
@@ -422,7 +488,9 @@ impl Agent {
                 let prev = flag_count.fetch_add(1, Ordering::SeqCst);
                 flag_interrupted.store(true, Ordering::SeqCst);
                 if prev == 0 {
-                    eprintln!("\n\x1b[33m[interrupt] Finishing current turn — press Ctrl+C again to force quit\x1b[0m");
+                    eprintln!(
+                        "\n\x1b[33m[interrupt] Finishing current turn — press Ctrl+C again to force quit\x1b[0m"
+                    );
                 } else {
                     eprintln!("\n\x1b[31m[interrupt] Force quit\x1b[0m");
                     std::process::exit(130);
@@ -438,7 +506,10 @@ impl Agent {
         let model_name = self.config.model.model.clone();
         let mut stop_reason: Option<AgentStopReason> = None;
         let tool_defs = tools::all_tool_definitions(self.mcp_registry.as_deref());
-        let mut exploration_budget = ExplorationBudget::new(self.config.model.exploration_nudge_turns);
+        let mut exploration_budget =
+            ExplorationBudget::new(self.config.model.exploration_nudge_turns);
+        let decision_threshold = decision_checkpoint_threshold();
+        let q_interval = question_checkpoint_interval();
 
         for _turn in 0..self.config.model.max_turns {
             if self.interrupted.load(Ordering::Relaxed) {
@@ -452,6 +523,51 @@ impl Agent {
 
             // Poll for workspace-scoped decisions from other agents
             self.poll_and_inject_decisions().await;
+
+            // --- Exploration checkpoints ---
+            let current_turn = turns;
+
+            // A) Decision checkpoint: fire once after enough exploration calls
+            if self.decision_checkpoint_armed
+                && !self.decision_checkpoint_fired
+                && self.exploration_count >= decision_checkpoint_threshold()
+            {
+                self.decision_checkpoint_fired = true;
+                let nudge = "[Decision Checkpoint] You have explored enough context. \
+The user asked you to decide between approaches before implementing. \
+STOP exploring and present your findings now:\n\
+1. List the options you've identified (Option A, Option B, etc.)\n\
+2. For each option, state trade-offs (pros/cons)\n\
+3. Give your recommendation with rationale\n\
+4. Ask the user any clarifying questions that would affect the choice\n\
+5. Use `record_decision` to persist your recommendation once confirmed\n\
+6. Wait for user confirmation before implementing";
+                self.session
+                    .push_message(common::user_message(nudge.to_string()));
+                tracing::info!(
+                    exploration_count = self.exploration_count,
+                    "decision checkpoint fired"
+                );
+            }
+
+            // B) Question checkpoint: every N turns, remind agent to surface unknowns
+            let q_interval = question_checkpoint_interval();
+            if q_interval > 0
+                && current_turn > 0
+                && current_turn % q_interval == 0
+                && current_turn != self.last_question_checkpoint_turn
+            {
+                self.last_question_checkpoint_turn = current_turn;
+                let nudge = "[Question Checkpoint] You've been working for several turns. \
+Before continuing, consider:\n\
+- Are there ambiguities in the requirements you should ask about?\n\
+- Are you making assumptions the user should confirm?\n\
+- Is this heading in the direction the user expects?\n\
+If you have questions, ask them now. If you're confident, continue.";
+                self.session
+                    .push_message(common::user_message(nudge.to_string()));
+                tracing::info!(turn = current_turn, "question checkpoint fired");
+            }
 
             // Inject completed background tasks as user messages
             let completed = self.background.take_pending();
@@ -731,8 +847,7 @@ impl Agent {
                     // Clone config for sandbox checks inside spawned tasks
                     let task_config = self.config.clone();
                     // Capture cwd once so spawned tasks can resolve relative paths correctly.
-                    let run_cwd: std::path::PathBuf =
-                        std::env::current_dir().unwrap_or_default();
+                    let run_cwd: std::path::PathBuf = std::env::current_dir().unwrap_or_default();
 
                     let mut joinset: JoinSet<ToolOutcome> = JoinSet::new();
                     // Track (index, id) for every call spawned into the JoinSet so we can
@@ -813,7 +928,8 @@ impl Agent {
                                 let path_str = ptc.args["path"].as_str().unwrap_or("").to_string();
                                 let path = std::path::PathBuf::from(&path_str);
                                 let result = if !path.is_absolute() {
-                                    serde_json::json!({"error": "path must be absolute"}).to_string()
+                                    serde_json::json!({"error": "path must be absolute"})
+                                        .to_string()
                                 } else if !path.is_dir() {
                                     serde_json::json!({"error": format!("not a directory: {path_str}")}).to_string()
                                 } else {
@@ -991,8 +1107,14 @@ impl Agent {
                                 joinset_pending.push((index, id.clone()));
                                 joinset.spawn(async move {
                                     let t0 = std::time::Instant::now();
-                                    let tool_result =
-                                        tools::dispatch(&name, &args, &cfg, Some(&cwd), mcp.as_deref()).await;
+                                    let tool_result = tools::dispatch(
+                                        &name,
+                                        &args,
+                                        &cfg,
+                                        Some(&cwd),
+                                        mcp.as_deref(),
+                                    )
+                                    .await;
                                     let result = match tool_result {
                                         tools::ToolResult::Text(s) => s,
                                         tools::ToolResult::Multimodal(v) => v.to_string(),
@@ -1038,9 +1160,11 @@ impl Agent {
                     outcomes.sort_by_key(|o| o.index());
 
                     // Classify turn before consuming outcomes (needed for exploration budget)
+                    // A denied call means the model attempted an action (we can't inspect what kind),
+                    // so treat it as non-read-only to avoid inflating the exploration streak.
                     let turn_all_readonly = outcomes.iter().all(|o| match o {
                         ToolOutcome::Result { name, .. } => is_read_only(name),
-                        ToolOutcome::Denied { .. } => true,
+                        ToolOutcome::Denied { .. } => false,
                     });
 
                     let mut turn_files: Vec<String> = Vec::new();
@@ -1089,12 +1213,16 @@ impl Agent {
                                 if matches!(
                                     BuiltinTool::from_str(&name),
                                     Some(BuiltinTool::WriteFile | BuiltinTool::EditFile)
-                                )
-                                    && let Some(path) = args["path"].as_str()
+                                ) && let Some(path) = args["path"].as_str()
                                 {
                                     let normed = normalize_path(path);
                                     self.files_touched.insert(normed.clone());
                                     turn_files.push(normed);
+                                }
+
+                                // Count read-only calls toward the decision checkpoint
+                                if is_read_only(&name) {
+                                    self.exploration_count += 1;
                                 }
                             }
                         }
@@ -1123,7 +1251,7 @@ impl Agent {
                     }
 
                     // Exploration budget: nudge after too many consecutive read-only turns
-                    let had_substantive_text = content_buf.len() > 100;
+                    let had_substantive_text = content_buf.trim().len() > 100;
                     if let Some(nudge) =
                         exploration_budget.record_turn(turn_all_readonly, had_substantive_text)
                     {
@@ -1166,14 +1294,18 @@ impl Agent {
             tracing::warn!("failed to save session: {e}");
         }
 
-        self.emit_implicit_feedback(stop_reason, turns, total_cost_usd).await;
+        self.emit_implicit_feedback(stop_reason, turns, total_cost_usd)
+            .await;
 
         // Collect once for both file persistence and memory extraction
         let files_vec: Vec<String> = self.files_touched.iter().cloned().collect();
 
         // Persist files_touched for checkout hook consumption
         if !files_vec.is_empty() {
-            let files_path = self.config.session.sessions_dir
+            let files_path = self
+                .config
+                .session
+                .sessions_dir
                 .join(format!("{}.files", self.session.episode_id));
             let content = files_vec.join("\n");
             if let Err(e) = std::fs::write(&files_path, &content) {
@@ -1214,7 +1346,10 @@ impl Agent {
                 )
                 .await;
                 if !extracted.is_empty() {
-                    tracing::debug!(count = extracted.len(), "auto-extracted memories from session");
+                    tracing::debug!(
+                        count = extracted.len(),
+                        "auto-extracted memories from session"
+                    );
                 }
             }
         }
@@ -1237,8 +1372,8 @@ impl Agent {
     fn uh_context(&self) -> Option<(&dyn uglyhat::store::Store, uuid::Uuid, String)> {
         let store = self.memory.store()?;
         let ws_id = self.memory.workspace_id()?;
-        let agent_name = std::env::var(UH_AGENT_NAME_ENV)
-            .unwrap_or_else(|_| UH_AGENT_NAME_DEFAULT.to_string());
+        let agent_name =
+            std::env::var(UH_AGENT_NAME_ENV).unwrap_or_else(|_| UH_AGENT_NAME_DEFAULT.to_string());
         Some((store.as_ref(), ws_id, agent_name))
     }
 
@@ -1267,8 +1402,8 @@ impl Agent {
         let Some(ws_id) = self.memory.workspace_id() else {
             return;
         };
-        let agent_name = std::env::var(UH_AGENT_NAME_ENV)
-            .unwrap_or_else(|_| UH_AGENT_NAME_DEFAULT.to_string());
+        let agent_name =
+            std::env::var(UH_AGENT_NAME_ENV).unwrap_or_else(|_| UH_AGENT_NAME_DEFAULT.to_string());
 
         let decisions = match store
             .pending_decision_notifications(ws_id, &agent_name)
@@ -1300,11 +1435,8 @@ impl Agent {
         cost_usd: f64,
     ) {
         let has_branches = self.session.tree.as_ref().is_some_and(|t| t.has_branches());
-        let quality = compute_implicit_quality(
-            stop_reason,
-            has_branches,
-            self.plan_mode_violations,
-        );
+        let quality =
+            compute_implicit_quality(stop_reason, has_branches, self.plan_mode_violations);
 
         let metadata = serde_json::json!({
             "source": "implicit",
@@ -1315,13 +1447,16 @@ impl Agent {
             "plan_mode_violations": self.plan_mode_violations,
         });
 
-        let _ = self.client.post_feedback(
-            None,
-            Some(self.session.episode_id),
-            "implicit_quality",
-            quality,
-            metadata,
-        ).await;
+        let _ = self
+            .client
+            .post_feedback(
+                None,
+                Some(self.session.episode_id),
+                "implicit_quality",
+                quality,
+                metadata,
+            )
+            .await;
     }
 
     /// Set up uglyhat guardrails for structural plan mode enforcement.
@@ -1341,7 +1476,9 @@ impl Agent {
         let store = match self.memory.store().cloned() {
             Some(s) => s,
             None => {
-                tracing::warn!("plan mode: no uglyhat context — falling back to prompt-for-everything");
+                tracing::warn!(
+                    "plan mode: no uglyhat context — falling back to prompt-for-everything"
+                );
                 return false;
             }
         };
@@ -1672,10 +1809,26 @@ mod tests {
         let args = json!({"path": "/sensitive/file.rs", "command": "cat /etc/passwd"});
 
         // Write tools carry the path; reads and shell tools pass None
-        assert_eq!(guardrail_file_path("write_file", &args), Some("/sensitive/file.rs"));
-        assert_eq!(guardrail_file_path("edit_file", &args), Some("/sensitive/file.rs"));
-        for tool in ["read_file", "bash", "run_command", "glob_files", "grep_files"] {
-            assert_eq!(guardrail_file_path(tool, &args), None, "'{tool}' must not extract file_path");
+        assert_eq!(
+            guardrail_file_path("write_file", &args),
+            Some("/sensitive/file.rs")
+        );
+        assert_eq!(
+            guardrail_file_path("edit_file", &args),
+            Some("/sensitive/file.rs")
+        );
+        for tool in [
+            "read_file",
+            "bash",
+            "run_command",
+            "glob_files",
+            "grep_files",
+        ] {
+            assert_eq!(
+                guardrail_file_path(tool, &args),
+                None,
+                "'{tool}' must not extract file_path"
+            );
         }
     }
 
@@ -1740,5 +1893,20 @@ mod tests {
         // Substantive text output counts as a non-exploration turn
         budget.record_turn(true, true);
         assert!(budget.record_turn(true, false).is_none());
+    }
+
+    #[test]
+    fn decision_signal_detection() {
+        assert!(has_decision_signals(
+            "Please decide between JWT and sessions"
+        ));
+        assert!(has_decision_signals(
+            "Compare Option A vs Option B before implementation"
+        ));
+        assert!(has_decision_signals("What are the trade-offs?"));
+        assert!(has_decision_signals("choose between axum and actix"));
+        assert!(has_decision_signals("pros and cons of each approach"));
+        assert!(!has_decision_signals("Implement the login endpoint"));
+        assert!(!has_decision_signals("Fix the bug in auth.rs"));
     }
 }
