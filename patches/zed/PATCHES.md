@@ -33,6 +33,42 @@ Apply order matters — patches must be applied in numeric order.
 | `crates/ai_onboarding/src/young_account_banner.rs` | 0015 | Remove `billing-support@zed.dev` reference | Low |
 | `crates/cloud_llm_client/src/cloud_llm_client.rs` | 0016 | Mark Zed-specific headers as legacy | Low |
 | `crates/http_client/src/http_client.rs` | 0016 | Mark `build_zed_*_url()` functions as legacy | Low |
+| `assets/settings/default.json` | 0017 | `icon_theme` → `PrisM (Default)`, `buffer_font_family` → `.PrismMono`, `ui_font_family` → `.PrismSans` | Medium |
+| `crates/gpui/src/text_system.rs` | 0017 | Add `.PrismMono`/`.PrismSans` to fallback stack and font alias match arms (keep `.ZedMono`/`.ZedSans` as compat) | Low |
+| `crates/editor/src/editor.rs` | 0017 | `MINIMAP_FONT_FAMILY` → `.PrismMono` | Low |
+| `crates/theme/src/fallback_themes.rs` | 0017 | Rename to `prism_default_themes()`, id → `prism-default`, name → `PrisM Default` | Low |
+| `crates/theme/src/registry.rs` | 0017 | Call `prism_default_themes()` | Low |
+| `crates/settings/src/settings_store.rs` | 0017 | Test fixtures: `Zed Mono` → `PrisM Mono` | Low |
+| `crates/editor/src/test.rs` | 0017 | `.ZedMono` → `.PrismMono` in test font | Low |
+| `crates/gpui/src/text_system/line_wrapper.rs` | 0017 | `.ZedMono` → `.PrismMono` in test | Low |
+| `crates/storybook/src/storybook.rs` | 0017 | `.ZedMono` → `.PrismMono` | Low |
+| `crates/markdown/examples/markdown.rs` | 0017 | `.ZedSans`/`.ZedMono` → `.PrismSans`/`.PrismMono` | Low |
+| `crates/markdown/examples/markdown_as_child.rs` | 0017 | `Zed Mono` → `PrisM Mono` | Low |
+| `crates/language_model/src/language_model.rs` | 0018 | `ZED_CLOUD_PROVIDER_ID` value → `"prism"` | Low |
+| `crates/settings_content/src/language_model.rs` | 0018 | Remove `zed_dot_dev` field | Low |
+| `crates/agent_ui/src/agent_panel.rs` | 0018 | Provider check `"zed.dev"` → `"prism"` | Low |
+| `crates/web_search_providers/src/cloud.rs` | 0018 | `ZED_WEB_SEARCH_PROVIDER_ID` → `"prism"` | Low |
+| `assets/settings/default.json` | 0018 | Remove `"zed.dev": {}` block | Low |
+| `crates/onboarding/src/onboarding.rs` et al. (~13 source files) | 0019 | `zed.dev/docs` → `prism.dev/docs` | Low |
+| `assets/settings/initial_*.json`, `assets/keymaps/*.json` | 0019 | `zed.dev/docs` → `prism.dev/docs` | Low |
+| `crates/auto_update_helper/src/updater.rs` | 0020 | `Zed.exe` → `PrisM.exe` | Low |
+| `crates/auto_update/src/auto_update.rs` | 0020 | `Zed.exe` → `PrisM.exe` | Low |
+| `crates/explorer_command_injector/src/explorer_command_injector.rs` | 0020 | `Zed.exe` → `PrisM.exe` | Low |
+| `crates/cli/src/main.rs` | 0020, 0022 | Windows: `Zed.exe` → `PrisM.exe`; Linux: add `./prism` to possible_locations | Low |
+| `crates/zed/resources/windows/zed.iss` | 0020 | `Zed.exe` → `PrisM.exe` | Low |
+| `script/bundle-windows.ps1` | 0020 | `Zed.exe` → `PrisM.exe`, `zed.exe` → `prism.exe` | Low |
+| `crates/repl/src/kernels/remote_kernels.rs` | 0021 | User-Agent `"Zed/{}"` → `"PrisM/{}"` | Low |
+| `crates/copilot_chat/src/copilot_chat.rs` | 0021 | User-Agent `"Zed/{}"` → `"PrisM/{}"` | Low |
+| `crates/zed/Cargo.toml` | 0022 | `description` → PrisM tagline, `default-run` → `prism`, `[[bin]] name` → `prism` | Low |
+| `crates/ai_onboarding/src/ai_onboarding.rs` | 0023 | "Welcome to Zed AI/Pro/Student" → "Prism AI/Pro/Student" (8 strings) | Low |
+| `crates/ai_onboarding/src/ai_upsell_card.rs` | 0023 | "Try/You're in the Zed …" → "Prism …" (5 strings) | Low |
+| `crates/agent_ui/src/ui/end_trial_upsell.rs` | 0023 | "Upgrade to Zed Pro" / "Zed Pro Trial has expired" → Prism | Low |
+| `crates/agent_ui/src/connection_view/thread_view.rs` | 0023 | "Upgrade to Zed Pro for more prompts" → Prism (2 occurrences) | Low |
+| `crates/agent_ui/src/connection_view.rs` | 0023 | "Upgrade {} to work with Zed" → Prism | Low |
+| `crates/onboarding/src/onboarding.rs` | 0023 | "Welcome to Zed" → "Welcome to Prism" | Low |
+| `crates/zed/src/zed/quick_action_bar/repl_menu.rs` | 0023 | "Setup Zed REPL for {}" → "Setup Prism REPL for {}" | Low |
+| `crates/acp_thread/src/acp_thread.rs` | 0024 | Cache `available_commands` on `AcpThread`; expose `available_commands()` getter | Low — additive |
+| `crates/agent_ui/src/connection_view.rs` | 0024 | Initialize `available_commands` Rc from `thread.read(cx).available_commands()` at `make_thread_view` | Low |
 
 ---
 
@@ -143,6 +179,76 @@ Removes Zed GitHub/email feedback actions (makes them no-ops), removes Help menu
 Marks Zed-specific `x-zed-*` header constants and `build_zed_*_url()` functions as legacy. These become unreachable when `server_url` is not `zed.dev`.
 
 **Watch for:** New header constants added upstream; changes to URL builder function signatures.
+
+---
+
+### 0017 — Font, theme, and icon branding
+**Files:** `assets/settings/default.json`, `crates/gpui/src/text_system.rs`, `crates/editor/src/editor.rs`, `crates/theme/src/fallback_themes.rs`, `crates/theme/src/registry.rs`, `crates/settings/src/settings_store.rs`, `crates/editor/src/test.rs`, `crates/gpui/src/text_system/line_wrapper.rs`, `crates/storybook/src/storybook.rs`, `crates/markdown/examples/markdown.rs`, `crates/markdown/examples/markdown_as_child.rs`
+**Risk:** Low-Medium (default.json), Low (others)
+
+Adds `.PrismMono`/`.PrismSans` virtual font aliases that resolve to the same underlying fonts as `.ZedMono`/`.ZedSans` (Lilex and IBM Plex Sans). Keeps `.ZedMono`/`.ZedSans` as backward-compat fallbacks in the match arms. Sets PrisM fonts/icon theme as defaults. Renames fallback theme function and IDs to `prism-*`.
+
+**Watch for:** Upstream changes to `font_name_with_fallbacks` match arms; changes around `fallback_font_stack` initialization.
+
+---
+
+### 0018 — Remove zed.dev provider
+**Files:** `crates/language_model/src/language_model.rs`, `crates/settings_content/src/language_model.rs`, `crates/agent_ui/src/agent_panel.rs`, `crates/web_search_providers/src/cloud.rs`, `assets/settings/default.json`
+**Risk:** Low
+
+Changes `ZED_CLOUD_PROVIDER_ID` to `"prism"`, removes the `zed_dot_dev` settings field, updates the provider string check in agent panel, and strips the `"zed.dev": {}` block from default settings. PrisM is now the only cloud provider.
+
+**Watch for:** Upstream adding new provider IDs; changes to `LanguageModelSettingsContent` struct fields.
+
+---
+
+### 0019 — Documentation URLs
+**Files:** ~13 source files, 9 asset JSON/keymap files
+**Risk:** Low
+
+Mechanical replacement of `zed.dev/docs` → `prism.dev/docs` in all user-visible runtime files. Does not touch `docs/`, `legal/`, or `script/` directories.
+
+**Watch for:** Upstream adding new `zed.dev/docs` references in runtime code.
+
+---
+
+### 0020 — Windows binary name
+**Files:** `crates/auto_update_helper/src/updater.rs`, `crates/auto_update/src/auto_update.rs`, `crates/explorer_command_injector/src/explorer_command_injector.rs`, `crates/cli/src/main.rs`, `crates/zed/resources/windows/zed.iss`, `script/bundle-windows.ps1`
+**Risk:** Low
+
+Renames `Zed.exe` → `PrisM.exe` (and `zed.exe` → `prism.exe`) across Windows-specific paths. Also adds `./prism` to the Linux `possible_locations` binary search list in `cli/src/main.rs`.
+
+**Watch for:** Upstream changes to Windows updater logic or binary path discovery.
+
+---
+
+### 0021 — User-Agent strings
+**Files:** `crates/repl/src/kernels/remote_kernels.rs`, `crates/copilot_chat/src/copilot_chat.rs`
+**Risk:** Low
+
+Changes HTTP User-Agent header values from `"Zed/{version}"` to `"PrisM/{version}"`.
+
+**Watch for:** New user-agent strings added upstream.
+
+---
+
+### 0022 — Binary name and crate description
+**Files:** `crates/zed/Cargo.toml`, `crates/cli/src/main.rs`
+**Risk:** Low
+
+Updates `description` to PrisM tagline, `default-run` to `prism`, and `[[bin]] name` to `prism` so `cargo build -p zed` produces a `prism` binary. The `[package] name` stays `"zed"` to avoid cascading import changes. Adds `./prism` alongside `./zed` in Linux binary discovery.
+
+**Watch for:** Upstream adding new `[[bin]]` sections; changes to how the CLI discovers the main binary.
+
+---
+
+### 0023 — Rebrand remaining user-visible "Zed" strings to "Prism"
+**Files:** `crates/ai_onboarding/src/ai_onboarding.rs`, `crates/ai_onboarding/src/ai_upsell_card.rs`, `crates/agent_ui/src/ui/end_trial_upsell.rs`, `crates/agent_ui/src/connection_view/thread_view.rs`, `crates/agent_ui/src/connection_view.rs`, `crates/onboarding/src/onboarding.rs`, `crates/zed/src/zed/quick_action_bar/repl_menu.rs`
+**Risk:** Low
+
+Mechanical replacement of user-visible "Zed" brand strings (welcome screens, plan names, upsell CTAs) to "Prism". Internal identifiers (`Plan::ZedPro`, `VectorName::ZedLogo`, `zed_urls::*`) left unchanged.
+
+**Watch for:** Upstream adding new onboarding/upsell strings referencing "Zed".
 
 ---
 

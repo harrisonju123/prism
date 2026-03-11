@@ -844,6 +844,7 @@ impl ConnectionView {
         let action_log = thread.read(cx).action_log().clone();
 
         prompt_capabilities.replace(thread.read(cx).prompt_capabilities());
+        available_commands.replace(thread.read(cx).available_commands());
 
         let entry_view_state = cx.new(|_| {
             EntryViewState::new(
@@ -2100,7 +2101,7 @@ impl ConnectionView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (heading_label, description_label) = (
-            format!("Upgrade {} to work with Zed", self.agent.name()),
+            format!("Upgrade {} to work with Prism", self.agent.name()),
             if version.is_empty() {
                 format!(
                     "Currently using {}, which does not report a valid --version",

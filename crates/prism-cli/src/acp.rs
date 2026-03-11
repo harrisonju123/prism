@@ -39,8 +39,8 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::common::{
-    self, ToolCallBuilder, accumulate_tool_call_deltas, additional_dirs_section, build_system_prompt,
-    reconstruct_tool_calls, truncate_tool_output,
+    self, ToolCallBuilder, accumulate_tool_call_deltas, additional_dirs_section,
+    build_system_prompt, reconstruct_tool_calls, truncate_tool_output,
 };
 use crate::compression::{self, ContextCompressor};
 use crate::config::Config;
@@ -93,6 +93,39 @@ struct AcpSession {
     plan_file: Option<String>,
     /// Directories added via `add_dir` — ephemeral, scoped to this session.
     additional_dirs: Vec<PathBuf>,
+    /// Auto-approve mode: when true, write tools execute without prompting the user.
+    /// Activated via `/auto`, cleared by `/default`.
+    auto_approve: bool,
+}
+
+fn available_commands() -> Vec<acp::AvailableCommand> {
+    vec![
+        acp::AvailableCommand::new("help", "List available slash commands"),
+        acp::AvailableCommand::new("status", "Show current mode, model, and context info"),
+        acp::AvailableCommand::new(
+            "auto",
+            "Enable auto-approve mode — all tools run without prompts",
+        ),
+        acp::AvailableCommand::new(
+            "default",
+            "Restore default mode — write tools require approval",
+        ),
+        acp::AvailableCommand::new(
+            "plan",
+            "Restrict writes to a single file; bash/run_command blocked. Usage: /plan <file> or /plan off",
+        )
+        .input(acp::AvailableCommandInput::Unstructured(
+            acp::UnstructuredCommandInput::new("<file> or off"),
+        )),
+        acp::AvailableCommand::new("model", "Switch model for this session")
+            .input(acp::AvailableCommandInput::Unstructured(
+                acp::UnstructuredCommandInput::new("<model-name>"),
+            )),
+        acp::AvailableCommand::new(
+            "undo",
+            "Remove the last user/assistant exchange from context",
+        ),
+    ]
 }
 
 // SAFETY: PrismAgent uses RefCell because the ACP Agent trait is !Send and runs
@@ -162,7 +195,30 @@ impl PrismAgent {
         .await;
     }
 
-    async fn build_system_message(&self, cwd: Option<&Path>, additional_dirs: &[PathBuf]) -> Message {
+    /// Returns the effective model for a session, falling back to the config default.
+    fn effective_model(&self, session_id: &str) -> String {
+        self.sessions
+            .borrow()
+            .get(session_id)
+            .and_then(|s| s.model.clone())
+            .unwrap_or_else(|| self.config.model.model.clone())
+    }
+
+    async fn send_available_commands(&self, session_id: &str) {
+        self.send_update(
+            session_id,
+            acp::SessionUpdate::AvailableCommandsUpdate(acp::AvailableCommandsUpdate::new(
+                available_commands(),
+            )),
+        )
+        .await;
+    }
+
+    async fn build_system_message(
+        &self,
+        cwd: Option<&Path>,
+        additional_dirs: &[PathBuf],
+    ) -> Message {
         // Extract what load() needs synchronously so the RefCell borrow is dropped
         // before the first .await (holding a RefCell borrow across an await is UB
         // if anything else borrows memory on the same thread while suspended).
@@ -304,6 +360,7 @@ impl PrismAgent {
                 created_at: Instant::now(),
                 plan_file: None,
                 additional_dirs: Vec::new(),
+                auto_approve: false,
             });
 
         let tool_call_id = acp::ToolCallId::new("bridge_tc");
@@ -336,13 +393,14 @@ impl PrismAgent {
         }
         let excess = sessions.len() - max;
         // Sort by created_at ascending so we evict the oldest sessions first
-        let mut ordered: Vec<(&String, Instant)> = sessions
-            .iter()
-            .map(|(k, v)| (k, v.created_at))
-            .collect();
+        let mut ordered: Vec<(&String, Instant)> =
+            sessions.iter().map(|(k, v)| (k, v.created_at)).collect();
         ordered.sort_by_key(|(_, t)| *t);
-        let keys_to_remove: Vec<String> =
-            ordered.into_iter().take(excess).map(|(k, _)| k.clone()).collect();
+        let keys_to_remove: Vec<String> = ordered
+            .into_iter()
+            .take(excess)
+            .map(|(k, _)| k.clone())
+            .collect();
         for key in keys_to_remove {
             sessions.remove(&key);
         }
@@ -351,7 +409,9 @@ impl PrismAgent {
     async fn run_agent_loop(&self, session_id: &str) -> acp::StopReason {
         let client = PrismClient::new(&self.config.gateway.url)
             .with_api_key(&self.config.gateway.api_key)
-            .with_retry_config(RetryConfig::with_max_retries(self.config.gateway.max_retries));
+            .with_retry_config(RetryConfig::with_max_retries(
+                self.config.gateway.max_retries,
+            ));
         let model_fallback = self.config.model.model.clone();
 
         // cwd is set once at session creation and never changes
@@ -369,7 +429,7 @@ impl PrismAgent {
         for _turn in 0..self.config.model.max_turns {
             // Take messages out of RefCell to avoid clone. We'll put them back after
             // the stream completes. Safe: single-threaded LocalSet, no concurrent access.
-            let (cancelled, mut messages, session_model, plan_file) = {
+            let (cancelled, mut messages, session_model, plan_file, auto_approve) = {
                 let mut sessions = self.sessions.borrow_mut();
                 match sessions.get_mut(session_id) {
                     Some(s) => (
@@ -377,6 +437,7 @@ impl PrismAgent {
                         std::mem::take(&mut s.messages),
                         s.model.clone(),
                         s.plan_file.clone(),
+                        s.auto_approve,
                     ),
                     None => return acp::StopReason::EndTurn,
                 }
@@ -564,8 +625,44 @@ impl PrismAgent {
                         )
                         .await;
 
-                        // Request permission for write tools
-                        if !crate::permissions::is_read_only(name) {
+                        // Enforce plan_file restrictions: block bash/run_command and any write
+                        // to a file other than the designated plan file.
+                        if let Some(ref pf) = plan_file {
+                            let is_blocked = matches!(
+                                bt,
+                                Some(BuiltinTool::Bash | BuiltinTool::RunCommand)
+                            ) || (!crate::permissions::is_read_only(name)
+                                && args["path"].as_str().unwrap_or("") != pf.as_str());
+                            if is_blocked {
+                                let reason = format!(
+                                    "Blocked by plan mode — only `{pf}` may be written and bash/run_command are disabled."
+                                );
+                                self.send_update(
+                                    session_id,
+                                    acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
+                                        tool_call_id,
+                                        acp::ToolCallUpdateFields::new()
+                                            .status(acp::ToolCallStatus::Failed)
+                                            .content(vec![
+                                                acp::ContentBlock::from(reason.as_str()).into()
+                                            ]),
+                                    )),
+                                )
+                                .await;
+                                messages.push(Message {
+                                    role: MessageRole::Tool,
+                                    content: Some(json!(reason)),
+                                    name: None,
+                                    tool_calls: None,
+                                    tool_call_id: Some(id),
+                                    extra: Default::default(),
+                                });
+                                continue;
+                            }
+                        }
+
+                        // Request permission for write tools (skip in auto mode)
+                        if !crate::permissions::is_read_only(name) && !auto_approve {
                             let outcome = self
                                 .request_tool_permission(
                                     session_id,
@@ -627,7 +724,8 @@ impl PrismAgent {
                                 if !path.is_absolute() {
                                     json!({"error": "path must be absolute"}).to_string()
                                 } else if !path.is_dir() {
-                                    json!({"error": format!("not a directory: {path_str}")}).to_string()
+                                    json!({"error": format!("not a directory: {path_str}")})
+                                        .to_string()
                                 } else {
                                     // Add dir (dedup) and snapshot the updated list in one borrow.
                                     let dirs_snapshot = {
@@ -659,17 +757,15 @@ impl PrismAgent {
                                     .into_text()
                                 }
                             }
-                            _ => {
-                                tools::dispatch(
-                                    name,
-                                    &args,
-                                    &self.config,
-                                    Some(&session_cwd),
-                                    self.mcp_registry.as_deref(),
-                                )
-                                .await
-                                .into_text()
-                            }
+                            _ => tools::dispatch(
+                                name,
+                                &args,
+                                &self.config,
+                                Some(&session_cwd),
+                                self.mcp_registry.as_deref(),
+                            )
+                            .await
+                            .into_text(),
                         };
                         let result =
                             truncate_tool_output(name, &result, self.config.model.max_tool_output);
@@ -745,7 +841,9 @@ impl PrismAgent {
 
 fn tool_kind(bt: Option<BuiltinTool>) -> acp::ToolKind {
     match bt {
-        Some(BuiltinTool::ReadFile | BuiltinTool::ListDir | BuiltinTool::AddDir) => acp::ToolKind::Read,
+        Some(BuiltinTool::ReadFile | BuiltinTool::ListDir | BuiltinTool::AddDir) => {
+            acp::ToolKind::Read
+        }
         Some(BuiltinTool::WriteFile | BuiltinTool::EditFile) => acp::ToolKind::Edit,
         Some(BuiltinTool::GlobFiles | BuiltinTool::GrepFiles) => acp::ToolKind::Search,
         Some(BuiltinTool::Bash | BuiltinTool::RunCommand) => acp::ToolKind::Execute,
@@ -846,8 +944,11 @@ impl acp::Agent for PrismAgent {
                 created_at: Instant::now(),
                 plan_file: None,
                 additional_dirs: Vec::new(),
+                auto_approve: false,
             },
         );
+
+        self.send_available_commands(&session_id).await;
 
         Ok(acp::NewSessionResponse::new(session_id))
     }
@@ -868,11 +969,151 @@ impl acp::Agent for PrismAgent {
             .collect::<Vec<_>>()
             .join("\n");
 
+        let cmd = user_text.trim();
+
+        // /help
+        if cmd == "/help" {
+            let help = "**Available commands:**\n\n\
+                **Session:**\n\
+                - `/auto` — all tools run without prompts\n\
+                - `/default` — write tools require approval (default)\n\
+                - `/status` — show mode, model, and context size\n\n\
+                **Model:**\n\
+                - `/model <name>` — switch model for this session\n\n\
+                **Context:**\n\
+                - `/plan <file>` — restrict writes to one file; bash blocked\n\
+                - `/plan off` — deactivate plan mode\n\
+                - `/undo` — remove last user/assistant exchange from context\n\n\
+                **Help:**\n\
+                - `/help` — show this message";
+            self.send_text_chunk(&session_id, help).await;
+            return Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
+        }
+
+        // /auto
+        if cmd == "/auto" {
+            let mut sessions = self.sessions.borrow_mut();
+            if let Some(s) = sessions.get_mut(&session_id) {
+                s.auto_approve = true;
+            }
+            self.send_text_chunk(
+                &session_id,
+                "Auto mode enabled — all tools run without prompts.",
+            )
+            .await;
+            return Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
+        }
+
+        // /default
+        if cmd == "/default" {
+            let mut sessions = self.sessions.borrow_mut();
+            if let Some(s) = sessions.get_mut(&session_id) {
+                s.auto_approve = false;
+                s.allowed_tools.clear();
+            }
+            self.send_text_chunk(
+                &session_id,
+                "Default mode restored — write tools require approval.",
+            )
+            .await;
+            return Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
+        }
+
+        // /status
+        if cmd == "/status" {
+            let status = {
+                let sessions = self.sessions.borrow();
+                if let Some(s) = sessions.get(&session_id) {
+                    let mode = match (&s.plan_file, s.auto_approve) {
+                        (_, true) => "auto".to_string(),
+                        (Some(f), _) => format!("plan ({})", f),
+                        _ => "default".to_string(),
+                    };
+                    let model = s
+                        .model
+                        .clone()
+                        .unwrap_or_else(|| self.config.model.model.clone());
+                    // messages[0] is always the system prompt, so subtract 1 for user/assistant
+                    let exchanges = s.messages.len().saturating_sub(1);
+                    format!("**Mode:** {mode}\n**Model:** {model}\n**Messages in context:** {exchanges}")
+                } else {
+                    "Session not found.".to_string()
+                }
+            };
+            self.send_text_chunk(&session_id, &status).await;
+            return Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
+        }
+
+        // /model — must be "/model" exactly or "/model <name>" (not "/modelX")
+        if cmd == "/model" || cmd.starts_with("/model ") {
+            let new_model = cmd.strip_prefix("/model").unwrap_or("").trim();
+            if new_model.is_empty() {
+                let current = self.effective_model(&session_id);
+                self.send_text_chunk(
+                    &session_id,
+                    &format!("Current model: `{current}`. Usage: `/model <name>`"),
+                )
+                .await;
+            } else {
+                let old = {
+                    let mut sessions = self.sessions.borrow_mut();
+                    if let Some(s) = sessions.get_mut(&session_id) {
+                        let old = s
+                            .model
+                            .clone()
+                            .unwrap_or_else(|| self.config.model.model.clone());
+                        s.model = Some(new_model.to_string());
+                        old
+                    } else {
+                        self.config.model.model.clone()
+                    }
+                };
+                self.send_text_chunk(
+                    &session_id,
+                    &format!("Model switched: `{old}` → `{new_model}`"),
+                )
+                .await;
+            }
+            return Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
+        }
+
+        // /undo — remove the last user/assistant exchange from context
+        if cmd == "/undo" {
+            let removed = {
+                let mut sessions = self.sessions.borrow_mut();
+                if let Some(s) = sessions.get_mut(&session_id) {
+                    // Find the last user message (messages[0] is always the system prompt)
+                    let last_user = s
+                        .messages
+                        .iter()
+                        .rposition(|m| m.role == MessageRole::User);
+                    match last_user {
+                        Some(idx) if idx > 0 => {
+                            let before = s.messages.len();
+                            s.messages.truncate(idx);
+                            before - idx
+                        }
+                        _ => 0,
+                    }
+                } else {
+                    0
+                }
+            };
+            let msg = if removed > 0 {
+                format!("Removed {removed} message(s) from context.")
+            } else {
+                "Nothing to undo.".to_string()
+            };
+            self.send_text_chunk(&session_id, &msg).await;
+            return Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
+        }
+
         // Handle /plan slash command — activates or deactivates plan mode without an LLM call.
         // Usage:  /plan PLAN.md   → only PLAN.md may be written; bash/run_command blocked
         //         /plan off       → deactivate plan mode
-        if let Some(rest) = user_text.strip_prefix("/plan") {
-            let arg = rest.trim();
+        // Must be "/plan" exactly or "/plan <file>" (not "/plank" etc.)
+        if cmd == "/plan" || cmd.starts_with("/plan ") {
+            let arg = cmd.strip_prefix("/plan").unwrap_or("").trim();
             let response = if arg.is_empty() || arg == "off" {
                 let mut sessions = self.sessions.borrow_mut();
                 if let Some(s) = sessions.get_mut(&session_id) {
@@ -884,7 +1125,9 @@ impl acp::Agent for PrismAgent {
                 if let Some(s) = sessions.get_mut(&session_id) {
                     s.plan_file = Some(arg.to_string());
                 }
-                format!("Plan mode active. Only `{arg}` may be written; bash and run_command are blocked.")
+                format!(
+                    "Plan mode active. Only `{arg}` may be written; bash and run_command are blocked."
+                )
             };
             self.send_text_chunk(&session_id, &response).await;
             return Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
@@ -956,8 +1199,11 @@ impl acp::Agent for PrismAgent {
                 created_at: Instant::now(),
                 plan_file: None,
                 additional_dirs: Vec::new(),
+                auto_approve: false,
             },
         );
+
+        self.send_available_commands(&session_id).await;
 
         Ok(acp::LoadSessionResponse::new())
     }

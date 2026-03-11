@@ -93,7 +93,9 @@ fn test_initialize() {
 
 #[test]
 fn test_new_session() {
-    let (mut child, mut stdin, rx) = setup_acp(2);
+    // session/new sends an AvailableCommandsUpdate notification before its response,
+    // so we collect 3 messages total and find the one with id == 2.
+    let (mut child, mut stdin, rx) = setup_acp(3);
 
     send_jsonrpc(&mut stdin, &initialize_request(1));
     rx.recv_timeout(TIMEOUT).expect("timed out on initialize");
@@ -112,9 +114,15 @@ fn test_new_session() {
         }),
     );
 
-    let resp = rx.recv_timeout(TIMEOUT).expect("timed out on session/new");
-
-    assert_eq!(resp["id"], 2);
+    // Drain remaining messages and find the response (id == 2); notifications have no id
+    let mut resp = serde_json::Value::Null;
+    for _ in 0..2 {
+        let msg = rx.recv_timeout(TIMEOUT).expect("timed out on session/new");
+        if msg["id"] == 2 {
+            resp = msg;
+        }
+    }
+    assert_eq!(resp["id"], 2, "did not receive session/new response");
     let session_id = resp["result"]["sessionId"].as_str().unwrap();
     assert!(
         uuid::Uuid::parse_str(session_id).is_ok(),

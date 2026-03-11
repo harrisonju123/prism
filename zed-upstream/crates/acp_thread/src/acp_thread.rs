@@ -968,6 +968,7 @@ pub struct AcpThread {
     token_usage: Option<TokenUsage>,
     prompt_capabilities: acp::PromptCapabilities,
     _observe_prompt_capabilities: Task<anyhow::Result<()>>,
+    available_commands: Vec<acp::AvailableCommand>,
     terminals: HashMap<acp::TerminalId, Entity<Terminal>>,
     pending_terminal_output: HashMap<acp::TerminalId, Vec<Vec<u8>>>,
     pending_terminal_exit: HashMap<acp::TerminalId, acp::TerminalExitStatus>,
@@ -1131,6 +1132,7 @@ impl AcpThread {
             token_usage: None,
             prompt_capabilities,
             _observe_prompt_capabilities: task,
+            available_commands: Vec::new(),
             terminals: HashMap::default(),
             pending_terminal_output: HashMap::default(),
             pending_terminal_exit: HashMap::default(),
@@ -1146,6 +1148,10 @@ impl AcpThread {
 
     pub fn prompt_capabilities(&self) -> acp::PromptCapabilities {
         self.prompt_capabilities.clone()
+    }
+
+    pub fn available_commands(&self) -> Vec<acp::AvailableCommand> {
+        self.available_commands.clone()
     }
 
     pub fn draft_prompt(&self) -> Option<&[acp::ContentBlock]> {
@@ -1299,7 +1305,10 @@ impl AcpThread {
             acp::SessionUpdate::AvailableCommandsUpdate(acp::AvailableCommandsUpdate {
                 available_commands,
                 ..
-            }) => cx.emit(AcpThreadEvent::AvailableCommandsUpdated(available_commands)),
+            }) => {
+                self.available_commands = available_commands.clone();
+                cx.emit(AcpThreadEvent::AvailableCommandsUpdated(available_commands));
+            }
             acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate {
                 current_mode_id,
                 ..
