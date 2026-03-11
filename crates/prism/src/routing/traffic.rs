@@ -22,7 +22,7 @@ pub async fn refresh_fitness_from_traffic(
     min_sample_size: u32,
     lookback_days: u32,
 ) -> anyhow::Result<()> {
-    let client = reqwest::Client::new();
+    let client = &reqwest::Client::new();
 
     let query = format!(
         "SELECT task_type, model, \
@@ -98,6 +98,14 @@ pub async fn refresh_fitness_from_traffic(
     );
 
     fitness_cache.update(merged).await;
+
+    // Merge quality signals from feedback_events (best-effort, non-blocking)
+    if let Err(e) = refresh_quality_from_feedback(
+        fitness_cache, client, ch_url, ch_db, min_sample_size, lookback_days,
+    ).await {
+        tracing::warn!("feedback quality merge failed (non-fatal): {e}");
+    }
+
     Ok(())
 }
 
@@ -144,6 +152,116 @@ fn quality_for_model_task(model: &str, task_type: TaskType) -> f64 {
     }
 }
 
+struct QualityRow {
+    model: String,
+    task_type: TaskType,
+    avg_quality: f64,
+    sample_size: u32,
+}
+
+/// Query ClickHouse for aggregated quality feedback and merge into fitness cache.
+/// Uses Bayesian blending: weighted_quality = (catalog * prior_weight + feedback * sample_size) / (prior_weight + sample_size)
+pub async fn refresh_quality_from_feedback(
+    fitness_cache: &FitnessCache,
+    client: &reqwest::Client,
+    ch_url: &str,
+    ch_db: &str,
+    min_samples: u32,
+    lookback_days: u32,
+) -> anyhow::Result<()> {
+
+    let query = format!(
+        "SELECT ie.model, ie.task_type, \
+                avg(fe.metric_value) AS avg_quality, \
+                count() AS sample_size \
+         FROM {db}.feedback_events fe \
+         JOIN {db}.inference_events ie ON fe.episode_id = ie.episode_id \
+         WHERE fe.metric_name IN ('implicit_quality', 'quality', 'reward', 'explicit_quality') \
+           AND fe.timestamp >= now() - INTERVAL {days} DAY \
+           AND ie.task_type IS NOT NULL \
+         GROUP BY ie.model, ie.task_type \
+         HAVING count() >= {min} \
+         FORMAT JSONEachRow",
+        db = ch_db,
+        days = lookback_days,
+        min = min_samples,
+    );
+
+    let resp = client.post(ch_url).body(query).send().await?.text().await?;
+    let quality_rows = parse_quality_entries(&resp);
+
+    if quality_rows.is_empty() {
+        tracing::debug!("no feedback quality data available");
+        return Ok(());
+    }
+
+    // Build lookup: (model, task_type) → (avg_quality, sample_size)
+    let quality_map: std::collections::HashMap<(String, TaskType), (f64, u32)> = quality_rows
+        .into_iter()
+        .map(|r| ((r.model, r.task_type), (r.avg_quality, r.sample_size)))
+        .collect();
+
+    // Update existing fitness entries with blended quality
+    const PRIOR_WEIGHT: f64 = 5.0;
+    let mut updated: Vec<FitnessEntry> = Vec::new();
+
+    for &task_type in TaskType::ALL_ROUTABLE {
+        let entries = fitness_cache.get_entries_for_task(task_type).await;
+        for entry in entries {
+            let new_quality = if let Some(&(feedback_quality, sample_size)) =
+                quality_map.get(&(entry.model.clone(), task_type))
+            {
+                let catalog_quality = quality_for_model_task(&entry.model, task_type);
+                (catalog_quality * PRIOR_WEIGHT + feedback_quality * sample_size as f64)
+                    / (PRIOR_WEIGHT + sample_size as f64)
+            } else {
+                entry.avg_quality
+            };
+
+            updated.push(FitnessEntry {
+                avg_quality: new_quality,
+                ..entry
+            });
+        }
+    }
+
+    let feedback_count = quality_map.len();
+    tracing::info!(
+        feedback_entries = feedback_count,
+        total_entries = updated.len(),
+        "quality feedback merge: {} (model, task) pairs updated from feedback_events",
+        feedback_count,
+    );
+
+    fitness_cache.update(updated).await;
+    Ok(())
+}
+
+fn parse_quality_entries(resp: &str) -> Vec<QualityRow> {
+    let mut rows = Vec::new();
+    for line in resp.lines() {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line)
+            && let (Some(model), Some(task_type_str), Some(avg_quality), Some(sample_size)) = (
+                v.get("model").and_then(|v| v.as_str()),
+                v.get("task_type").and_then(|v| v.as_str()),
+                v.get("avg_quality").and_then(|v| v.as_f64()),
+                v.get("sample_size").and_then(|v| v.as_u64()),
+            )
+            && let Ok(task_type) = serde_json::from_value::<TaskType>(serde_json::Value::String(
+                task_type_str.to_string(),
+            ))
+        {
+            rows.push(QualityRow {
+                model: model.to_string(),
+                task_type,
+                avg_quality,
+                sample_size: sample_size as u32,
+            });
+        }
+    }
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +300,45 @@ mod tests {
 
         let after = cache.get_entries_for_task(TaskType::Summarization).await;
         assert_eq!(before.len(), after.len());
+    }
+
+    #[test]
+    fn parse_quality_entries_valid() {
+        let line = r#"{"model":"claude-haiku-4-5","task_type":"summarization","avg_quality":0.85,"sample_size":15}"#;
+        let rows = parse_quality_entries(line);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].model, "claude-haiku-4-5");
+        assert!((rows[0].avg_quality - 0.85).abs() < f64::EPSILON);
+        assert_eq!(rows[0].sample_size, 15);
+    }
+
+    #[test]
+    fn parse_quality_entries_empty() {
+        let rows = parse_quality_entries("");
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn bayesian_blending_small_sample() {
+        // With small sample_size, the result should be close to the catalog prior
+        let catalog: f64 = 0.79;
+        let feedback: f64 = 0.50;
+        let sample_size: f64 = 2.0;
+        let prior_weight: f64 = 5.0;
+        let blended = (catalog * prior_weight + feedback * sample_size) / (prior_weight + sample_size);
+        // (0.79 * 5 + 0.50 * 2) / (5 + 2) = (3.95 + 1.0) / 7 = 4.95 / 7 ≈ 0.707
+        assert!((blended - 0.707).abs() < 0.01);
+    }
+
+    #[test]
+    fn bayesian_blending_large_sample() {
+        // With large sample_size, the result should converge toward feedback
+        let catalog: f64 = 0.79;
+        let feedback: f64 = 0.50;
+        let sample_size: f64 = 100.0;
+        let prior_weight: f64 = 5.0;
+        let blended = (catalog * prior_weight + feedback * sample_size) / (prior_weight + sample_size);
+        // Should be close to 0.50
+        assert!((blended - feedback).abs() < 0.02);
     }
 }

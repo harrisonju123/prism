@@ -29,7 +29,7 @@ impl SqliteStore {
                  source = excluded.source,
                  tags = excluded.tags,
                  updated_at = excluded.updated_at
-             RETURNING id, workspace_id, thread_id, key, value, source, tags, created_at, updated_at",
+             RETURNING id, workspace_id, thread_id, key, value, source, tags, access_count, last_accessed_at, created_at, updated_at",
         )
         .bind(id.to_string())
         .bind(workspace_id.to_string())
@@ -87,7 +87,7 @@ impl SqliteStore {
         }
 
         let query = format!(
-            "SELECT id, workspace_id, thread_id, key, value, source, tags, created_at, updated_at
+            "SELECT id, workspace_id, thread_id, key, value, source, tags, access_count, last_accessed_at, created_at, updated_at
              FROM memories
              WHERE {}
              ORDER BY updated_at DESC
@@ -101,7 +101,27 @@ impl SqliteStore {
         }
 
         let rows = q.fetch_all(&self.pool).await?;
-        rows.iter().map(row_to_memory).collect()
+        let memories: Vec<Memory> = rows.iter().map(row_to_memory).collect::<Result<Vec<_>>>()?;
+
+        // Track access for returned memories (fire-and-forget)
+        if !memories.is_empty() {
+            let ids: Vec<String> = memories.iter().map(|m| m.id.to_string()).collect();
+            let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("${i}")).collect();
+            let update_sql = format!(
+                "UPDATE memories SET access_count = access_count + 1, last_accessed_at = ${} WHERE id IN ({})",
+                ids.len() + 1,
+                placeholders.join(", ")
+            );
+            let now = now_rfc3339();
+            let mut update_q = sqlx::query(&update_sql);
+            for id in &ids {
+                update_q = update_q.bind(id);
+            }
+            update_q = update_q.bind(&now);
+            let _ = update_q.execute(&self.pool).await;
+        }
+
+        Ok(memories)
     }
 
     pub(crate) async fn delete_memory_impl(&self, workspace_id: Uuid, key: &str) -> Result<()> {
@@ -127,6 +147,8 @@ row_to_struct! {
         value: str "value",
         source: str "source",
         tags: json_array "tags",
+        access_count: custom "access_count" => row.try_get::<i32, _>("access_count").unwrap_or(0) as u32,
+        last_accessed_at: opt_time "last_accessed_at",
         created_at: time "created_at",
         updated_at: time "updated_at",
     }

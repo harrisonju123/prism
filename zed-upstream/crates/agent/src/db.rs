@@ -132,6 +132,7 @@ impl SharedThread {
             thinking_effort: None,
             draft_prompt: None,
             ui_scroll_position: None,
+            uglyhat_thread_id: None,
         }
     }
 
@@ -311,6 +312,7 @@ impl DbThread {
             thinking_effort: None,
             draft_prompt: None,
             ui_scroll_position: None,
+            uglyhat_thread_id: None,
         })
     }
 }
@@ -693,6 +695,7 @@ mod tests {
             thinking_effort: None,
             draft_prompt: None,
             ui_scroll_position: None,
+            uglyhat_thread_id: None,
         }
     }
 

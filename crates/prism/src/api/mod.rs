@@ -31,3 +31,7 @@ pub mod routing;
 pub mod stats;
 #[cfg(feature = "full")]
 pub mod workflows;
+#[cfg(feature = "full")]
+pub mod analytics;
+#[cfg(feature = "full")]
+pub mod sessions;

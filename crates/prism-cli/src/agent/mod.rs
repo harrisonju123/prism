@@ -51,7 +51,7 @@ impl FinishReason {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AgentStopReason {
+pub(crate) enum AgentStopReason {
     Stop,
     CostCap,
     Interrupt,
@@ -932,6 +932,46 @@ impl Agent {
             tracing::warn!("failed to save session: {e}");
         }
 
+        self.emit_implicit_feedback(stop_reason, turns, total_cost_usd).await;
+
+        // Auto-extract memories from session signals (resolution patterns)
+        if let Some((store, ws_id, agent_name)) = self.uh_context() {
+            let thread_name = self.current_thread.as_deref();
+
+            let mut session_findings: Vec<String> = Vec::new();
+            for msg in self.session.active_messages() {
+                if msg.role == prism_types::MessageRole::Assistant
+                    && let Some(content) = msg.content.as_ref().and_then(|c| c.as_str())
+                {
+                    if content.len() < 500 {
+                        let lower = content.to_lowercase();
+                        if crate::memory::RESOLUTION_KEYWORDS
+                            .iter()
+                            .any(|kw| lower.contains(kw))
+                        {
+                            session_findings.push(content.to_string());
+                        }
+                    }
+                }
+            }
+
+            if !session_findings.is_empty() {
+                let extracted = crate::memory::auto_extract_memories(
+                    store,
+                    ws_id,
+                    &agent_name,
+                    &[],
+                    &[],
+                    &session_findings,
+                    thread_name,
+                )
+                .await;
+                if !extracted.is_empty() {
+                    tracing::debug!(count = extracted.len(), "auto-extracted memories from session");
+                }
+            }
+        }
+
         if stop_reason.is_none() {
             self.session.stop_reason = Some(AgentStopReason::MaxTurns.to_session_str().to_string());
             if let Err(e) = self.session.save(&self.config.session.sessions_dir) {
@@ -999,6 +1039,45 @@ impl Agent {
 
         // Auto-acknowledge
         let _ = store.acknowledge_decisions(ws_id, &agent_name, ids).await;
+    }
+
+    /// Emit an implicit quality feedback event based on session outcome signals.
+    async fn emit_implicit_feedback(
+        &self,
+        stop_reason: Option<AgentStopReason>,
+        turns: u32,
+        cost_usd: f64,
+    ) {
+        let mut quality: f64 = 0.70;
+        match stop_reason {
+            Some(AgentStopReason::Stop) => quality += 0.15,
+            Some(AgentStopReason::Interrupt) => quality -= 0.30,
+            Some(AgentStopReason::CostCap) => quality -= 0.10,
+            Some(AgentStopReason::MaxTurns) => quality -= 0.20,
+            None => quality -= 0.20,
+        }
+        if let Some(tree) = &self.session.tree {
+            if tree.has_branches() {
+                quality -= 0.15;
+            }
+        }
+        quality = quality.clamp(0.0, 1.0);
+
+        let metadata = serde_json::json!({
+            "source": "implicit",
+            "stop_reason": stop_reason.map(|r| r.to_session_str()),
+            "turns": turns,
+            "cost_usd": cost_usd,
+            "model": self.session.model,
+        });
+
+        let _ = self.client.post_feedback(
+            None,
+            Some(self.session.episode_id),
+            "implicit_quality",
+            quality,
+            metadata,
+        ).await;
     }
 
     /// Check thread-scoped guardrails. Returns Some(denial_message) if denied.

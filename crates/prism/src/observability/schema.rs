@@ -236,6 +236,25 @@ WHERE thread_id IS NOT NULL AND thread_id != ''
 GROUP BY day, thread_id
 "#;
 
+/// Materialized view for hourly quality stats from feedback.
+pub const HOURLY_QUALITY_STATS_SCHEMA: &str = r#"
+CREATE MATERIALIZED VIEW IF NOT EXISTS hourly_quality_stats
+ENGINE = SummingMergeTree()
+PARTITION BY toYYYYMM(hour)
+ORDER BY (hour, model, task_type, metric_name)
+AS SELECT
+    toStartOfHour(fe.timestamp) AS hour,
+    ie.model,
+    ie.task_type,
+    fe.metric_name,
+    count() AS sample_count,
+    sum(fe.metric_value) AS quality_sum
+FROM feedback_events fe
+JOIN inference_events ie ON fe.episode_id = ie.episode_id
+WHERE ie.task_type IS NOT NULL
+GROUP BY hour, ie.model, ie.task_type, fe.metric_name
+"#;
+
 /// Versioned migrations: (version_name, ddl). Applied in order, skipping already-applied ones.
 pub const MIGRATIONS: &[(&str, &str)] = &[
     ("001_inference_events", INFERENCE_EVENTS_SCHEMA),
@@ -253,6 +272,7 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
         INFERENCE_EVENTS_MIGRATION_V3,
     ),
     ("012_daily_spend_by_thread", DAILY_SPEND_BY_THREAD_SCHEMA),
+    ("013_hourly_quality_stats", HOURLY_QUALITY_STATS_SCHEMA),
 ];
 
 #[cfg(test)]

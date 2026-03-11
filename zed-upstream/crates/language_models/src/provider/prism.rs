@@ -93,11 +93,7 @@ const HEADER_THREAD_ID: &str = "x-uglyhat-thread-id";
 
 impl RoutingInfo {
     fn from_headers(headers: &http_client::http::HeaderMap) -> Option<Self> {
-        let routed_model = headers
-            .get(HEADER_ROUTED_MODEL)?
-            .to_str()
-            .ok()?
-            .to_string();
+        let routed_model = headers.get(HEADER_ROUTED_MODEL)?.to_str().ok()?.to_string();
         let routed_provider = headers
             .get(HEADER_ROUTED_PROVIDER)
             .and_then(|v| v.to_str().ok())
@@ -156,7 +152,10 @@ pub fn prism_last_routing_info(cx: &App) -> Option<RoutingInfo> {
 }
 
 pub fn prism_routing_history(cx: &App) -> Vec<TimestampedRoutingInfo> {
-    let Some(state) = cx.try_global::<GlobalPrismState>().and_then(|g| g.0.upgrade()) else {
+    let Some(state) = cx
+        .try_global::<GlobalPrismState>()
+        .and_then(|g| g.0.upgrade())
+    else {
         return Vec::new();
     };
     state
@@ -207,7 +206,8 @@ pub struct State {
     sidecar_status: SidecarStatus,
     session_cost_usd: f64,
     embedded_session_cost: Option<Arc<std::sync::atomic::AtomicU64>>,
-    pub last_routing_info: Arc<std::sync::Mutex<std::collections::VecDeque<TimestampedRoutingInfo>>>,
+    pub last_routing_info:
+        Arc<std::sync::Mutex<std::collections::VecDeque<TimestampedRoutingInfo>>>,
 }
 
 impl State {
@@ -421,7 +421,9 @@ impl PrismLanguageModelProvider {
                     sidecar_status: SidecarStatus::Unknown,
                     session_cost_usd: 0.0,
                     embedded_session_cost: None,
-                    last_routing_info: Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new())),
+                    last_routing_info: Arc::new(std::sync::Mutex::new(
+                        std::collections::VecDeque::new(),
+                    )),
                 };
                 state.start_embedded_if_needed(cx);
                 state
@@ -575,9 +577,9 @@ impl PrismLanguageModel {
         >,
     > {
         let http_client = self.http_client.clone();
-        let routing_info_slot = self.state.read_with(cx, |state, _cx| {
-            state.last_routing_info.clone()
-        });
+        let routing_info_slot = self
+            .state
+            .read_with(cx, |state, _cx| state.last_routing_info.clone());
 
         let (api_key, api_url) = self.state.read_with(cx, |state, _cx| {
             (state.effective_api_key(), state.settings.api_url.clone())

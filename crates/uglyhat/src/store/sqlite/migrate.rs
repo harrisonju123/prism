@@ -55,6 +55,9 @@ const MIGRATIONS: &[&str] = &[
          updated_at      TEXT NOT NULL,
          UNIQUE(thread_id)
      );",
+    // Migration 5: Memory access tracking
+    "ALTER TABLE memories ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0;
+     ALTER TABLE memories ADD COLUMN last_accessed_at TEXT;",
 ];
 
 pub fn latest_version() -> i64 {

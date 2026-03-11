@@ -5,7 +5,8 @@ use std::pin::Pin;
 // Re-export prism-types for consumers
 pub use prism_types::{
     AgentMetricsResponse, ChatCompletionRequest, ChatCompletionResponse, Choice, Message,
-    PolicyResponse, SummaryResponse, TaskTypeStatsResponse, Usage, WasteScoreResponse,
+    PolicyResponse, QualityTrendsResponse, RoutingSavingsResponse, SessionEfficiencyResponse,
+    SummaryResponse, TaskTypeStatsResponse, Usage, WasteScoreResponse,
 };
 
 // --- Error ---
@@ -260,6 +261,62 @@ impl PrismClient {
             .request(
                 reqwest::Method::GET,
                 &format!("/api/v1/stats/agents?period_days={period_days}"),
+            )
+            .send()
+            .await?;
+        Self::handle_response(resp).await
+    }
+
+    pub async fn post_feedback(
+        &self,
+        inference_id: Option<uuid::Uuid>,
+        episode_id: Option<uuid::Uuid>,
+        metric_name: &str,
+        metric_value: f64,
+        metadata: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let body = serde_json::json!({
+            "inference_id": inference_id,
+            "episode_id": episode_id,
+            "metric_name": metric_name,
+            "metric_value": metric_value,
+            "metadata": metadata,
+        });
+        let resp = self
+            .request(reqwest::Method::POST, "/api/v1/feedback")
+            .json(&body)
+            .send()
+            .await?;
+        Self::handle_response(resp).await
+    }
+
+    pub async fn quality_trends(&self, since_days: u32) -> Result<QualityTrendsResponse> {
+        let resp = self
+            .request(
+                reqwest::Method::GET,
+                &format!("/api/v1/analytics/quality-trends?since={since_days}"),
+            )
+            .send()
+            .await?;
+        Self::handle_response(resp).await
+    }
+
+    pub async fn routing_savings(&self, since_days: u32) -> Result<RoutingSavingsResponse> {
+        let resp = self
+            .request(
+                reqwest::Method::GET,
+                &format!("/api/v1/analytics/routing-savings?since={since_days}"),
+            )
+            .send()
+            .await?;
+        Self::handle_response(resp).await
+    }
+
+    pub async fn session_efficiency(&self, since_days: u32) -> Result<SessionEfficiencyResponse> {
+        let resp = self
+            .request(
+                reqwest::Method::GET,
+                &format!("/api/v1/analytics/session-efficiency?since={since_days}"),
             )
             .send()
             .await?;
