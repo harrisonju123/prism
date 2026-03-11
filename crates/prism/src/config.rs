@@ -1173,12 +1173,14 @@ fn default_cors_max_age_secs() -> u64 {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ContextManagementConfig {
-    #[serde(default)]
+    #[serde(default = "default_context_enabled")]
     pub enabled: bool,
     #[serde(default = "default_context_strategy")]
     pub strategy: String, // "drop-oldest" | "smart" | "error"
     #[serde(default = "default_response_reserve")]
     pub response_reserve_tokens: u32,
+    #[serde(default = "default_proactive_threshold")]
+    pub proactive_threshold: f32,
     // smart strategy tuning
     #[serde(default = "default_preserve_recent")]
     pub preserve_recent: usize,
@@ -1193,9 +1195,10 @@ pub struct ContextManagementConfig {
 impl Default for ContextManagementConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_context_enabled(),
             strategy: default_context_strategy(),
             response_reserve_tokens: default_response_reserve(),
+            proactive_threshold: default_proactive_threshold(),
             preserve_recent: default_preserve_recent(),
             tool_output_max_tokens: default_tool_output_max_tokens(),
             tool_output_head_lines: default_tool_output_head_lines(),
@@ -1204,8 +1207,16 @@ impl Default for ContextManagementConfig {
     }
 }
 
+fn default_context_enabled() -> bool {
+    true
+}
+
 fn default_context_strategy() -> String {
-    "drop-oldest".into()
+    "smart".into()
+}
+
+fn default_proactive_threshold() -> f32 {
+    0.70
 }
 
 fn default_response_reserve() -> u32 {
@@ -1329,6 +1340,29 @@ mod tests {
         assert!((config.waste.quality_tolerance - 0.05).abs() < f64::EPSILON);
         assert!((config.waste.cost_ratio_threshold - 0.5).abs() < f64::EPSILON);
         assert!((config.waste.overspend_multiplier - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_context_management_defaults() {
+        let config: Config = Figment::new().extract().unwrap();
+        assert!(config.context_management.enabled);
+        assert_eq!(config.context_management.strategy, "smart");
+        assert!((config.context_management.proactive_threshold - 0.70).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_context_management_explicit_disable() {
+        use figment::providers::Format;
+        let config: Config = Figment::new()
+            .merge(figment::providers::Toml::string(
+                r#"
+[context_management]
+enabled = false
+"#,
+            ))
+            .extract()
+            .unwrap();
+        assert!(!config.context_management.enabled);
     }
 
     #[test]

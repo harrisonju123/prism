@@ -344,30 +344,50 @@ pub async fn chat_completions(
         if let Some(window) = ctx_window {
             let reserve = state.config.context_management.response_reserve_tokens;
             let budget = window.saturating_sub(reserve);
-            let current = crate::proxy::context_window::estimate_messages_tokens(&request.messages);
+            let mut current =
+                crate::proxy::context_window::estimate_messages_tokens(&request.messages);
+            let fill_pct = current as f32 / budget as f32;
+
+            tracing::info!(
+                fill_pct = format!("{:.1}%", fill_pct * 100.0),
+                estimated_tokens = current,
+                budget,
+                model = %request.model,
+                "context window utilization"
+            );
+
+            let cm = &state.config.context_management;
+
+            // Stage 1 — proactive compression: compress bloated tool outputs before hitting the hard limit
+            if fill_pct >= cm.proactive_threshold && current <= budget {
+                let (compressed, saved) =
+                    crate::proxy::context_window::compress_tool_outputs_in_place(
+                        &mut request.messages,
+                        cm.tool_output_max_tokens,
+                        cm.tool_output_head_lines,
+                        cm.tool_output_tail_lines,
+                    );
+                if compressed > 0 {
+                    current = current.saturating_sub(saved);
+                    tracing::info!(
+                        tool_outputs_compressed = compressed,
+                        tokens_saved = saved,
+                        model = %request.model,
+                        "proactive tool output compression"
+                    );
+                }
+            }
+
+            // Stage 2 — hard limit: apply full strategy if still over budget
             if current > budget {
-                match state.config.context_management.strategy.as_str() {
+                match cm.strategy.as_str() {
                     "error" => {
                         return Err(PrismError::BadRequest(format!(
                             "estimated prompt tokens ({current}) exceeds context window budget ({budget})"
                         )));
                     }
                     "smart" => {
-                        let smart_cfg = crate::proxy::context_window::SmartTruncationConfig {
-                            preserve_recent: state.config.context_management.preserve_recent,
-                            tool_output_max_tokens: state
-                                .config
-                                .context_management
-                                .tool_output_max_tokens,
-                            tool_output_head_lines: state
-                                .config
-                                .context_management
-                                .tool_output_head_lines,
-                            tool_output_tail_lines: state
-                                .config
-                                .context_management
-                                .tool_output_tail_lines,
-                        };
+                        let smart_cfg = build_smart_cfg(cm);
                         let r = crate::proxy::context_window::smart_truncate_to_fit(
                             &mut request.messages,
                             budget,
@@ -1160,6 +1180,21 @@ pub async fn embeddings(
     );
 
     Ok(Json(response).into_response())
+}
+
+// ---------------------------------------------------------------------------
+// Smart truncation config builder
+// ---------------------------------------------------------------------------
+
+fn build_smart_cfg(
+    cm: &crate::config::ContextManagementConfig,
+) -> crate::proxy::context_window::SmartTruncationConfig {
+    crate::proxy::context_window::SmartTruncationConfig {
+        preserve_recent: cm.preserve_recent,
+        tool_output_max_tokens: cm.tool_output_max_tokens,
+        tool_output_head_lines: cm.tool_output_head_lines,
+        tool_output_tail_lines: cm.tool_output_tail_lines,
+    }
 }
 
 // ---------------------------------------------------------------------------

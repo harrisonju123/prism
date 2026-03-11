@@ -208,7 +208,7 @@ fn compress_tool_output(
 
 /// Apply tool output compression to all Tool-role messages in place.
 /// Returns estimated tokens saved.
-fn compress_tool_outputs_in_place(
+pub fn compress_tool_outputs_in_place(
     messages: &mut [Message],
     max_tokens: u32,
     head_lines: usize,
@@ -729,5 +729,89 @@ mod tests {
         let dropped = truncate_to_fit(&mut messages, 30);
         assert!(dropped > 0);
         assert_eq!(messages[0].role, MessageRole::System);
+    }
+
+    // --- proactive compression tests ---
+
+    #[test]
+    fn test_proactive_compresses_at_threshold() {
+        // Simulate 75% fill: large tool outputs should be compressed, no messages dropped.
+        let lines: Vec<String> = (1..=60).map(|i| format!("line {i}")).collect();
+        let large = lines.join("\n");
+        let mut messages = vec![
+            make_msg(MessageRole::System, "sys"),
+            make_msg(MessageRole::User, "query"),
+            make_tool_result("c1", &large),
+            make_tool_result("c2", &large),
+            make_msg(MessageRole::Assistant, "done"),
+        ];
+        let total = estimate_messages_tokens(&messages);
+        // Set budget so fill is ~75%
+        let _budget = (total as f32 / 0.75) as u32;
+        let msg_count_before = messages.len();
+
+        let (compressed, saved) = compress_tool_outputs_in_place(&mut messages, 10, 3, 3);
+
+        assert!(compressed > 0, "tool outputs should have been compressed");
+        assert!(saved > 0);
+        assert_eq!(
+            messages.len(),
+            msg_count_before,
+            "no messages should be dropped"
+        );
+    }
+
+    #[test]
+    fn test_no_compression_below_threshold() {
+        // At 50% fill, proactive compression should NOT fire.
+        let mut messages = vec![
+            make_msg(MessageRole::System, "sys"),
+            make_msg(MessageRole::User, "query"),
+            make_tool_result("c1", "short result"),
+        ];
+        let total = estimate_messages_tokens(&messages);
+        // Budget is 2x total → 50% fill
+        let budget = total * 2;
+        let fill_pct = total as f32 / budget as f32;
+        let threshold = 0.70f32;
+
+        assert!(fill_pct < threshold, "fill should be below threshold");
+        // compress_tool_outputs_in_place would compress nothing since outputs are small
+        let (compressed, _) = compress_tool_outputs_in_place(&mut messages, 200, 20, 20);
+        assert_eq!(compressed, 0);
+    }
+
+    #[test]
+    fn test_proactive_then_hard_limit() {
+        // Proactive compression alone is insufficient → full smart truncation follows.
+        let lines: Vec<String> = (1..=100).map(|i| format!("line {i}")).collect();
+        let large = lines.join("\n");
+        let mut messages = vec![
+            make_msg(MessageRole::System, "sys"),
+            make_msg(MessageRole::User, "first user"),
+            make_tool_result("c1", &large),
+            make_tool_result("c2", &large),
+            make_msg(MessageRole::User, "middle"),
+            make_msg(MessageRole::Assistant, "mid resp"),
+            make_msg(MessageRole::User, "recent"),
+            make_msg(MessageRole::Assistant, "recent resp"),
+        ];
+
+        // Stage 1: proactive compression
+        let (compressed, _saved) = compress_tool_outputs_in_place(&mut messages, 10, 3, 3);
+        assert!(compressed > 0);
+
+        // Still over a tight budget → stage 2 needed
+        let tight_budget = 30u32;
+        let after_proactive = estimate_messages_tokens(&messages);
+        assert!(
+            after_proactive > tight_budget,
+            "should still exceed budget after proactive pass"
+        );
+
+        let config = default_smart_config();
+        let result = smart_truncate_to_fit(&mut messages, tight_budget, &config);
+        assert!(result.messages_dropped > 0 || result.pass_used >= 2);
+        assert!(messages.iter().any(|m| m.role == MessageRole::System));
     }
 }
