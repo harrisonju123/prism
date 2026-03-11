@@ -20,6 +20,8 @@ pub mod config_reload;
 #[cfg(feature = "full")]
 pub mod costs;
 #[cfg(feature = "full")]
+pub mod debug;
+#[cfg(feature = "full")]
 pub mod interop;
 #[cfg(feature = "full")]
 pub mod keys;

@@ -20,6 +20,12 @@ import type {
   MCPServersResponse,
   MCPGraphResponse,
   MCPWasteResponse,
+  DebugSessionSummary,
+  DebugSessionDetail,
+  CreateDebugSessionRequest,
+  CreateHypothesisRequest,
+  CreateExperimentRequest,
+  CreateRunRequest,
 } from "./types";
 
 const API_BASE = "/api/v1";
@@ -30,7 +36,10 @@ async function throwIfNotOk(res: Response): Promise<void> {
   throw new Error(`API error: ${res.status}${body ? ` - ${body}` : ""}`);
 }
 
-async function fetchJson<T>(url: string, params?: Record<string, string>): Promise<T> {
+async function fetchJson<T>(
+  url: string,
+  params?: Record<string, string>,
+): Promise<T> {
   const searchParams = new URLSearchParams(params);
   const fullUrl = params ? `${url}?${searchParams}` : url;
   const res = await fetch(fullUrl);
@@ -57,7 +66,7 @@ async function mutateVoid(url: string, init: RequestInit): Promise<void> {
 export async function getSummary(
   start?: string,
   end?: string,
-  groupBy = "model"
+  groupBy = "model",
 ): Promise<StatsSummary> {
   const params: Record<string, string> = { group_by: groupBy };
   if (start) params.start = start;
@@ -69,7 +78,7 @@ export async function getTimeseries(
   metric = "cost",
   interval = "1h",
   start?: string,
-  end?: string
+  end?: string,
 ): Promise<TimeseriesResponse> {
   const params: Record<string, string> = { metric, interval };
   if (start) params.start = start;
@@ -81,9 +90,12 @@ export async function getTopTraces(
   sortBy = "cost",
   limit = 10,
   start?: string,
-  end?: string
+  end?: string,
 ): Promise<{ traces: TopTrace[] }> {
-  const params: Record<string, string> = { sort_by: sortBy, limit: String(limit) };
+  const params: Record<string, string> = {
+    sort_by: sortBy,
+    limit: String(limit),
+  };
   if (start) params.start = start;
   if (end) params.end = end;
   return fetchJson(`${API_BASE}/stats/top-traces`, params);
@@ -91,7 +103,7 @@ export async function getTopTraces(
 
 export async function getWasteScore(
   start?: string,
-  end?: string
+  end?: string,
 ): Promise<WasteScore> {
   const params: Record<string, string> = {};
   if (start) params.start = start;
@@ -100,7 +112,7 @@ export async function getWasteScore(
 }
 
 export async function getEvents(
-  params: Record<string, string> = {}
+  params: Record<string, string> = {},
 ): Promise<EventsResponse> {
   return fetchJson(`${API_BASE}/events`, params);
 }
@@ -111,7 +123,9 @@ export async function getAlertRules(): Promise<AlertRule[]> {
   return fetchJson(`${API_BASE}/alerts/rules`);
 }
 
-export async function createAlertRule(body: AlertRuleCreate): Promise<AlertRule> {
+export async function createAlertRule(
+  body: AlertRuleCreate,
+): Promise<AlertRule> {
   return mutateJson(`${API_BASE}/alerts/rules`, {
     method: "POST",
     body: JSON.stringify(body),
@@ -124,7 +138,7 @@ export async function deleteAlertRule(ruleId: string): Promise<void> {
 
 export async function getAlertHistory(
   limit = 50,
-  offset = 0
+  offset = 0,
 ): Promise<AlertHistoryResponse> {
   return fetchJson(`${API_BASE}/alerts/history`, {
     limit: String(limit),
@@ -147,7 +161,7 @@ export async function createBudget(body: BudgetCreate): Promise<Budget> {
 
 export async function getFitnessMatrix(
   start?: string,
-  end?: string
+  end?: string,
 ): Promise<FitnessMatrixResponse> {
   const params: Record<string, string> = {};
   if (start) params.start = start;
@@ -156,7 +170,7 @@ export async function getFitnessMatrix(
 }
 
 export async function getBenchmarkResults(
-  params: Record<string, string> = {}
+  params: Record<string, string> = {},
 ): Promise<BenchmarkResultsResponse> {
   return fetchJson(`${API_BASE}/benchmarks/results`, params);
 }
@@ -167,7 +181,7 @@ export async function getBenchmarkConfig(): Promise<BenchmarkConfig> {
 
 export async function getBenchmarkDrift(
   start?: string,
-  end?: string
+  end?: string,
 ): Promise<DriftResponse> {
   const params: Record<string, string> = {};
   if (start) params.start = start;
@@ -183,7 +197,7 @@ export async function getRoutingPolicy(): Promise<PolicyResponse> {
 
 export async function getRoutingDecisions(
   limit = 50,
-  offset = 0
+  offset = 0,
 ): Promise<DecisionsResponse> {
   return fetchJson(`${API_BASE}/routing/decisions`, {
     limit: String(limit),
@@ -191,7 +205,9 @@ export async function getRoutingDecisions(
   });
 }
 
-export async function toggleRouting(enabled: boolean): Promise<{ routing_enabled: boolean }> {
+export async function toggleRouting(
+  enabled: boolean,
+): Promise<{ routing_enabled: boolean }> {
   return mutateJson(`${API_BASE}/routing/toggle`, {
     method: "POST",
     body: JSON.stringify({ enabled }),
@@ -201,7 +217,7 @@ export async function toggleRouting(enabled: boolean): Promise<{ routing_enabled
 export async function postDryRun(
   start: string,
   end: string,
-  limit = 100
+  limit = 100,
 ): Promise<DryRunReport> {
   return mutateJson(`${API_BASE}/routing/dry-run`, {
     method: "POST",
@@ -219,7 +235,7 @@ export async function getEventById(id: string): Promise<LLMEvent> {
 
 export async function getMCPServers(
   start?: string,
-  end?: string
+  end?: string,
 ): Promise<MCPServersResponse> {
   const params: Record<string, string> = {};
   if (start) params.start = start;
@@ -233,7 +249,7 @@ export async function getMCPGraph(traceId: string): Promise<MCPGraphResponse> {
 
 export async function getMCPWaste(
   start?: string,
-  end?: string
+  end?: string,
 ): Promise<MCPWasteResponse> {
   const params: Record<string, string> = {};
   if (start) params.start = start;
@@ -241,3 +257,53 @@ export async function getMCPWaste(
   return fetchJson(`${API_BASE}/mcp/waste`, params);
 }
 
+// -- Debugging loop ----------------------------------------------------------
+
+export async function getDebugSessions(): Promise<DebugSessionSummary[]> {
+  return fetchJson(`${API_BASE}/debug/sessions`);
+}
+
+export async function getDebugSession(
+  sessionId: string,
+): Promise<DebugSessionDetail> {
+  return fetchJson(`${API_BASE}/debug/sessions/${sessionId}`);
+}
+
+export async function createDebugSession(
+  body: CreateDebugSessionRequest,
+): Promise<DebugSessionSummary> {
+  return mutateJson(`${API_BASE}/debug/sessions`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function createDebugHypothesis(
+  sessionId: string,
+  body: CreateHypothesisRequest,
+): Promise<void> {
+  await mutateJson(`${API_BASE}/debug/sessions/${sessionId}/hypotheses`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function createDebugExperiment(
+  sessionId: string,
+  body: CreateExperimentRequest,
+): Promise<void> {
+  await mutateJson(`${API_BASE}/debug/sessions/${sessionId}/experiments`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function createDebugRun(
+  experimentId: string,
+  body: CreateRunRequest,
+): Promise<void> {
+  await mutateJson(`${API_BASE}/debug/experiments/${experimentId}/runs`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}

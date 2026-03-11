@@ -206,6 +206,25 @@ fn build_management_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
             "/api/v1/sessions/{episode_id}",
             get(api::sessions::get_session),
         )
+        // Debugging loop
+        .route("/api/v1/debug/sessions", get(api::debug::list_sessions))
+        .route("/api/v1/debug/sessions", post(api::debug::create_session))
+        .route(
+            "/api/v1/debug/sessions/{session_id}",
+            get(api::debug::get_session),
+        )
+        .route(
+            "/api/v1/debug/sessions/{session_id}/hypotheses",
+            post(api::debug::create_hypothesis),
+        )
+        .route(
+            "/api/v1/debug/sessions/{session_id}/experiments",
+            post(api::debug::create_experiment),
+        )
+        .route(
+            "/api/v1/debug/experiments/{experiment_id}/runs",
+            post(api::debug::create_run),
+        )
         // Analytics
         .route(
             "/api/v1/analytics/quality-trends",

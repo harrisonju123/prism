@@ -217,6 +217,10 @@ async fn main() -> anyhow::Result<()> {
         if let Err(e) = sqlx::raw_sql(ip_cors_sql).execute(pool).await {
             tracing::warn!(error = %e, "009_key_ip_cors migration failed (may already exist)");
         }
+        let debug_sql = include_str!("../migrations/postgres/010_debug_sessions.sql");
+        if let Err(e) = sqlx::raw_sql(debug_sql).execute(pool).await {
+            tracing::warn!(error = %e, "010_debug_sessions migration failed (may already exist)");
+        }
         tracing::info!("additional postgres migrations applied");
     }
 
