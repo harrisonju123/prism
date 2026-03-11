@@ -2,10 +2,11 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use prism_cli::{
     acp, agent::Agent, config::Config, mcp, memory, permissions::PermissionMode, persona, repl,
-    session::Session, skills::SkillRegistry,
+    request_replay, session::Session, skills::SkillRegistry,
 };
 use prism_client::{PrismClient, RetryConfig};
 use std::io::IsTerminal;
+use std::path::Path;
 use std::sync::Arc;
 
 #[derive(Parser)]
@@ -68,6 +69,11 @@ enum Commands {
         #[command(subcommand)]
         cmd: SessionsCmd,
     },
+    /// Generate or run request replay artifacts
+    RequestReplay {
+        #[command(subcommand)]
+        cmd: RequestReplayCmd,
+    },
     /// Run as an ACP agent server (stdio protocol mode for Zed)
     Acp {
         #[arg(long, help = "Model to use (overrides PRISM_MODEL)")]
@@ -102,6 +108,42 @@ enum SessionsCmd {
     Rm { id_prefix: String },
     /// Show branch points in a session
     Branches { id_prefix: String },
+}
+
+#[derive(Subcommand)]
+enum RequestReplayCmd {
+    /// Generate request replay artifacts from OpenAPI
+    Generate {
+        /// Output directory for request replay artifacts
+        #[arg(long, default_value = "request-replay")]
+        output_dir: String,
+        /// Overwrite existing artifacts instead of skipping
+        #[arg(long, default_value_t = false)]
+        overwrite: bool,
+        /// Include endpoints tagged as internal/private
+        #[arg(long, default_value_t = false)]
+        include_private: bool,
+        /// Include full OpenAPI schema payloads in artifacts
+        #[arg(long, default_value_t = false)]
+        include_full: bool,
+    },
+    /// Discover or generate OpenAPI specs
+    OpenApi {
+        /// Output directory for OpenAPI artifacts
+        #[arg(long, default_value = "request-replay")]
+        output_dir: String,
+    },
+    /// Run a saved request replay
+    Run {
+        /// Request replay identifier (filename stem)
+        request_id: String,
+        /// Target environment (local/dev/staging)
+        #[arg(long, default_value = "local")]
+        env: String,
+        /// Directory to write replay logs
+        #[arg(long)]
+        log_dir: Option<String>,
+    },
 }
 
 fn main() {
@@ -327,6 +369,26 @@ async fn run(cli: Cli) -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Commands::RequestReplay { cmd } => match cmd {
+            RequestReplayCmd::Generate {
+                output_dir,
+                overwrite,
+                include_private,
+                include_full,
+            } => {
+                request_replay::generate(&output_dir, overwrite, include_private, include_full)?;
+            }
+            RequestReplayCmd::OpenApi { output_dir } => {
+                request_replay::openapi::discover_or_generate(Path::new(&output_dir))?;
+            }
+            RequestReplayCmd::Run {
+                request_id,
+                env,
+                log_dir,
+            } => {
+                request_replay::run(&request_id, &env, log_dir.as_deref())?;
+            }
+        },
         Commands::Spawn {
             task,
             model,

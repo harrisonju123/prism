@@ -71,7 +71,44 @@ make run-uh         # cargo run -p uglyhat
 make install-uh     # install uh CLI to ~/.cargo/bin
 make health         # curl health endpoint
 make models         # curl models endpoint
+make request-replay # generate request replay artifacts from OpenAPI
 ```
+
+### Request Replay (agent-first endpoint testing)
+
+Request Replay turns “test an endpoint” into a repeatable, AI-friendly workflow. It generates
+versioned request templates (happy path + edge case), expected response schema references, and
+a replayable runner that can target `local`, `dev`, or `staging`.
+
+**Generate artifacts:**
+- `make request-replay` (auto-discovers OpenAPI or generates via swaggo)
+- Output goes to `request-replay/` (committed to the repo)
+
+**Agent skill (IDE + agents):**
+- Run `/request-replay` to execute OpenAPI discovery + replay in one flow.
+- The skill runs: `prism request-replay openapi`, `prism request-replay generate`, then a happy-path replay.
+
+**Agent hook (automatic):**
+- Configure a repo hook to run `prism request-replay openapi` + `prism request-replay generate` after endpoint changes.
+- This keeps `request-replay/` artifacts current without manual steps.
+
+**OpenAPI discovery (Rust/Go-friendly):**
+- `prism request-replay openapi --output-dir request-replay`
+- Priority order:
+  1. `PRISM_OPENAPI_PATH` (file)
+  2. `PRISM_OPENAPI_URL` (URL)
+  3. repo scan for `openapi.json|yaml` or `swagger.json|yaml`
+  4. scrape a running server (`/openapi.json`, `/swagger.json`, etc.)
+  5. Go: run `swag init` (uses `PRISM_SWAG_INIT_CMD` if provided)
+
+**Replay a request:**
+- `prism request-replay run <request-id> --env local`
+- Uses `PRISM_API_KEY` for auth (or the scheme declared in OpenAPI)
+
+**Configure environments:**
+- `PRISM_LOCAL_URL` (default: `http://localhost:9100`)
+- `PRISM_DEV_URL`
+- `PRISM_STAGING_URL`
 
 ## Architecture
 
