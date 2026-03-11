@@ -2,6 +2,9 @@ use futures::{Stream, StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 
+pub mod retry;
+pub use retry::RetryConfig;
+
 // Re-export prism-types for consumers
 pub use prism_types::{
     AgentMetricsResponse, ChatCompletionRequest, ChatCompletionResponse, Choice, Message,
@@ -18,7 +21,34 @@ pub enum ClientError {
     #[error("parse error: {0}")]
     Parse(#[from] serde_json::Error),
     #[error("api error {status}: {message}")]
-    Api { status: u16, message: String },
+    Api {
+        status: u16,
+        message: String,
+        /// Parsed from `Retry-After` response header (seconds), if present.
+        retry_after_secs: Option<u64>,
+    },
+}
+
+impl ClientError {
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            ClientError::Api { status, .. } => {
+                matches!(status, 429 | 500 | 502 | 503 | 504 | 529)
+            }
+            ClientError::Request(e) => e.is_connect() || e.is_timeout(),
+            ClientError::Parse(_) => false,
+        }
+    }
+
+    /// Returns the `Retry-After` delay in seconds parsed from the response header, if present.
+    pub fn retry_after_secs(&self) -> Option<u64> {
+        match self {
+            ClientError::Api {
+                retry_after_secs, ..
+            } => *retry_after_secs,
+            _ => None,
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, ClientError>;
@@ -97,12 +127,24 @@ fn parse_sse_bytes(
     out
 }
 
+// --- Helpers ---
+
+/// Parses the `Retry-After` header value as a delay in seconds.
+/// Supports integer seconds only (not HTTP-date format).
+fn parse_retry_after(resp: &reqwest::Response) -> Option<u64> {
+    resp.headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+}
+
 // --- Client ---
 
 pub struct PrismClient {
     base_url: String,
     api_key: Option<String>,
     client: reqwest::Client,
+    retry_config: RetryConfig,
 }
 
 impl PrismClient {
@@ -111,11 +153,17 @@ impl PrismClient {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key: None,
             client: reqwest::Client::new(),
+            retry_config: RetryConfig::default(),
         }
     }
 
     pub fn with_api_key(mut self, key: impl Into<String>) -> Self {
         self.api_key = Some(key.into());
+        self
+    }
+
+    pub fn with_retry_config(mut self, config: RetryConfig) -> Self {
+        self.retry_config = config;
         self
     }
 
@@ -132,20 +180,25 @@ impl PrismClient {
         &self,
         req: &ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse> {
-        let resp = self
-            .request(reqwest::Method::POST, "/v1/chat/completions")
-            .json(req)
-            .send()
-            .await?;
-        let status = resp.status().as_u16();
-        if !resp.status().is_success() {
-            let msg = resp.text().await.unwrap_or_default();
-            return Err(ClientError::Api {
-                status,
-                message: msg,
-            });
-        }
-        Ok(resp.json().await?)
+        retry::with_retry(&self.retry_config, || async {
+            let resp = self
+                .request(reqwest::Method::POST, "/v1/chat/completions")
+                .json(req)
+                .send()
+                .await?;
+            let status = resp.status().as_u16();
+            if !resp.status().is_success() {
+                let retry_after_secs = if status == 429 { parse_retry_after(&resp) } else { None };
+                let msg = resp.text().await.unwrap_or_default();
+                return Err(ClientError::Api {
+                    status,
+                    message: msg,
+                    retry_after_secs,
+                });
+            }
+            Ok(resp.json().await?)
+        })
+        .await
     }
 
     pub async fn stream_chat_completion(
@@ -158,20 +211,27 @@ impl PrismClient {
             include_usage: true,
         });
 
-        let resp = self
-            .request(reqwest::Method::POST, "/v1/chat/completions")
-            .json(&stream_req)
-            .send()
-            .await?;
-
-        let status = resp.status().as_u16();
-        if !resp.status().is_success() {
-            let msg = resp.text().await.unwrap_or_default();
-            return Err(ClientError::Api {
-                status,
-                message: msg,
-            });
-        }
+        // Retry only covers the initial connection + HTTP status check.
+        // Once bytes start flowing we do not retry mid-stream.
+        let resp = retry::with_retry(&self.retry_config, || async {
+            let r = self
+                .request(reqwest::Method::POST, "/v1/chat/completions")
+                .json(&stream_req)
+                .send()
+                .await?;
+            let status = r.status().as_u16();
+            if !r.status().is_success() {
+                let retry_after_secs = if status == 429 { parse_retry_after(&r) } else { None };
+                let msg = r.text().await.unwrap_or_default();
+                return Err(ClientError::Api {
+                    status,
+                    message: msg,
+                    retry_after_secs,
+                });
+            }
+            Ok(r)
+        })
+        .await?;
 
         let byte_stream = resp.bytes_stream();
         let stream = byte_stream.flat_map(|item| {
@@ -193,6 +253,7 @@ impl PrismClient {
             return Err(ClientError::Api {
                 status,
                 message: msg,
+                retry_after_secs: None,
             });
         }
         Ok(resp.json().await?)
@@ -210,6 +271,7 @@ impl PrismClient {
             return Err(ClientError::Api {
                 status,
                 message: msg,
+                retry_after_secs: None,
             });
         }
         Ok(resp.json().await?)

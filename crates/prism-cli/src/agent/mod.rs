@@ -7,7 +7,7 @@ use futures::StreamExt;
 use prism_client::PrismClient;
 use prism_types::{ChatCompletionRequest, Message, MessageRole};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -30,6 +30,16 @@ use crate::permissions::{self, PermissionDecision, PermissionMode, ToolPermissio
 use crate::session::Session;
 use crate::skills::SkillRegistry;
 use crate::tools::{self, BuiltinTool};
+
+/// Strip cwd prefix to produce a relative path; falls back to absolute if outside cwd.
+fn normalize_path(path: &str) -> String {
+    if let Ok(cwd) = std::env::current_dir()
+        && let Ok(rel) = std::path::Path::new(path).strip_prefix(&cwd)
+    {
+        return rel.to_string_lossy().into_owned();
+    }
+    path.to_string()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FinishReason {
@@ -122,6 +132,8 @@ pub struct Agent {
     plan_file: Option<String>,
     /// True when setup_plan_mode_guardrails auto-created the current thread
     plan_thread_auto_created: bool,
+    /// Paths mutated by write_file / edit_file during this session
+    files_touched: HashSet<String>,
 }
 
 const UH_AGENT_NAME_ENV: &str = "UH_AGENT_NAME";
@@ -160,6 +172,7 @@ impl Agent {
             plan_mode_violations: 0,
             plan_file,
             plan_thread_auto_created: false,
+            files_touched: HashSet::new(),
         }
     }
 
@@ -192,6 +205,7 @@ impl Agent {
             plan_mode_violations: 0,
             plan_file,
             plan_thread_auto_created: false,
+            files_touched: HashSet::new(),
         }
     }
 
@@ -924,6 +938,16 @@ impl Agent {
                                     tool_call_id: Some(id),
                                     extra: Default::default(),
                                 });
+
+                                // Track files mutated by write/edit tools
+                                if matches!(
+                                    BuiltinTool::from_str(&name),
+                                    Some(BuiltinTool::WriteFile | BuiltinTool::EditFile)
+                                )
+                                    && let Some(path) = args["path"].as_str()
+                                {
+                                    self.files_touched.insert(normalize_path(path));
+                                }
                             }
                         }
                     }
@@ -970,6 +994,19 @@ impl Agent {
 
         self.emit_implicit_feedback(stop_reason, turns, total_cost_usd).await;
 
+        // Collect once for both file persistence and memory extraction
+        let files_vec: Vec<String> = self.files_touched.iter().cloned().collect();
+
+        // Persist files_touched for checkout hook consumption
+        if !files_vec.is_empty() {
+            let files_path = self.config.session.sessions_dir
+                .join(format!("{}.files", self.session.episode_id));
+            let content = files_vec.join("\n");
+            if let Err(e) = std::fs::write(&files_path, &content) {
+                tracing::warn!("failed to write files_touched: {e}");
+            }
+        }
+
         // Auto-extract memories from session signals (resolution patterns)
         if let Some((store, ws_id, agent_name)) = self.uh_context() {
             let thread_name = self.current_thread.as_deref();
@@ -997,7 +1034,7 @@ impl Agent {
                     ws_id,
                     &agent_name,
                     &[],
-                    &[],
+                    &files_vec,
                     &session_findings,
                     thread_name,
                 )
@@ -1021,6 +1058,10 @@ impl Agent {
             anyhow::bail!("exceeded max_turns ({})", self.config.model.max_turns);
         }
         Ok(())
+    }
+
+    pub fn files_touched(&self) -> Vec<String> {
+        self.files_touched.iter().cloned().collect()
     }
 
     /// Returns (store, workspace_id, agent_name) if uglyhat is configured.
@@ -1467,5 +1508,17 @@ mod tests {
         for tool in ["read_file", "bash", "run_command", "glob_files", "grep_files"] {
             assert_eq!(guardrail_file_path(tool, &args), None, "'{tool}' must not extract file_path");
         }
+    }
+
+    #[test]
+    fn normalize_path_strips_cwd_prefix() {
+        let cwd = std::env::current_dir().unwrap();
+        let abs = cwd.join("src/main.rs").to_string_lossy().into_owned();
+        assert_eq!(normalize_path(&abs), "src/main.rs");
+    }
+
+    #[test]
+    fn normalize_path_keeps_outside_paths() {
+        assert_eq!(normalize_path("/tmp/other/file.rs"), "/tmp/other/file.rs");
     }
 }

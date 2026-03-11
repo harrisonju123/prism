@@ -348,6 +348,40 @@ pub async fn chat_completions(
                             "estimated prompt tokens ({current}) exceeds context window budget ({budget})"
                         )));
                     }
+                    "smart" => {
+                        let smart_cfg =
+                            crate::proxy::context_window::SmartTruncationConfig {
+                                preserve_recent: state
+                                    .config
+                                    .context_management
+                                    .preserve_recent,
+                                tool_output_max_tokens: state
+                                    .config
+                                    .context_management
+                                    .tool_output_max_tokens,
+                                tool_output_head_lines: state
+                                    .config
+                                    .context_management
+                                    .tool_output_head_lines,
+                                tool_output_tail_lines: state
+                                    .config
+                                    .context_management
+                                    .tool_output_tail_lines,
+                            };
+                        let r = crate::proxy::context_window::smart_truncate_to_fit(
+                            &mut request.messages,
+                            budget,
+                            &smart_cfg,
+                        );
+                        tracing::warn!(
+                            messages_dropped = r.messages_dropped,
+                            tool_outputs_compressed = r.tool_outputs_compressed,
+                            tokens_saved_by_compression = r.tokens_saved_by_compression,
+                            pass_used = r.pass_used,
+                            model = %request.model,
+                            "smart truncation applied to fit context window"
+                        );
+                    }
                     _ => {
                         let dropped = crate::proxy::context_window::truncate_to_fit(
                             &mut request.messages,

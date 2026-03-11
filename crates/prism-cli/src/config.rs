@@ -39,6 +39,7 @@ impl SandboxMode {
 pub struct GatewayConfig {
     pub url: String,
     pub api_key: String,
+    pub max_retries: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -102,6 +103,11 @@ impl Config {
             std::env::var("PRISM_URL").unwrap_or_else(|_| "http://localhost:9100".to_string());
 
         let api_key = std::env::var("PRISM_API_KEY").unwrap_or_default();
+
+        let max_retries = std::env::var("PRISM_MAX_RETRIES")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(5);
 
         let model = std::env::var("PRISM_MODEL").unwrap_or_else(|_| "gpt-5-2-codex".to_string());
 
@@ -190,7 +196,7 @@ impl Config {
             .unwrap_or(20);
 
         Ok(Self {
-            gateway: GatewayConfig { url, api_key },
+            gateway: GatewayConfig { url, api_key, max_retries },
             model: ModelConfig {
                 model,
                 max_turns,

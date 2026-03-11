@@ -4,7 +4,7 @@ use prism_cli::{
     acp, agent::Agent, config::Config, mcp, memory, permissions::PermissionMode, persona, repl,
     session::Session, skills::SkillRegistry,
 };
-use prism_client::PrismClient;
+use prism_client::{PrismClient, RetryConfig};
 use std::io::IsTerminal;
 use std::sync::Arc;
 
@@ -188,8 +188,9 @@ async fn run(cli: Cli) -> Result<()> {
             if let Some(pf) = plan_file {
                 config.extensions.plan_file = Some(pf);
             }
-            let client =
-                PrismClient::new(&config.gateway.url).with_api_key(&config.gateway.api_key);
+            let client = PrismClient::new(&config.gateway.url)
+                .with_api_key(&config.gateway.api_key)
+                .with_retry_config(RetryConfig::with_max_retries(config.gateway.max_retries));
             let mcp_registry = load_mcp_registry(&config).await;
             let memory = load_memory().await;
             let cwd = std::env::current_dir().unwrap_or_default();

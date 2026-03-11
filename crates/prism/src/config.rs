@@ -1176,9 +1176,18 @@ pub struct ContextManagementConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default = "default_context_strategy")]
-    pub strategy: String, // "drop-oldest" | "error"
+    pub strategy: String, // "drop-oldest" | "smart" | "error"
     #[serde(default = "default_response_reserve")]
     pub response_reserve_tokens: u32,
+    // smart strategy tuning
+    #[serde(default = "default_preserve_recent")]
+    pub preserve_recent: usize,
+    #[serde(default = "default_tool_output_max_tokens")]
+    pub tool_output_max_tokens: u32,
+    #[serde(default = "default_tool_output_head_lines")]
+    pub tool_output_head_lines: usize,
+    #[serde(default = "default_tool_output_tail_lines")]
+    pub tool_output_tail_lines: usize,
 }
 
 impl Default for ContextManagementConfig {
@@ -1187,6 +1196,10 @@ impl Default for ContextManagementConfig {
             enabled: false,
             strategy: default_context_strategy(),
             response_reserve_tokens: default_response_reserve(),
+            preserve_recent: default_preserve_recent(),
+            tool_output_max_tokens: default_tool_output_max_tokens(),
+            tool_output_head_lines: default_tool_output_head_lines(),
+            tool_output_tail_lines: default_tool_output_tail_lines(),
         }
     }
 }
@@ -1197,6 +1210,22 @@ fn default_context_strategy() -> String {
 
 fn default_response_reserve() -> u32 {
     1000
+}
+
+fn default_preserve_recent() -> usize {
+    6
+}
+
+fn default_tool_output_max_tokens() -> u32 {
+    200
+}
+
+fn default_tool_output_head_lines() -> usize {
+    20
+}
+
+fn default_tool_output_tail_lines() -> usize {
+    20
 }
 
 // --- Logging ---

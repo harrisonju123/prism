@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use agent_client_protocol as acp;
 use anyhow::Result;
 use futures::StreamExt;
-use prism_client::PrismClient;
+use prism_client::{PrismClient, RetryConfig};
 use prism_types::{ChatCompletionRequest, Message, MessageRole};
 use serde_json::json;
 use uuid::Uuid;
@@ -324,8 +324,9 @@ impl PrismAgent {
     }
 
     async fn run_agent_loop(&self, session_id: &str) -> acp::StopReason {
-        let client =
-            PrismClient::new(&self.config.gateway.url).with_api_key(&self.config.gateway.api_key);
+        let client = PrismClient::new(&self.config.gateway.url)
+            .with_api_key(&self.config.gateway.api_key)
+            .with_retry_config(RetryConfig::with_max_retries(self.config.gateway.max_retries));
         let model_fallback = self.config.model.model.clone();
 
         // cwd is set once at session creation and never changes

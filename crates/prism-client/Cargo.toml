@@ -14,3 +14,5 @@ bytes = "1"
 thiserror = { workspace = true }
 uuid = { workspace = true }
 async-trait = { workspace = true }
+rand = { workspace = true }
+tracing = { workspace = true }
