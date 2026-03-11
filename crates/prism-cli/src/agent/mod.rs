@@ -66,7 +66,6 @@ fn has_decision_signals(text: &str) -> bool {
 
 const DECISION_CHECKPOINT_THRESHOLD_DEFAULT: u32 = 8;
 const QUESTION_CHECKPOINT_INTERVAL_DEFAULT: u32 = 5;
-const NEW_FILE_DESIGN_THRESHOLD_DEFAULT: u32 = 6;
 
 fn decision_checkpoint_threshold() -> u32 {
     std::env::var("PRISM_DECISION_CHECKPOINT_THRESHOLD")
@@ -80,13 +79,6 @@ fn question_checkpoint_interval() -> u32 {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(QUESTION_CHECKPOINT_INTERVAL_DEFAULT)
-}
-
-fn new_file_design_threshold() -> u32 {
-    std::env::var("PRISM_NEW_FILE_DESIGN_THRESHOLD")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(NEW_FILE_DESIGN_THRESHOLD_DEFAULT)
 }
 
 /// Tracks consecutive read-only turns and emits a convergence nudge when the threshold is reached.
@@ -246,6 +238,8 @@ pub struct Agent {
     files_full_written: HashSet<String>,
     /// New file paths already prompted for design confirmation — prevents the gate from re-firing.
     new_file_design_prompted: HashSet<String>,
+    /// mtime of files when last read this session — for staleness detection.
+    files_read_mtime: HashMap<String, std::time::SystemTime>,
 }
 
 const UH_AGENT_NAME_ENV: &str = "UH_AGENT_NAME";
@@ -294,6 +288,7 @@ impl Agent {
             last_question_checkpoint_turn: 0,
             files_full_written: HashSet::new(),
             new_file_design_prompted: HashSet::new(),
+            files_read_mtime: HashMap::new(),
         }
     }
 
@@ -336,6 +331,7 @@ impl Agent {
             last_question_checkpoint_turn: 0,
             files_full_written: HashSet::new(),
             new_file_design_prompted: HashSet::new(),
+            files_read_mtime: HashMap::new(),
         }
     }
 
@@ -858,9 +854,8 @@ If you have questions, ask them now. If you're confident, continue."
                                     continue;
                                 }
 
-                                // Guard B: New file without design confirmation
-                                if self.exploration_count >= new_file_design_threshold()
-                                    && !self.new_file_design_prompted.contains(&normed)
+                                // Guard B: New file without design confirmation — fires unconditionally
+                                if !self.new_file_design_prompted.contains(&normed)
                                     && !std::path::Path::new(path).exists()
                                 {
                                     self.new_file_design_prompted.insert(normed.clone());
@@ -869,15 +864,43 @@ If you have questions, ask them now. If you're confident, continue."
                                         index,
                                         id,
                                         message: format!(
-                                            "[Design Check] Before creating {}, state your intended public interface:\n\
-                                             1. What types/structs does this module export?\n\
-                                             2. What are the key function signatures?\n\
-                                             3. Are there existing utilities to reuse?\n\
-                                             Confirm the interface, then call write_file again.",
+                                            "[Design Gate] Before creating {}, draft your interface first:\n\
+                                             - Key struct fields / type definitions\n\
+                                             - Public function signatures\n\
+                                             - Any existing utilities to reuse (search first)\n\
+                                             Write these as a comment or outline, then call write_file again.",
                                             normed
                                         ),
                                     });
                                     continue;
+                                }
+                            }
+                        }
+
+                        // Staleness guard: deny write/edit if the file was modified since last read
+                        if matches!(
+                            BuiltinTool::from_str(&name),
+                            Some(BuiltinTool::WriteFile | BuiltinTool::EditFile)
+                        ) {
+                            if let Some(path) = args["path"].as_str() {
+                                let normed = normalize_path(path);
+                                if let Some(&read_mtime) = self.files_read_mtime.get(&normed) {
+                                    if let Ok(meta) = std::fs::metadata(&normed) {
+                                        if let Ok(current_mtime) = meta.modified() {
+                                            if current_mtime != read_mtime {
+                                                self.permission_gate.renderer().tool_denied(&name);
+                                                outcomes.push(ToolOutcome::Denied {
+                                                    index,
+                                                    id,
+                                                    message: format!(
+                                                        "Warning: {normed} was modified since last read \
+                                                         — re-read before editing."
+                                                    ),
+                                                });
+                                                continue;
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1287,7 +1310,25 @@ If you have questions, ask them now. If you're confident, continue."
                                     if matches!(builtin, Some(BuiltinTool::WriteFile)) {
                                         self.files_full_written.insert(normed.clone());
                                     }
+                                    // Refresh mtime after write/edit so subsequent edits don't false-positive
+                                    if let Ok(meta) = std::fs::metadata(&normed) {
+                                        if let Ok(mtime) = meta.modified() {
+                                            self.files_read_mtime.insert(normed.clone(), mtime);
+                                        }
+                                    }
                                     turn_files.push(normed);
+                                }
+
+                                // Record mtime on successful read_file for later staleness checks
+                                if matches!(builtin, Some(BuiltinTool::ReadFile)) {
+                                    if let Some(path) = args["path"].as_str() {
+                                        let normed = normalize_path(path);
+                                        if let Ok(meta) = std::fs::metadata(&normed) {
+                                            if let Ok(mtime) = meta.modified() {
+                                                self.files_read_mtime.insert(normed, mtime);
+                                            }
+                                        }
+                                    }
                                 }
 
                                 // Count read-only calls toward the decision checkpoint
