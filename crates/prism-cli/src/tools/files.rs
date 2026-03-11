@@ -1,7 +1,5 @@
 use std::path::Path;
 
-use crate::common::truncate_with_ellipsis;
-
 pub async fn read_file(path: &str, offset: Option<usize>, limit: Option<usize>) -> String {
     let contents = match tokio::fs::read_to_string(path).await {
         Ok(c) => c,
@@ -53,12 +51,11 @@ pub async fn edit_file(path: &str, old_string: &str, new_string: &str) -> String
     };
     let count = contents.matches(old_string).count();
     if count == 0 {
-        let preview = truncate_with_ellipsis(&contents, 3000);
-        return format!("error: old_string not found in {path}\n\nCurrent file contents:\n{preview}");
+        return format!("error: old_string not found in {path}\n\nCurrent file contents:\n{contents}");
     }
     if count > 1 {
         return format!(
-            "error: old_string appears {count} times in {path}; provide more context to make it unique"
+            "error: old_string appears {count} times in {path}; provide more context to make it unique\n\nCurrent file contents:\n{contents}"
         );
     }
     let new_contents = contents.replacen(old_string, new_string, 1);

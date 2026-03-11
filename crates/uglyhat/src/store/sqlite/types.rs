@@ -89,6 +89,11 @@ pub fn json_array_to_str(v: &[String]) -> String {
     serde_json::to_string(v).unwrap_or_else(|_| "[]".to_string())
 }
 
+pub fn json_uuid_array_to_str(v: &[Uuid]) -> String {
+    let strings: Vec<String> = v.iter().map(|u| u.to_string()).collect();
+    serde_json::to_string(&strings).unwrap_or_else(|_| "[]".to_string())
+}
+
 pub fn opt_value_to_str(v: &Option<serde_json::Value>) -> Option<String> {
     v.as_ref()
         .map(|val| serde_json::to_string(val).unwrap_or_default())

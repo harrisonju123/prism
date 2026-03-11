@@ -9,15 +9,19 @@ CREATE TABLE IF NOT EXISTS workspaces (
 
 -- Threads (named context buckets)
 CREATE TABLE IF NOT EXISTS threads (
-    id            TEXT PRIMARY KEY,
-    workspace_id  TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    name          TEXT NOT NULL,
-    description   TEXT NOT NULL DEFAULT '',
-    status        TEXT NOT NULL DEFAULT 'active'
+    id              TEXT PRIMARY KEY,
+    workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    description     TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'active'
         CHECK(status IN ('active','archived')),
-    tags          TEXT NOT NULL DEFAULT '[]',
-    created_at    TEXT NOT NULL,
-    updated_at    TEXT NOT NULL,
+    tags            TEXT NOT NULL DEFAULT '[]',
+    -- Phase 1 additions
+    depends_on      TEXT NOT NULL DEFAULT '[]',
+    confidence      REAL,
+    cost_spent_usd  REAL NOT NULL DEFAULT 0.0,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
     UNIQUE(workspace_id, name)
 );
 CREATE INDEX IF NOT EXISTS idx_threads_workspace ON threads(workspace_id);
@@ -156,6 +160,57 @@ CREATE TABLE IF NOT EXISTS thread_guardrails (
     updated_at      TEXT NOT NULL,
     UNIQUE(thread_id)
 );
+
+-- Inbox entries (supervisory feed for human review)
+CREATE TABLE IF NOT EXISTS inbox_entries (
+    id           TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    entry_type   TEXT NOT NULL DEFAULT 'info',
+    title        TEXT NOT NULL,
+    body         TEXT NOT NULL DEFAULT '',
+    severity     TEXT NOT NULL DEFAULT 'info'
+        CHECK(severity IN ('critical','warning','info')),
+    source_agent TEXT,
+    ref_type     TEXT,
+    ref_id       TEXT,
+    read         INTEGER NOT NULL DEFAULT 0,
+    dismissed    INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_inbox_workspace ON inbox_entries(workspace_id, dismissed, read);
+
+-- Plans (groups of work packages from one intent)
+CREATE TABLE IF NOT EXISTS plans (
+    id           TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    intent       TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'draft'
+        CHECK(status IN ('draft','approved','active','completed','cancelled')),
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_plans_workspace ON plans(workspace_id, status);
+
+-- Work packages (actionable units within a plan)
+CREATE TABLE IF NOT EXISTS work_packages (
+    id               TEXT PRIMARY KEY,
+    workspace_id     TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    plan_id          TEXT REFERENCES plans(id) ON DELETE CASCADE,
+    intent           TEXT NOT NULL,
+    acceptance_criteria TEXT NOT NULL DEFAULT '[]',
+    ordinal          INTEGER NOT NULL DEFAULT 0,
+    status           TEXT NOT NULL DEFAULT 'draft'
+        CHECK(status IN ('draft','planned','ready','in_progress','review','done','cancelled')),
+    depends_on       TEXT NOT NULL DEFAULT '[]',
+    thread_id        TEXT REFERENCES threads(id) ON DELETE SET NULL,
+    assigned_agent   TEXT,
+    tags             TEXT NOT NULL DEFAULT '[]',
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_work_packages_workspace ON work_packages(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_work_packages_plan ON work_packages(plan_id) WHERE plan_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_work_packages_status ON work_packages(workspace_id, status);
 
 -- Snapshots
 CREATE TABLE IF NOT EXISTS snapshots (

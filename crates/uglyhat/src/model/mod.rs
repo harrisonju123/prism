@@ -183,6 +183,79 @@ impl HandoffStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Inbox entry types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InboxEntryType {
+    Approval,
+    Blocked,
+    Suggestion,
+    Risk,
+    CostSpike,
+    Completed,
+}
+
+impl std::fmt::Display for InboxEntryType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Approval => write!(f, "approval"),
+            Self::Blocked => write!(f, "blocked"),
+            Self::Suggestion => write!(f, "suggestion"),
+            Self::Risk => write!(f, "risk"),
+            Self::CostSpike => write!(f, "cost_spike"),
+            Self::Completed => write!(f, "completed"),
+        }
+    }
+}
+
+impl InboxEntryType {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "approval" => Some(Self::Approval),
+            "blocked" => Some(Self::Blocked),
+            "suggestion" => Some(Self::Suggestion),
+            "risk" => Some(Self::Risk),
+            "cost_spike" => Some(Self::CostSpike),
+            "completed" => Some(Self::Completed),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InboxSeverity {
+    Critical,
+    Warning,
+    Info,
+}
+
+impl std::fmt::Display for InboxSeverity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Critical => write!(f, "critical"),
+            Self::Warning => write!(f, "warning"),
+            Self::Info => write!(f, "info"),
+        }
+    }
+}
+
+impl InboxSeverity {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "critical" => Some(Self::Critical),
+            "warning" => Some(Self::Warning),
+            "info" => Some(Self::Info),
+            _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Core entities
 // ---------------------------------------------------------------------------
 
@@ -206,6 +279,15 @@ pub struct Thread {
     pub status: ThreadStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// UUIDs of threads that must be archived before this one can start.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<Uuid>,
+    /// Agent-reported confidence [0.0, 1.0]. None = not yet assessed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+    /// Running cost charged to this thread in USD.
+    #[serde(default)]
+    pub cost_spent_usd: f64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -228,6 +310,29 @@ pub struct Memory {
     pub last_accessed_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// A supervisory feed item surfaced by agents to request human review or inform of status.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InboxEntry {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    pub entry_type: InboxEntryType,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub body: String,
+    pub severity: InboxSeverity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_agent: Option<String>,
+    /// Entity type this entry links to (e.g. "thread", "handoff", "decision").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_type: Option<String>,
+    /// UUID of the referenced entity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_id: Option<Uuid>,
+    pub read: bool,
+    pub dismissed: bool,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -437,6 +542,122 @@ pub struct Handoff {
     pub status: HandoffStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+// ---------------------------------------------------------------------------
+// Plan + WorkPackage
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlanStatus {
+    Draft,
+    Approved,
+    Active,
+    Completed,
+    Cancelled,
+}
+
+impl std::fmt::Display for PlanStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PlanStatus::Draft => write!(f, "draft"),
+            PlanStatus::Approved => write!(f, "approved"),
+            PlanStatus::Active => write!(f, "active"),
+            PlanStatus::Completed => write!(f, "completed"),
+            PlanStatus::Cancelled => write!(f, "cancelled"),
+        }
+    }
+}
+
+impl PlanStatus {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "draft" => Some(Self::Draft),
+            "approved" => Some(Self::Approved),
+            "active" => Some(Self::Active),
+            "completed" => Some(Self::Completed),
+            "cancelled" => Some(Self::Cancelled),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkPackageStatus {
+    Draft,
+    Planned,
+    Ready,
+    InProgress,
+    Review,
+    Done,
+    Cancelled,
+}
+
+impl std::fmt::Display for WorkPackageStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            WorkPackageStatus::Draft => write!(f, "draft"),
+            WorkPackageStatus::Planned => write!(f, "planned"),
+            WorkPackageStatus::Ready => write!(f, "ready"),
+            WorkPackageStatus::InProgress => write!(f, "in_progress"),
+            WorkPackageStatus::Review => write!(f, "review"),
+            WorkPackageStatus::Done => write!(f, "done"),
+            WorkPackageStatus::Cancelled => write!(f, "cancelled"),
+        }
+    }
+}
+
+impl WorkPackageStatus {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "draft" => Some(Self::Draft),
+            "planned" => Some(Self::Planned),
+            "ready" => Some(Self::Ready),
+            "in_progress" => Some(Self::InProgress),
+            "review" => Some(Self::Review),
+            "done" => Some(Self::Done),
+            "cancelled" => Some(Self::Cancelled),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Plan {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    pub intent: String,
+    pub status: PlanStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkPackage {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_id: Option<Uuid>,
+    pub intent: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acceptance_criteria: Vec<String>,
+    pub ordinal: i32,
+    pub status: WorkPackageStatus,
+    /// IDs of other WorkPackages that must be Done before this one becomes Ready.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assigned_agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

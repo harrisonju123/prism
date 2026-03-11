@@ -88,6 +88,7 @@ use workspace::notifications::{
     NotificationId, SuppressEvent, dismiss_app_notification, show_app_notification,
 };
 
+use prism_hq::NavigatorPanel;
 use workspace::{
     AppState, MultiWorkspace, NewFile, NewWindow, OpenLog, Panel, Toast, Workspace,
     WorkspaceSettings, create_and_open_local_file,
@@ -98,7 +99,6 @@ use workspace::{
     with_active_or_new_workspace,
 };
 use workspace::{Pane, notifications::DetachAndPromptErr};
-use prism_hq::NavigatorPanel;
 use zed_actions::{
     OpenAccountSettings, OpenBrowser, OpenDocs, OpenServerSettings, OpenSettingsFile, OpenZedUrl,
     Quit,

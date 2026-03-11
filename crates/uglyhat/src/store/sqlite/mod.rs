@@ -6,13 +6,16 @@ mod context;
 mod decision;
 mod guardrail;
 mod handoff;
+mod inbox;
 mod memory;
 mod message;
 mod migrate;
+mod plan;
 mod snapshot;
 #[cfg(test)]
 mod tests;
 mod thread;
+mod work_package;
 mod workspace;
 
 use async_trait::async_trait;
@@ -23,7 +26,7 @@ use uuid::Uuid;
 
 use crate::error::Result;
 use crate::model::*;
-use crate::store::{ActivityFilters, MemoryFilters, Store};
+use crate::store::{ActivityFilters, InboxFilters, MemoryFilters, Store};
 
 pub struct SqliteStore {
     pub(crate) pool: SqlitePool,
@@ -351,6 +354,46 @@ impl Store for SqliteStore {
         self.get_workspace_overview_impl(workspace_id).await
     }
 
+    async fn create_inbox_entry(
+        &self,
+        workspace_id: Uuid,
+        entry_type: InboxEntryType,
+        title: &str,
+        body: &str,
+        severity: InboxSeverity,
+        source_agent: Option<&str>,
+        ref_type: Option<&str>,
+        ref_id: Option<Uuid>,
+    ) -> Result<InboxEntry> {
+        self.create_inbox_entry_impl(
+            workspace_id,
+            entry_type,
+            title,
+            body,
+            severity,
+            source_agent,
+            ref_type,
+            ref_id,
+        )
+        .await
+    }
+
+    async fn list_inbox_entries(
+        &self,
+        workspace_id: Uuid,
+        filters: InboxFilters,
+    ) -> Result<Vec<InboxEntry>> {
+        self.list_inbox_entries_impl(workspace_id, filters).await
+    }
+
+    async fn mark_inbox_read(&self, workspace_id: Uuid, id: Uuid) -> Result<()> {
+        self.mark_inbox_read_impl(workspace_id, id).await
+    }
+
+    async fn dismiss_inbox_entry(&self, workspace_id: Uuid, id: Uuid) -> Result<()> {
+        self.dismiss_inbox_entry_impl(workspace_id, id).await
+    }
+
     async fn send_message(
         &self,
         workspace_id: Uuid,
@@ -358,7 +401,8 @@ impl Store for SqliteStore {
         to_agent: &str,
         content: &str,
     ) -> Result<Message> {
-        self.send_message_impl(workspace_id, from_agent, to_agent, content).await
+        self.send_message_impl(workspace_id, from_agent, to_agent, content)
+            .await
     }
 
     async fn list_messages(
@@ -367,7 +411,8 @@ impl Store for SqliteStore {
         to_agent: &str,
         unread_only: bool,
     ) -> Result<Vec<Message>> {
-        self.list_messages_impl(workspace_id, to_agent, unread_only).await
+        self.list_messages_impl(workspace_id, to_agent, unread_only)
+            .await
     }
 
     async fn mark_messages_read(&self, workspace_id: Uuid, to_agent: &str) -> Result<()> {
@@ -375,7 +420,8 @@ impl Store for SqliteStore {
     }
 
     async fn count_unread_messages(&self, workspace_id: Uuid, to_agent: &str) -> Result<i64> {
-        self.count_unread_messages_impl(workspace_id, to_agent).await
+        self.count_unread_messages_impl(workspace_id, to_agent)
+            .await
     }
 
     async fn count_all_unread_messages(
@@ -387,5 +433,97 @@ impl Store for SqliteStore {
 
     async fn prune_old_messages(&self, workspace_id: Uuid) -> Result<()> {
         self.prune_old_messages_impl(workspace_id).await
+    }
+
+    async fn create_plan(&self, workspace_id: Uuid, intent: &str) -> Result<Plan> {
+        self.create_plan_impl(workspace_id, intent).await
+    }
+
+    async fn get_plan(&self, workspace_id: Uuid, plan_id: Uuid) -> Result<Plan> {
+        self.get_plan_impl(workspace_id, plan_id).await
+    }
+
+    async fn update_plan_status(
+        &self,
+        workspace_id: Uuid,
+        plan_id: Uuid,
+        status: PlanStatus,
+    ) -> Result<Plan> {
+        self.update_plan_status_impl(workspace_id, plan_id, status)
+            .await
+    }
+
+    async fn list_plans(
+        &self,
+        workspace_id: Uuid,
+        status: Option<PlanStatus>,
+    ) -> Result<Vec<Plan>> {
+        self.list_plans_impl(workspace_id, status).await
+    }
+
+    async fn create_work_package(
+        &self,
+        workspace_id: Uuid,
+        plan_id: Option<Uuid>,
+        intent: &str,
+        acceptance_criteria: Vec<String>,
+        ordinal: i32,
+        depends_on: Vec<Uuid>,
+        tags: Vec<String>,
+    ) -> Result<WorkPackage> {
+        self.create_work_package_impl(
+            workspace_id,
+            plan_id,
+            intent,
+            acceptance_criteria,
+            ordinal,
+            depends_on,
+            tags,
+        )
+        .await
+    }
+
+    async fn get_work_package(&self, workspace_id: Uuid, wp_id: Uuid) -> Result<WorkPackage> {
+        self.get_work_package_impl(workspace_id, wp_id).await
+    }
+
+    async fn update_work_package_status(
+        &self,
+        workspace_id: Uuid,
+        wp_id: Uuid,
+        status: WorkPackageStatus,
+    ) -> Result<WorkPackage> {
+        self.update_work_package_status_impl(workspace_id, wp_id, status)
+            .await
+    }
+
+    async fn assign_work_package(
+        &self,
+        workspace_id: Uuid,
+        wp_id: Uuid,
+        agent_name: &str,
+        thread_id: Uuid,
+    ) -> Result<WorkPackage> {
+        self.assign_work_package_impl(workspace_id, wp_id, agent_name, thread_id)
+            .await
+    }
+
+    async fn list_work_packages(
+        &self,
+        workspace_id: Uuid,
+        plan_id: Option<Uuid>,
+        status: Option<WorkPackageStatus>,
+    ) -> Result<Vec<WorkPackage>> {
+        self.list_work_packages_impl(workspace_id, plan_id, status)
+            .await
+    }
+
+    async fn refresh_work_package_readiness(
+        &self,
+        workspace_id: Uuid,
+        plan_id: Uuid,
+    ) -> Result<Vec<WorkPackage>> {
+        self.refresh_work_package_readiness_impl(workspace_id, plan_id)
+            .await
     }
 }

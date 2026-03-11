@@ -75,7 +75,8 @@ impl SqliteStore {
 
         // Get active threads
         let thread_rows = sqlx::query(
-            "SELECT id, workspace_id, name, description, status, tags, created_at, updated_at
+            "SELECT id, workspace_id, name, description, status, tags,
+                    depends_on, confidence, cost_spent_usd, created_at, updated_at
              FROM threads WHERE workspace_id = $1 AND status = 'active'
              ORDER BY updated_at DESC",
         )

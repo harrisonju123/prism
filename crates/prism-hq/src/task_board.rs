@@ -2,14 +2,15 @@ use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
     ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity, Window, actions,
 };
-use workspace::Workspace;
 use uglyhat::model::{
     AgentSession, Decision, Handoff, HandoffStatus, Memory, Thread, ThreadContext, ThreadStatus,
+    WorkPackage, WorkPackageStatus,
 };
 use ui::{
     Button, ButtonStyle, Color, Icon, IconName, Label, LabelSize, TintColor, h_flex, prelude::*,
     v_flex,
 };
+use workspace::Workspace;
 use workspace::item::{Item, ItemEvent};
 
 use crate::hq_state::HqState;
@@ -79,9 +80,33 @@ impl TaskBoardItem {
         }
     }
 
-    fn classify(thread: &Thread, handoffs: &[Handoff]) -> BoardFilter {
+    fn is_blocked(thread: &Thread, all_threads: &[Thread]) -> bool {
+        // A thread is blocked if any of its dependencies is not yet archived.
+        // Unknown deps (not in workspace) are treated as non-blocking (conservative).
+        thread.depends_on.iter().any(|dep_id| {
+            all_threads
+                .iter()
+                .find(|t| t.id == *dep_id)
+                .map(|t| t.status != ThreadStatus::Archived)
+                .unwrap_or(false)
+        })
+    }
+
+    fn classify_wp(wp: &WorkPackage) -> BoardFilter {
+        match wp.status {
+            WorkPackageStatus::Draft | WorkPackageStatus::Planned => BoardFilter::Backlog,
+            WorkPackageStatus::Ready | WorkPackageStatus::InProgress => BoardFilter::InProgress,
+            WorkPackageStatus::Review => BoardFilter::Review,
+            WorkPackageStatus::Done | WorkPackageStatus::Cancelled => BoardFilter::Done,
+        }
+    }
+
+    fn classify(thread: &Thread, handoffs: &[Handoff], all_threads: &[Thread]) -> BoardFilter {
         if thread.status == ThreadStatus::Archived {
             return BoardFilter::Done;
+        }
+        if Self::is_blocked(thread, all_threads) {
+            return BoardFilter::Backlog;
         }
         let handoff = handoffs.iter().find(|h| h.thread_id == Some(thread.id));
         match handoff {
@@ -113,8 +138,7 @@ impl TaskBoardItem {
 
             let result: anyhow::Result<ThreadContext> = cx
                 .background_spawn(async move {
-                    let handle =
-                        handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
+                    let handle = handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
                     handle.recall_thread(&thread_name)
                 })
                 .await;
@@ -166,7 +190,7 @@ impl Render for TaskBoardItem {
                 let state = self.hq_state.read(cx);
                 let handoffs = state.handoffs.clone();
                 let all_threads = state.threads.clone();
-                let _ = state;
+                let all_wps = state.work_packages.clone();
 
                 let filter = self.filter;
 
@@ -199,14 +223,14 @@ impl Render for TaskBoardItem {
                     }));
 
                 let filtered: Vec<(usize, Thread)> = all_threads
-                    .into_iter()
+                    .iter()
+                    .cloned()
                     .enumerate()
                     .filter(|(_, t)| {
-                        filter == BoardFilter::All || Self::classify(t, &handoffs) == filter
+                        filter == BoardFilter::All
+                            || Self::classify(t, &handoffs, &all_threads) == filter
                     })
                     .collect();
-
-                let is_empty = filtered.is_empty();
 
                 let cards: Vec<_> = filtered
                     .into_iter()
@@ -215,6 +239,9 @@ impl Render for TaskBoardItem {
                         let desc = thread.description.clone();
                         let tags = thread.tags.clone();
                         let assigned = handoffs.iter().any(|h| h.thread_id == Some(thread.id));
+                        let is_blocked = Self::is_blocked(&thread, &all_threads);
+                        let cost = thread.cost_spent_usd;
+                        let confidence = thread.confidence;
                         let thread_name_for_click = thread.name.clone();
                         let ws = self.workspace.clone();
 
@@ -228,9 +255,7 @@ impl Render for TaskBoardItem {
                             .cursor_pointer()
                             .hover(|s| s.bg(cx.theme().colors().element_hover))
                             .on_click(cx.listener(move |_, _, window, cx| {
-                                if let Some(ws_ref) =
-                                    ws.as_ref().and_then(|w| w.upgrade())
-                                {
+                                if let Some(ws_ref) = ws.as_ref().and_then(|w| w.upgrade()) {
                                     ws_ref.update(cx, |workspace, cx| {
                                         open_thread_view(
                                             workspace,
@@ -255,13 +280,11 @@ impl Render for TaskBoardItem {
                                 )
                             })
                             .when(!tags.is_empty(), |this| {
-                                this.child(
-                                    h_flex().gap_0p5().children(tags.into_iter().map(|tag| {
-                                        Label::new(tag)
-                                            .size(LabelSize::XSmall)
-                                            .color(Color::Accent)
-                                    })),
-                                )
+                                this.child(h_flex().gap_0p5().children(tags.into_iter().map(
+                                    |tag| {
+                                        Label::new(tag).size(LabelSize::XSmall).color(Color::Accent)
+                                    },
+                                )))
                             })
                             .when(assigned, |this| {
                                 this.child(
@@ -270,8 +293,102 @@ impl Render for TaskBoardItem {
                                         .color(Color::Success),
                                 )
                             })
+                            .when(is_blocked, |this| {
+                                this.child(
+                                    Label::new("blocked")
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Error),
+                                )
+                            })
+                            .when(cost > 0.001, |this| {
+                                this.child(
+                                    Label::new(format!("${cost:.2}"))
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Warning),
+                                )
+                            })
+                            .when_some(confidence, |this, conf| {
+                                let pct = (conf * 100.0).round() as u32;
+                                let color = if pct >= 80 {
+                                    Color::Success
+                                } else if pct >= 50 {
+                                    Color::Warning
+                                } else {
+                                    Color::Error
+                                };
+                                this.child(
+                                    Label::new(format!("{pct}%"))
+                                        .size(LabelSize::XSmall)
+                                        .color(color),
+                                )
+                            })
                     })
                     .collect();
+
+                // Work package cards classified by status
+                let wp_cards: Vec<_> = all_wps
+                    .iter()
+                    .filter(|wp| filter == BoardFilter::All || Self::classify_wp(wp) == filter)
+                    .enumerate()
+                    .map(|(ix, wp)| {
+                        let intent = wp.intent.clone();
+                        let status_label = match wp.status {
+                            WorkPackageStatus::Draft => "draft",
+                            WorkPackageStatus::Planned => "planned",
+                            WorkPackageStatus::Ready => "ready",
+                            WorkPackageStatus::InProgress => "in progress",
+                            WorkPackageStatus::Review => "review",
+                            WorkPackageStatus::Done => "done",
+                            WorkPackageStatus::Cancelled => "cancelled",
+                        };
+                        let status_color = match wp.status {
+                            WorkPackageStatus::Done => Color::Success,
+                            WorkPackageStatus::InProgress => Color::Accent,
+                            WorkPackageStatus::Review => Color::Warning,
+                            WorkPackageStatus::Ready => Color::Default,
+                            _ => Color::Muted,
+                        };
+                        let agent = wp.assigned_agent.clone();
+                        v_flex()
+                            .id(("wp-card", ix))
+                            .w_full()
+                            .p_2()
+                            .gap_0p5()
+                            .rounded_sm()
+                            .bg(cx.theme().colors().element_background)
+                            .border_l_2()
+                            .border_color(Color::Accent.color(cx))
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .child(
+                                        Label::new("WP")
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Accent),
+                                    )
+                                    .child(
+                                        Label::new(format!("#{}", wp.ordinal + 1))
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Muted),
+                                    )
+                                    .flex_1()
+                                    .child(
+                                        Label::new(status_label)
+                                            .size(LabelSize::XSmall)
+                                            .color(status_color),
+                                    ),
+                            )
+                            .child(Label::new(intent).size(LabelSize::Small))
+                            .when_some(agent, |this, a| {
+                                this.child(
+                                    Label::new(a).size(LabelSize::XSmall).color(Color::Accent),
+                                )
+                            })
+                    })
+                    .collect();
+
+                let has_wps = !wp_cards.is_empty();
+                let is_empty = cards.is_empty() && !has_wps;
 
                 v_flex()
                     .key_context("TaskBoard")
@@ -289,9 +406,20 @@ impl Render for TaskBoardItem {
                             .gap_1()
                             .when(is_empty, |this| {
                                 this.child(
-                                    Label::new("No threads in this column")
+                                    Label::new("No items in this column")
                                         .size(LabelSize::Small)
                                         .color(Color::Muted),
+                                )
+                            })
+                            .children(wp_cards)
+                            .when(!cards.is_empty() && has_wps, |this| {
+                                // Separator between WPs and threads
+                                this.child(
+                                    h_flex().py_0p5().child(
+                                        Label::new("— threads —")
+                                            .size(LabelSize::XSmall)
+                                            .color(Color::Muted),
+                                    ),
                                 )
                             })
                             .children(cards),
@@ -332,14 +460,12 @@ impl Render for TaskBoardItem {
                             .border_b_1()
                             .border_color(cx.theme().colors().border)
                             .gap_1()
-                            .child(
-                                ui::IconButton::new("back", IconName::ArrowLeft).on_click(
-                                    cx.listener(|this, _, _, cx| {
-                                        this.view_state = ViewState::Board;
-                                        cx.notify();
-                                    }),
-                                ),
-                            )
+                            .child(ui::IconButton::new("back", IconName::ArrowLeft).on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.view_state = ViewState::Board;
+                                    cx.notify();
+                                }),
+                            ))
                             .child(Label::new(thread_name).size(LabelSize::Small)),
                     )
                     .child(
@@ -446,9 +572,7 @@ impl Render for TaskBoardItem {
                                                 .size(LabelSize::XSmall)
                                                 .color(Color::Muted),
                                             )
-                                            .child(
-                                                Label::new(summary).size(LabelSize::XSmall),
-                                            )
+                                            .child(Label::new(summary).size(LabelSize::XSmall))
                                     })),
                             ),
                     )

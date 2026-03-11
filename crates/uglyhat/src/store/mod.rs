@@ -22,6 +22,30 @@ pub struct ActivityFilters {
     pub limit: i64,
 }
 
+#[derive(Debug)]
+pub struct InboxFilters {
+    /// Only return entries where read = false.
+    pub unread_only: bool,
+    /// Filter to a specific entry type.
+    pub entry_type: Option<InboxEntryType>,
+    /// When false (default) exclude dismissed entries.
+    /// When true include dismissed entries too.
+    pub include_dismissed: bool,
+    /// Cap result set. Defaults to 200.
+    pub limit: i64,
+}
+
+impl Default for InboxFilters {
+    fn default() -> Self {
+        Self {
+            unread_only: false,
+            entry_type: None,
+            include_dismissed: false,
+            limit: 200,
+        }
+    }
+}
+
 #[async_trait]
 pub trait Store: Send + Sync {
     // --- Workspace (2) ---
@@ -197,6 +221,76 @@ pub trait Store: Send + Sync {
 
     // --- Overview (1) ---
     async fn get_workspace_overview(&self, workspace_id: Uuid) -> Result<WorkspaceOverview>;
+
+    // --- Inbox (5) ---
+    async fn create_inbox_entry(
+        &self,
+        workspace_id: Uuid,
+        entry_type: InboxEntryType,
+        title: &str,
+        body: &str,
+        severity: InboxSeverity,
+        source_agent: Option<&str>,
+        ref_type: Option<&str>,
+        ref_id: Option<Uuid>,
+    ) -> Result<InboxEntry>;
+    async fn list_inbox_entries(
+        &self,
+        workspace_id: Uuid,
+        filters: InboxFilters,
+    ) -> Result<Vec<InboxEntry>>;
+    async fn mark_inbox_read(&self, workspace_id: Uuid, id: Uuid) -> Result<()>;
+    async fn dismiss_inbox_entry(&self, workspace_id: Uuid, id: Uuid) -> Result<()>;
+
+    // --- Plan (4) ---
+    async fn create_plan(&self, workspace_id: Uuid, intent: &str) -> Result<Plan>;
+    async fn get_plan(&self, workspace_id: Uuid, plan_id: Uuid) -> Result<Plan>;
+    async fn update_plan_status(
+        &self,
+        workspace_id: Uuid,
+        plan_id: Uuid,
+        status: PlanStatus,
+    ) -> Result<Plan>;
+    async fn list_plans(&self, workspace_id: Uuid, status: Option<PlanStatus>)
+    -> Result<Vec<Plan>>;
+
+    // --- WorkPackage (6) ---
+    async fn create_work_package(
+        &self,
+        workspace_id: Uuid,
+        plan_id: Option<Uuid>,
+        intent: &str,
+        acceptance_criteria: Vec<String>,
+        ordinal: i32,
+        depends_on: Vec<Uuid>,
+        tags: Vec<String>,
+    ) -> Result<WorkPackage>;
+    async fn get_work_package(&self, workspace_id: Uuid, wp_id: Uuid) -> Result<WorkPackage>;
+    async fn update_work_package_status(
+        &self,
+        workspace_id: Uuid,
+        wp_id: Uuid,
+        status: WorkPackageStatus,
+    ) -> Result<WorkPackage>;
+    async fn assign_work_package(
+        &self,
+        workspace_id: Uuid,
+        wp_id: Uuid,
+        agent_name: &str,
+        thread_id: Uuid,
+    ) -> Result<WorkPackage>;
+    async fn list_work_packages(
+        &self,
+        workspace_id: Uuid,
+        plan_id: Option<Uuid>,
+        status: Option<WorkPackageStatus>,
+    ) -> Result<Vec<WorkPackage>>;
+    /// For all Planned WPs in a plan, flip to Ready if all depends_on WPs are Done.
+    async fn refresh_work_package_readiness(
+        &self,
+        workspace_id: Uuid,
+        plan_id: Uuid,
+    ) -> Result<Vec<WorkPackage>>;
 
     // --- Messages (4) ---
     async fn send_message(

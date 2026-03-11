@@ -8,7 +8,7 @@ use uuid::Uuid;
 use uglyhat::config::{self, CONFIG_FILE, Config};
 use uglyhat::model::*;
 use uglyhat::store::sqlite::SqliteStore;
-use uglyhat::store::{ActivityFilters, MemoryFilters, Store};
+use uglyhat::store::{ActivityFilters, InboxFilters, MemoryFilters, Store};
 use uglyhat::util::parse_duration;
 
 fn agent_name() -> String {
@@ -163,8 +163,14 @@ enum Commands {
         label: String,
     },
 
-    /// Show messages in your inbox
+    /// Supervisory feed (approvals, blockers, suggestions)
     Inbox {
+        #[command(subcommand)]
+        action: InboxAction,
+    },
+
+    /// Show agent-to-agent messages
+    Messages {
         /// Show only unread messages
         #[arg(long)]
         unread: bool,
@@ -176,6 +182,18 @@ enum Commands {
         to: String,
         /// Message content
         message: String,
+    },
+
+    /// Plan management (intent-driven work decomposition)
+    Plan {
+        #[command(subcommand)]
+        action: PlanAction,
+    },
+
+    /// Work package management
+    Wp {
+        #[command(subcommand)]
+        action: WpAction,
     },
 }
 
@@ -277,6 +295,93 @@ enum HandoffAction {
         agent: Option<String>,
         #[arg(long)]
         status: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum InboxAction {
+    /// Create a supervisory inbox entry
+    Create {
+        /// Entry type: approval | blocked | suggestion | risk | cost_spike | completed
+        #[arg(long)]
+        r#type: String,
+        /// Short title for the entry
+        #[arg(long)]
+        title: String,
+        /// Optional longer description
+        #[arg(long, default_value = "")]
+        body: String,
+        /// Severity: critical | warning | info
+        #[arg(long, default_value = "info")]
+        severity: String,
+        /// Reference in the form "type:id" (e.g. "thread:my-thread" or "handoff:uuid")
+        #[arg(long)]
+        r#ref: Option<String>,
+    },
+    /// List inbox entries
+    List {
+        /// Show only unread entries
+        #[arg(long)]
+        unread: bool,
+        /// Filter by entry type
+        #[arg(long)]
+        r#type: Option<String>,
+        /// Include dismissed entries
+        #[arg(long)]
+        dismissed: bool,
+    },
+    /// Mark an entry as read
+    Read { id: String },
+    /// Dismiss an entry
+    Dismiss { id: String },
+}
+
+#[derive(Subcommand)]
+enum PlanAction {
+    /// Create a new plan from an intent statement
+    Create { intent: String },
+    /// List plans
+    List {
+        /// Filter by status: draft | approved | active | completed | cancelled
+        #[arg(long)]
+        status: Option<String>,
+    },
+    /// Show a plan and its work packages
+    Show { plan_id: String },
+    /// Approve a plan (draft → approved)
+    Approve { plan_id: String },
+}
+
+#[derive(Subcommand)]
+enum WpAction {
+    /// Add a work package to a plan
+    Add {
+        intent: String,
+        #[arg(long)]
+        plan: Option<String>,
+        #[arg(long, value_delimiter = ',')]
+        criteria: Option<Vec<String>>,
+        /// UUID of work package this one depends on
+        #[arg(long)]
+        after: Option<String>,
+        #[arg(long, default_value = "0")]
+        ordinal: i32,
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+    },
+    /// List work packages
+    List {
+        #[arg(long)]
+        plan: Option<String>,
+        /// Filter by status: draft | planned | ready | in_progress | review | done | cancelled
+        #[arg(long)]
+        status: Option<String>,
+    },
+    /// Update work package status
+    Status {
+        wp_id: String,
+        /// New status: planned | ready | in_progress | review | done | cancelled
+        status: String,
     },
 }
 
@@ -786,14 +891,212 @@ async fn run(cli: Cli) -> Result<(), String> {
                 .map_err(|e| e.to_string())?;
             print_json(&snap);
         }
-        Commands::Inbox { unread } => {
-            let messages = store.list_messages(workspace_id, &agent_name(), unread).await.map_err(|e| e.to_string())?;
+        Commands::Inbox { action } => match action {
+            InboxAction::Create {
+                r#type,
+                title,
+                body,
+                severity,
+                r#ref,
+            } => {
+                let entry_type = InboxEntryType::from_str(&r#type)
+                    .ok_or_else(|| format!("invalid type: {type} (use approval|blocked|suggestion|risk|cost_spike|completed)"))?;
+                let sev = InboxSeverity::from_str(&severity).ok_or_else(|| {
+                    format!("invalid severity: {severity} (use critical|warning|info)")
+                })?;
+                // Parse optional ref in the form "type:id"
+                let (ref_type, ref_id) = if let Some(ref s) = r#ref {
+                    match s.split_once(':') {
+                        Some((rtype, rid)) => (Some(rtype.to_string()), rid.parse::<Uuid>().ok()),
+                        None => {
+                            return Err(format!(
+                                "invalid --ref format: expected type:uuid, got {s:?}"
+                            ));
+                        }
+                    }
+                } else {
+                    (None, None)
+                };
+                let entry = store
+                    .create_inbox_entry(
+                        workspace_id,
+                        entry_type,
+                        &title,
+                        &body,
+                        sev,
+                        Some(&agent_name()),
+                        ref_type.as_deref(),
+                        ref_id,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&entry);
+            }
+            InboxAction::List {
+                unread,
+                r#type,
+                dismissed,
+            } => {
+                let entry_type = r#type
+                    .as_deref()
+                    .map(|s| {
+                        InboxEntryType::from_str(s).ok_or_else(|| format!("invalid type: {s}"))
+                    })
+                    .transpose()?;
+                let filters = InboxFilters {
+                    unread_only: unread,
+                    entry_type,
+                    include_dismissed: dismissed,
+                    ..Default::default()
+                };
+                let entries = store
+                    .list_inbox_entries(workspace_id, filters)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&entries);
+            }
+            InboxAction::Read { id } => {
+                let entry_id: Uuid = id.parse().map_err(|e| format!("invalid id: {e}"))?;
+                store
+                    .mark_inbox_read(workspace_id, entry_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                println!("{{\"read\":\"{id}\"}}");
+            }
+            InboxAction::Dismiss { id } => {
+                let entry_id: Uuid = id.parse().map_err(|e| format!("invalid id: {e}"))?;
+                store
+                    .dismiss_inbox_entry(workspace_id, entry_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                println!("{{\"dismissed\":\"{id}\"}}");
+            }
+        },
+        Commands::Messages { unread } => {
+            let messages = store
+                .list_messages(workspace_id, &agent_name(), unread)
+                .await
+                .map_err(|e| e.to_string())?;
             print_json(&messages);
         }
         Commands::Send { to, message } => {
-            let msg = store.send_message(workspace_id, &agent_name(), &to, &message).await.map_err(|e| e.to_string())?;
+            let msg = store
+                .send_message(workspace_id, &agent_name(), &to, &message)
+                .await
+                .map_err(|e| e.to_string())?;
             print_json(&msg);
         }
+        Commands::Plan { action } => match action {
+            PlanAction::Create { intent } => {
+                let plan = store
+                    .create_plan(workspace_id, &intent)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&plan);
+            }
+            PlanAction::List { status } => {
+                let plan_status = status
+                    .as_deref()
+                    .map(|s| PlanStatus::from_str(s).ok_or_else(|| format!("invalid status: {s}")))
+                    .transpose()?;
+                let plans = store
+                    .list_plans(workspace_id, plan_status)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&plans);
+            }
+            PlanAction::Show { plan_id } => {
+                let pid: Uuid = plan_id
+                    .parse()
+                    .map_err(|e| format!("invalid plan id: {e}"))?;
+                let plan = store
+                    .get_plan(workspace_id, pid)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let wps = store
+                    .list_work_packages(workspace_id, Some(pid), None)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&serde_json::json!({"plan": plan, "work_packages": wps}));
+            }
+            PlanAction::Approve { plan_id } => {
+                let pid: Uuid = plan_id
+                    .parse()
+                    .map_err(|e| format!("invalid plan id: {e}"))?;
+                let plan = store
+                    .update_plan_status(workspace_id, pid, PlanStatus::Approved)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&plan);
+            }
+        },
+        Commands::Wp { action } => match action {
+            WpAction::Add {
+                intent,
+                plan,
+                criteria,
+                after,
+                ordinal,
+                tags,
+            } => {
+                let plan_id = plan
+                    .as_deref()
+                    .map(|s| {
+                        s.parse::<Uuid>()
+                            .map_err(|e| format!("invalid plan id: {e}"))
+                    })
+                    .transpose()?;
+                let depends_on = after
+                    .as_deref()
+                    .map(|s| s.parse::<Uuid>().map_err(|e| format!("invalid wp id: {e}")))
+                    .transpose()?
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                let wp = store
+                    .create_work_package(
+                        workspace_id,
+                        plan_id,
+                        &intent,
+                        criteria.unwrap_or_default(),
+                        ordinal,
+                        depends_on,
+                        tags.unwrap_or_default(),
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&wp);
+            }
+            WpAction::List { plan, status } => {
+                let plan_id = plan
+                    .as_deref()
+                    .map(|s| {
+                        s.parse::<Uuid>()
+                            .map_err(|e| format!("invalid plan id: {e}"))
+                    })
+                    .transpose()?;
+                let wp_status = status
+                    .as_deref()
+                    .map(|s| {
+                        WorkPackageStatus::from_str(s).ok_or_else(|| format!("invalid status: {s}"))
+                    })
+                    .transpose()?;
+                let wps = store
+                    .list_work_packages(workspace_id, plan_id, wp_status)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&wps);
+            }
+            WpAction::Status { wp_id, status } => {
+                let wid: Uuid = wp_id.parse().map_err(|e| format!("invalid wp id: {e}"))?;
+                let wp_status = WorkPackageStatus::from_str(&status)
+                    .ok_or_else(|| format!("invalid status: {status}"))?;
+                let wp = store
+                    .update_work_package_status(workspace_id, wid, wp_status)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json(&wp);
+            }
+        },
     }
 
     Ok(())

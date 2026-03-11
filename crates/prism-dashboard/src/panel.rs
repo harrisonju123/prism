@@ -6,8 +6,10 @@ use gpui::{
     EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Task,
     WeakEntity, Window,
 };
+use prism_hq::HqState;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use uglyhat::model::{ActivityEntry, AgentState, AgentStatus};
 use ui::{
     h_flex, prelude::*, v_flex, Color, Icon, IconButton, IconName, Label, LabelSize, Tooltip,
 };
@@ -16,8 +18,6 @@ use workspace::{
     dock::{DockPosition, Panel, PanelEvent},
     Workspace,
 };
-use prism_hq::HqState;
-use uglyhat::model::{ActivityEntry, AgentState, AgentStatus};
 
 const PANEL_KEY: &str = "PrismDashboardPanel";
 const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
@@ -1137,11 +1137,7 @@ impl PrismDashboardPanel {
                         AgentState::Blocked => "blocked",
                         AgentState::Dead => "dead",
                     };
-                    let thread_label = agent
-                        .current_thread
-                        .as_deref()
-                        .unwrap_or("—")
-                        .to_string();
+                    let thread_label = agent.current_thread.as_deref().unwrap_or("—").to_string();
                     children = children.child(
                         v_flex()
                             .w_full()
@@ -1226,24 +1222,13 @@ impl PrismDashboardPanel {
                         format!("{}: {} {}", entry.actor, entry.action, entry.entity_type)
                     };
                     // Format timestamp as relative time (just show the time part of RFC3339)
-                    let ts = entry
-                        .created_at
-                        .format("%H:%M")
-                        .to_string();
+                    let ts = entry.created_at.format("%H:%M").to_string();
                     children = children.child(
                         h_flex()
                             .w_full()
                             .gap_1()
-                            .child(
-                                Label::new(ts)
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Muted),
-                            )
-                            .child(
-                                Label::new(label)
-                                    .size(LabelSize::XSmall)
-                                    .truncate(),
-                            ),
+                            .child(Label::new(ts).size(LabelSize::XSmall).color(Color::Muted))
+                            .child(Label::new(label).size(LabelSize::XSmall).truncate()),
                     );
                 }
                 this.child(children)

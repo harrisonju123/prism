@@ -5,6 +5,9 @@ use crate::types::Usage;
 /// Accounts for Anthropic prompt caching:
 /// - cache_read_input_tokens cost 90% less than normal input tokens
 /// - cache_creation_input_tokens cost 25% more than normal input tokens
+///
+/// LiteLLM models are billed at flat per-token rates regardless of cache token
+/// fields in the usage response — cache adjustments are not applied for them.
 pub fn compute_cost(model: &str, usage: &Usage) -> f64 {
     let Some(info) = models::lookup_model(model) else {
         return 0.0;
@@ -12,6 +15,12 @@ pub fn compute_cost(model: &str, usage: &Usage) -> f64 {
 
     let input_per_token = info.input_cost_per_token();
     let output_per_token = info.output_cost_per_token();
+
+    // LiteLLM bills at flat per-token rates; Anthropic cache adjustments don't apply
+    if info.provider == "litellm" {
+        return usage.prompt_tokens as f64 * input_per_token
+            + usage.completion_tokens as f64 * output_per_token;
+    }
 
     // Base input tokens (excluding cached tokens)
     let base_input = usage
@@ -75,6 +84,21 @@ mod tests {
         // cache create: 300 * 3.0/1M * 1.25 = 0.001125
         // output: 500 * 15.0/1M = 0.0075
         let expected = 0.0021 + 0.001125 + 0.0075;
+        assert!((cost - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn litellm_model_uses_flat_rate_ignoring_cache_tokens() {
+        let usage = Usage {
+            prompt_tokens: 1000,
+            completion_tokens: 500,
+            total_tokens: 1500,
+            cache_creation_input_tokens: 300,
+            cache_read_input_tokens: 400,
+        };
+        // claude-sonnet-4-6 is a litellm model: $3.30 input / $16.50 output per 1M
+        let cost = compute_cost("claude-sonnet-4-6", &usage);
+        let expected = 1000.0 * 3.30 / 1_000_000.0 + 500.0 * 16.50 / 1_000_000.0;
         assert!((cost - expected).abs() < 1e-9);
     }
 

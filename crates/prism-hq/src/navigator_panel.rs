@@ -4,8 +4,8 @@ use gpui::{
     Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Task, WeakEntity, Window,
     actions, px,
 };
-use ui::IconName;
 use serde::{Deserialize, Serialize};
+use ui::IconName;
 use ui::{Color, Label, LabelSize, Tooltip, h_flex, prelude::*, v_flex};
 use util::{ResultExt, TryFutureExt};
 use workspace::{
@@ -14,8 +14,10 @@ use workspace::{
 };
 
 use crate::agent_view::open_agent_view;
-use crate::dispatch::TaskDispatchModal;
 use crate::hq_state::HqState;
+use crate::inbox_item::open_inbox;
+use crate::plan_dispatch::PlanDispatchModal;
+use crate::plan_view::open_plan_view;
 use crate::running_agents::RunningAgents;
 use crate::thread_view::open_thread_view;
 
@@ -176,11 +178,12 @@ impl Panel for NavigatorPanel {
 
 impl Render for NavigatorPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (threads, agents, handoffs) = self
+        let (threads, agents, handoffs, unread_inbox, plans) = self
             .hq_state
             .as_ref()
             .map(|s| {
                 let state = s.read(cx);
+                let unread_inbox = state.unread_inbox_count;
                 let threads: Vec<(String, usize)> = state
                     .threads
                     .iter()
@@ -221,7 +224,34 @@ impl Render for NavigatorPanel {
                         }
                     })
                     .collect();
-                (threads, agents, pending_handoffs)
+                // Pre-compute (total, done) per plan_id in one pass to avoid O(N*M) double-iteration.
+                let mut wp_stats: std::collections::HashMap<uuid::Uuid, (usize, usize)> =
+                    std::collections::HashMap::new();
+                for wp in &state.work_packages {
+                    if let Some(pid) = wp.plan_id {
+                        let entry = wp_stats.entry(pid).or_default();
+                        entry.0 += 1;
+                        if wp.status == uglyhat::model::WorkPackageStatus::Done {
+                            entry.1 += 1;
+                        }
+                    }
+                }
+                // Plans: (id, intent_preview, done_count, total_count)
+                let plans: Vec<(uuid::Uuid, String, usize, usize)> = state
+                    .plans
+                    .iter()
+                    .map(|p| {
+                        let (total, done) =
+                            wp_stats.get(&p.id).copied().unwrap_or_default();
+                        let preview = if p.intent.len() > 36 {
+                            format!("{}…", &p.intent[..36])
+                        } else {
+                            p.intent.clone()
+                        };
+                        (p.id, preview, done, total)
+                    })
+                    .collect();
+                (threads, agents, pending_handoffs, unread_inbox, plans)
             })
             .unwrap_or_default();
 
@@ -234,7 +264,11 @@ impl Render for NavigatorPanel {
             .bg(cx.theme().colors().panel_background)
             // Status bar: uglyhat + gateway health
             .child({
-                let uh_ok = self.hq_state.as_ref().map(|s| s.read(cx).error.is_none()).unwrap_or(false);
+                let uh_ok = self
+                    .hq_state
+                    .as_ref()
+                    .map(|s| s.read(cx).error.is_none())
+                    .unwrap_or(false);
                 let gateway_url = std::env::var("PRISM_GATEWAY_URL").ok();
                 let hq_state = self.hq_state.clone();
                 h_flex()
@@ -252,14 +286,22 @@ impl Render for NavigatorPanel {
                             .h(px(6.))
                             .rounded_full()
                             .flex_none()
-                            .bg(if uh_ok { Color::Success.color(cx) } else { Color::Error.color(cx) })
-                            .tooltip(Tooltip::text(if uh_ok { "uglyhat connected" } else { "uglyhat not connected" })),
+                            .bg(if uh_ok {
+                                Color::Success.color(cx)
+                            } else {
+                                Color::Error.color(cx)
+                            })
+                            .tooltip(Tooltip::text(if uh_ok {
+                                "uglyhat connected"
+                            } else {
+                                "uglyhat not connected"
+                            })),
                     )
-                    .child(
-                        Label::new("uh")
-                            .size(LabelSize::XSmall)
-                            .color(if uh_ok { Color::Muted } else { Color::Error }),
-                    )
+                    .child(Label::new("uh").size(LabelSize::XSmall).color(if uh_ok {
+                        Color::Muted
+                    } else {
+                        Color::Error
+                    }))
                     .child(
                         div()
                             .id("nav-status-gw-dot")
@@ -267,21 +309,33 @@ impl Render for NavigatorPanel {
                             .h(px(6.))
                             .rounded_full()
                             .flex_none()
-                            .bg(if gateway_url.is_some() { Color::Success.color(cx) } else { Color::Muted.color(cx) })
+                            .bg(if gateway_url.is_some() {
+                                Color::Success.color(cx)
+                            } else {
+                                Color::Muted.color(cx)
+                            })
                             .tooltip(Tooltip::text(
-                                gateway_url.clone().unwrap_or_else(|| "gateway not configured".to_string())
+                                gateway_url
+                                    .clone()
+                                    .unwrap_or_else(|| "gateway not configured".to_string()),
                             )),
                     )
-                    .child(
-                        Label::new("gw")
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted),
-                    )
+                    .child(Label::new("gw").size(LabelSize::XSmall).color(Color::Muted))
                     .flex_1()
                     .when_some(hq_state.as_ref().map(|s| s.read(cx)), |this, hq| {
                         let agent_count = hq.agents.len();
                         let thread_count = hq.threads.len();
-                        let handoff_count = hq.handoffs.iter().filter(|h| matches!(h.status, uglyhat::model::HandoffStatus::Pending | uglyhat::model::HandoffStatus::Running)).count();
+                        let handoff_count = hq
+                            .handoffs
+                            .iter()
+                            .filter(|h| {
+                                matches!(
+                                    h.status,
+                                    uglyhat::model::HandoffStatus::Pending
+                                        | uglyhat::model::HandoffStatus::Running
+                                )
+                            })
+                            .count();
                         this.child(
                             Label::new(format!("{agent_count}a {thread_count}t {handoff_count}h"))
                                 .size(LabelSize::XSmall)
@@ -313,38 +367,82 @@ impl Render for NavigatorPanel {
                                     this.workspace.as_ref().and_then(|w| w.upgrade())
                                 {
                                     ws_ref.update(cx, |workspace, cx| {
-                                        let workspace_weak = cx.weak_entity();
-                                        workspace.toggle_modal(window, cx, move |_, cx| {
-                                            TaskDispatchModal::new(workspace_weak, cx)
-                                        });
+                                        PlanDispatchModal::open(workspace, window, cx);
                                     });
                                 }
                             })),
                     ),
             )
-            // THREADS section
-            .child(
+            // INBOX row
+            .child({
+                let hq_state_for_inbox = self.hq_state.clone();
+                let ws_for_inbox = workspace.clone();
                 h_flex()
+                    .id("nav-inbox-row")
                     .px_2()
                     .py_1()
-                    .h(px(24.))
+                    .h(px(28.))
+                    .gap_1()
+                    .w_full()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(cx.theme().colors().element_hover))
+                    .on_click(cx.listener(move |_, _, window, cx| {
+                        if let Some(ws_ref) = ws_for_inbox.as_ref().and_then(|w| w.upgrade()) {
+                            if let Some(ref hq) = hq_state_for_inbox {
+                                let hq = hq.clone();
+                                ws_ref.update(cx, |workspace, cx| {
+                                    open_inbox(workspace, hq, window, cx);
+                                });
+                            }
+                        }
+                    }))
                     .child(
-                        Label::new("THREADS")
-                            .size(LabelSize::XSmall)
-                            .color(Color::Muted),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .id("threads-list")
-                    .px_2()
-                    .gap_0p5()
-                    .children(threads.into_iter().enumerate().map(
-                        |(ix, (name, agent_count)): (usize, (String, usize))| {
-                            let ws = workspace.clone();
-                            let thread_name = name.clone();
+                        Label::new("Inbox")
+                            .size(LabelSize::Small)
+                            .color(Color::Default),
+                    )
+                    .flex_1()
+                    .when(unread_inbox > 0, |this| {
+                        this.child(
+                            Label::new(format!("{unread_inbox}"))
+                                .size(LabelSize::XSmall)
+                                .color(Color::Error),
+                        )
+                    })
+            })
+            // PLANS section
+            .when(!plans.is_empty(), |this| {
+                let hq_for_plans = self.hq_state.clone();
+                let ws_for_plans = workspace.clone();
+                this.child(
+                    h_flex()
+                        .px_2()
+                        .py_1()
+                        .h(px(24.))
+                        .border_t_1()
+                        .border_color(cx.theme().colors().border)
+                        .gap_1()
+                        .child(
+                            Label::new("PLANS")
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            Label::new(format!("{}", plans.len()))
+                                .size(LabelSize::XSmall)
+                                .color(Color::Accent),
+                        ),
+                )
+                .child(v_flex().id("plans-nav-list").px_2().gap_0p5().children(
+                    plans.into_iter().enumerate().map(
+                        |(ix, (plan_id, preview, done, total)): (
+                            usize,
+                            (uuid::Uuid, String, usize, usize),
+                        )| {
+                            let ws = ws_for_plans.clone();
+                            let hq = hq_for_plans.clone();
                             h_flex()
-                                .id(("nav-thread", ix))
+                                .id(("nav-plan", ix))
                                 .w_full()
                                 .px_1()
                                 .py_0p5()
@@ -352,31 +450,89 @@ impl Render for NavigatorPanel {
                                 .cursor_pointer()
                                 .hover(|s| s.bg(cx.theme().colors().element_hover))
                                 .on_click(cx.listener(move |_, _, window, cx| {
-                                    if let Some(ws_ref) =
-                                        ws.as_ref().and_then(|w| w.upgrade())
+                                    if let (Some(ws_ref), Some(hq_ref)) =
+                                        (ws.as_ref().and_then(|w| w.upgrade()), hq.clone())
                                     {
                                         ws_ref.update(cx, |workspace, cx| {
-                                            open_thread_view(
+                                            open_plan_view(
                                                 workspace,
-                                                thread_name.clone(),
+                                                hq_ref,
+                                                Some(plan_id),
                                                 window,
                                                 cx,
                                             );
                                         });
                                     }
                                 }))
-                                .child(Label::new(name).size(LabelSize::Small))
-                                .flex_1()
-                                .when(agent_count > 0, |this| {
-                                    this.child(
-                                        Label::new(format!("{}", agent_count))
-                                            .size(LabelSize::XSmall)
-                                            .color(Color::Accent),
-                                    )
-                                })
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .child(Label::new(preview).size(LabelSize::XSmall)),
+                                )
+                                .child(
+                                    Label::new(format!("{done}/{total}"))
+                                        .size(LabelSize::XSmall)
+                                        .color(if done == total && total > 0 {
+                                            Color::Success
+                                        } else {
+                                            Color::Muted
+                                        }),
+                                )
                         },
-                    )),
+                    ),
+                ))
+            })
+            // THREADS section
+            .child(
+                h_flex()
+                    .px_2()
+                    .py_1()
+                    .h(px(24.))
+                    .border_t_1()
+                    .border_color(cx.theme().colors().border)
+                    .child(
+                        Label::new("THREADS")
+                            .size(LabelSize::XSmall)
+                            .color(Color::Muted),
+                    ),
             )
+            .child(v_flex().id("threads-list").px_2().gap_0p5().children(
+                threads.into_iter().enumerate().map(
+                    |(ix, (name, agent_count)): (usize, (String, usize))| {
+                        let ws = workspace.clone();
+                        let thread_name = name.clone();
+                        h_flex()
+                            .id(("nav-thread", ix))
+                            .w_full()
+                            .px_1()
+                            .py_0p5()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(cx.theme().colors().element_hover))
+                            .on_click(cx.listener(move |_, _, window, cx| {
+                                if let Some(ws_ref) = ws.as_ref().and_then(|w| w.upgrade()) {
+                                    ws_ref.update(cx, |workspace, cx| {
+                                        open_thread_view(
+                                            workspace,
+                                            thread_name.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                }
+                            }))
+                            .child(Label::new(name).size(LabelSize::Small))
+                            .flex_1()
+                            .when(agent_count > 0, |this| {
+                                this.child(
+                                    Label::new(format!("{}", agent_count))
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Accent),
+                                )
+                            })
+                    },
+                ),
+            ))
             // AGENTS section
             .child(
                 h_flex()
@@ -391,87 +547,76 @@ impl Render for NavigatorPanel {
                             .color(Color::Muted),
                     ),
             )
-            .child(
-                v_flex()
-                    .id("agents-nav-list")
-                    .px_2()
-                    .gap_0p5()
-                    .children(agents.into_iter().enumerate().map(
-                        |(ix, (name, state, current_thread)): (
-                            usize,
-                            (String, uglyhat::model::AgentState, Option<String>),
-                        )| {
-                            let ws = workspace.clone();
-                            let agent_name = name.clone();
-                            let state_color = match state {
-                                uglyhat::model::AgentState::Working => Color::Accent,
-                                uglyhat::model::AgentState::Idle => Color::Success,
-                                uglyhat::model::AgentState::Blocked => Color::Warning,
-                                uglyhat::model::AgentState::Dead => Color::Muted,
-                            };
-                            let is_spawned = RunningAgents::global(cx)
-                                .map(|ra| ra.read(cx).is_running(&name))
-                                .unwrap_or(false);
-                            let unread = self.hq_state.as_ref().and_then(|s| {
-                                s.read(cx).unread_by_agent.get(&name).copied()
-                            }).unwrap_or(0);
-                            v_flex()
-                                .id(("nav-agent", ix))
-                                .w_full()
-                                .px_1()
-                                .py_0p5()
-                                .rounded_sm()
-                                .cursor_pointer()
-                                .hover(|s| s.bg(cx.theme().colors().element_hover))
-                                .on_click(cx.listener(move |_, _, window, cx| {
-                                    if let Some(ws_ref) =
-                                        ws.as_ref().and_then(|w| w.upgrade())
-                                    {
-                                        ws_ref.update(cx, |workspace, cx| {
-                                            open_agent_view(
-                                                workspace,
-                                                agent_name.clone(),
-                                                window,
-                                                cx,
-                                            );
-                                        });
-                                    }
-                                }))
-                                .child(
-                                    h_flex()
-                                        .gap_1()
-                                        .child(
-                                            Label::new("●")
-                                                .size(LabelSize::XSmall)
-                                                .color(state_color),
-                                        )
-                                        .child(Label::new(name).size(LabelSize::Small))
-                                        .flex_1()
-                                        .when(is_spawned, |this| {
-                                            this.child(
-                                                Label::new("◉")
-                                                    .size(LabelSize::XSmall)
-                                                    .color(Color::Accent),
-                                            )
-                                        })
-                                        .when(unread > 0, |this| {
-                                            this.child(
-                                                Label::new(format!("{}", unread))
-                                                    .size(LabelSize::XSmall)
-                                                    .color(Color::Error),
-                                            )
-                                        }),
-                                )
-                                .when_some(current_thread, |this, thread| {
-                                    this.child(
-                                        Label::new(thread)
-                                            .size(LabelSize::XSmall)
-                                            .color(Color::Muted),
+            .child(v_flex().id("agents-nav-list").px_2().gap_0p5().children(
+                agents.into_iter().enumerate().map(
+                    |(ix, (name, state, current_thread)): (
+                        usize,
+                        (String, uglyhat::model::AgentState, Option<String>),
+                    )| {
+                        let ws = workspace.clone();
+                        let agent_name = name.clone();
+                        let state_color = match state {
+                            uglyhat::model::AgentState::Working => Color::Accent,
+                            uglyhat::model::AgentState::Idle => Color::Success,
+                            uglyhat::model::AgentState::Blocked => Color::Warning,
+                            uglyhat::model::AgentState::Dead => Color::Muted,
+                        };
+                        let is_spawned = RunningAgents::global(cx)
+                            .map(|ra| ra.read(cx).is_running(&name))
+                            .unwrap_or(false);
+                        let unread = self
+                            .hq_state
+                            .as_ref()
+                            .and_then(|s| s.read(cx).unread_by_agent.get(&name).copied())
+                            .unwrap_or(0);
+                        v_flex()
+                            .id(("nav-agent", ix))
+                            .w_full()
+                            .px_1()
+                            .py_0p5()
+                            .rounded_sm()
+                            .cursor_pointer()
+                            .hover(|s| s.bg(cx.theme().colors().element_hover))
+                            .on_click(cx.listener(move |_, _, window, cx| {
+                                if let Some(ws_ref) = ws.as_ref().and_then(|w| w.upgrade()) {
+                                    ws_ref.update(cx, |workspace, cx| {
+                                        open_agent_view(workspace, agent_name.clone(), window, cx);
+                                    });
+                                }
+                            }))
+                            .child(
+                                h_flex()
+                                    .gap_1()
+                                    .child(
+                                        Label::new("●").size(LabelSize::XSmall).color(state_color),
                                     )
-                                })
-                        },
-                    )),
-            )
+                                    .child(Label::new(name).size(LabelSize::Small))
+                                    .flex_1()
+                                    .when(is_spawned, |this| {
+                                        this.child(
+                                            Label::new("◉")
+                                                .size(LabelSize::XSmall)
+                                                .color(Color::Accent),
+                                        )
+                                    })
+                                    .when(unread > 0, |this| {
+                                        this.child(
+                                            Label::new(format!("{}", unread))
+                                                .size(LabelSize::XSmall)
+                                                .color(Color::Error),
+                                        )
+                                    }),
+                            )
+                            .when_some(current_thread, |this, thread| {
+                                this.child(
+                                    Label::new(thread)
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted),
+                                )
+                            })
+                    },
+                ),
+            ))
             // HANDOFFS section
             .when(!handoffs.is_empty(), |this| {
                 this.child(
@@ -494,12 +639,11 @@ impl Render for NavigatorPanel {
                         ),
                 )
                 .child(
-                    v_flex()
-                        .id("handoffs-nav-list")
-                        .px_2()
-                        .gap_0p5()
-                        .children(handoffs.into_iter().enumerate().map(
-                            |(ix, task): (usize, String)| {
+                    v_flex().id("handoffs-nav-list").px_2().gap_0p5().children(
+                        handoffs
+                            .into_iter()
+                            .enumerate()
+                            .map(|(ix, task): (usize, String)| {
                                 h_flex()
                                     .id(("nav-handoff", ix))
                                     .w_full()
@@ -512,8 +656,8 @@ impl Render for NavigatorPanel {
                                             .color(Color::Warning),
                                     )
                                     .child(Label::new(task).size(LabelSize::XSmall))
-                            },
-                        )),
+                            }),
+                    ),
                 )
             })
     }

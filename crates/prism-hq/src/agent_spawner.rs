@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use gpui::AppContext as _;
+use gpui_tokio::Tokio;
 use tokio::io::AsyncBufReadExt as _;
 use tokio::process::Command;
 
@@ -11,11 +12,26 @@ use crate::types::prism_binary;
 ///
 /// Creates the worktree branch, then launches `prism run` as a subprocess
 /// with stdout/stderr streamed into the RunningAgents ring buffer.
+///
+/// `acceptance_criteria` is an optional list of done-conditions passed into
+/// the agent prompt so it knows what "done" looks like for this work package.
 pub async fn spawn_agent_in_worktree(
     task_desc: String,
     thread_name: String,
     agent_name: String,
     repo_root: PathBuf,
+    cx: &mut gpui::AsyncApp,
+) -> anyhow::Result<()> {
+    spawn_agent_in_worktree_with_criteria(task_desc, thread_name, agent_name, repo_root, vec![], cx)
+        .await
+}
+
+pub async fn spawn_agent_in_worktree_with_criteria(
+    task_desc: String,
+    thread_name: String,
+    agent_name: String,
+    repo_root: PathBuf,
+    acceptance_criteria: Vec<String>,
     cx: &mut gpui::AsyncApp,
 ) -> anyhow::Result<()> {
     let wt_path = repo_root.join(".worktrees").join(&agent_name);
@@ -58,22 +74,31 @@ pub async fn spawn_agent_in_worktree(
     });
 
     // Spawn the process and stream its output to the channel.
-    cx.background_spawn({
+    // Must run on Tokio's thread pool — tokio::process::Command requires a Tokio reactor.
+    Tokio::spawn_result(cx, {
         let wt_path = wt_path.clone();
         let agent_name = agent_name.clone();
         let task_desc = task_desc.clone();
         let thread_name = thread_name.clone();
         async move {
+            let criteria_text = if acceptance_criteria.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "\n\nAcceptance criteria:\n{}",
+                    acceptance_criteria
+                        .iter()
+                        .map(|c| format!("- {c}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                )
+            };
+            let prompt = format!(
+                "You are agent '{}' assigned to thread '{}'. Task: {}{}",
+                agent_name, thread_name, task_desc, criteria_text
+            );
             let mut child = Command::new(prism_binary())
-                .args([
-                    "run",
-                    "--model",
-                    "claude-sonnet-4-6",
-                    &format!(
-                        "You are agent '{}' assigned to thread '{}'. Task: {}",
-                        agent_name, thread_name, task_desc
-                    ),
-                ])
+                .args(["run", "--model", "claude-sonnet-4-6", &prompt])
                 .current_dir(&wt_path)
                 .env("UH_AGENT_NAME", &agent_name)
                 .stdout(std::process::Stdio::piped())

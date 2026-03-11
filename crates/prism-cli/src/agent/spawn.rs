@@ -84,6 +84,13 @@ pub async fn spawn_agent(
     {
         cmd.env("UH_CONSTRAINTS", json);
     }
+    // Forward plan mode so children don't escape to default/auto
+    if let Ok(mode) = std::env::var("PRISM_PERMISSION_MODE") {
+        cmd.env("PRISM_PERMISSION_MODE", mode);
+    }
+    if let Ok(plan_file) = std::env::var("PRISM_PLAN_FILE") {
+        cmd.env("PRISM_PLAN_FILE", plan_file);
+    }
 
     let timeout = std::time::Duration::from_secs(config.timeout_secs.unwrap_or(300));
 

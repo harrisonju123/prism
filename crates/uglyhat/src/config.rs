@@ -44,9 +44,12 @@ pub fn resolve_db_path(config_path: &Path, config: &Config) -> PathBuf {
 /// Auto-initialize a uglyhat workspace in `dir`.
 /// Creates `.uglyhat.db` and `.uglyhat.json`. Safe to call if `.uglyhat.json` already exists
 /// (returns the existing path without overwriting).
-pub async fn auto_init(dir: &std::path::Path, workspace_name: &str) -> Result<(PathBuf, String), String> {
-    use crate::store::sqlite::SqliteStore;
+pub async fn auto_init(
+    dir: &std::path::Path,
+    workspace_name: &str,
+) -> Result<(PathBuf, String), String> {
     use crate::store::Store as _;
+    use crate::store::sqlite::SqliteStore;
 
     let config_path = dir.join(CONFIG_FILE);
     if config_path.exists() {

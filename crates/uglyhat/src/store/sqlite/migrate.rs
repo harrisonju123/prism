@@ -69,6 +69,56 @@ const MIGRATIONS: &[&str] = &[
          created_at   TEXT NOT NULL
      );
      CREATE INDEX IF NOT EXISTS idx_messages_to_agent ON messages(workspace_id, to_agent, read);",
+    // Migration 7: Inbox entries (supervisory feed) + Thread dependency tracking
+    "CREATE TABLE IF NOT EXISTS inbox_entries (
+         id           TEXT PRIMARY KEY,
+         workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+         entry_type   TEXT NOT NULL DEFAULT 'info',
+         title        TEXT NOT NULL,
+         body         TEXT NOT NULL DEFAULT '',
+         severity     TEXT NOT NULL DEFAULT 'info'
+             CHECK(severity IN ('critical','warning','info')),
+         source_agent TEXT,
+         ref_type     TEXT,
+         ref_id       TEXT,
+         read         INTEGER NOT NULL DEFAULT 0,
+         dismissed    INTEGER NOT NULL DEFAULT 0,
+         created_at   TEXT NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_inbox_workspace ON inbox_entries(workspace_id, dismissed, read);
+     ALTER TABLE threads ADD COLUMN depends_on TEXT NOT NULL DEFAULT '[]';
+     ALTER TABLE threads ADD COLUMN confidence REAL;
+     ALTER TABLE threads ADD COLUMN cost_spent_usd REAL NOT NULL DEFAULT 0.0;",
+    // Migration 8: Plans + WorkPackages (intent-driven work decomposition)
+    "CREATE TABLE IF NOT EXISTS plans (
+         id           TEXT PRIMARY KEY,
+         workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+         intent       TEXT NOT NULL,
+         status       TEXT NOT NULL DEFAULT 'draft'
+             CHECK(status IN ('draft','approved','active','completed','cancelled')),
+         created_at   TEXT NOT NULL,
+         updated_at   TEXT NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_plans_workspace ON plans(workspace_id, status);
+     CREATE TABLE IF NOT EXISTS work_packages (
+         id               TEXT PRIMARY KEY,
+         workspace_id     TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+         plan_id          TEXT REFERENCES plans(id) ON DELETE CASCADE,
+         intent           TEXT NOT NULL,
+         acceptance_criteria TEXT NOT NULL DEFAULT '[]',
+         ordinal          INTEGER NOT NULL DEFAULT 0,
+         status           TEXT NOT NULL DEFAULT 'draft'
+             CHECK(status IN ('draft','planned','ready','in_progress','review','done','cancelled')),
+         depends_on       TEXT NOT NULL DEFAULT '[]',
+         thread_id        TEXT REFERENCES threads(id) ON DELETE SET NULL,
+         assigned_agent   TEXT,
+         tags             TEXT NOT NULL DEFAULT '[]',
+         created_at       TEXT NOT NULL,
+         updated_at       TEXT NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_work_packages_workspace ON work_packages(workspace_id);
+     CREATE INDEX IF NOT EXISTS idx_work_packages_plan ON work_packages(plan_id) WHERE plan_id IS NOT NULL;
+     CREATE INDEX IF NOT EXISTS idx_work_packages_status ON work_packages(workspace_id, status);",
 ];
 
 pub fn latest_version() -> i64 {

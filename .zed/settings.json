@@ -1,0 +1,15 @@
+{
+  "file_scan_exclusions": [
+    "**/.git",
+    "**/.svn",
+    "**/.hg",
+    "**/CVS",
+    "**/.DS_Store",
+    "**/Thumbs.db",
+    "**/.classpath",
+    "**/.settings",
+    ".prism-session.json",
+    ".uglyhat.db",
+    ".uglyhat.json"
+  ]
+}

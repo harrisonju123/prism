@@ -2,14 +2,15 @@ use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
     ParentElement, Render, SharedString, Styled, Subscription, WeakEntity, Window, actions,
 };
-use ui::{
-    Color, Icon, IconName, Label, LabelSize, h_flex, prelude::*, v_flex,
+use ui::{Color, Icon, IconName, Label, LabelSize, h_flex, prelude::*, v_flex};
+use workspace::{
+    Workspace,
+    item::{Item, ItemEvent},
 };
-use workspace::{Workspace, item::{Item, ItemEvent}};
 
 use crate::agent_view::open_agent_view;
-use crate::dispatch::TaskDispatchModal;
 use crate::hq_state::HqState;
+use crate::plan_dispatch::PlanDispatchModal;
 use crate::thread_view::open_thread_view;
 
 actions!(prism_hq, [OpenCommandCenter]);
@@ -201,17 +202,11 @@ impl CommandCenterItem {
                                 this.cursor_pointer()
                                     .hover(|s| s.bg(cx.theme().colors().element_hover))
                                     .on_click(cx.listener(move |_, _, window, cx| {
-                                        if let Some(ws_ref) =
-                                            ws.as_ref().and_then(|w| w.upgrade())
+                                        if let Some(ws_ref) = ws.as_ref().and_then(|w| w.upgrade())
                                         {
                                             let name = entity_name.clone();
                                             ws_ref.update(cx, |workspace, cx| {
-                                                open_thread_view(
-                                                    workspace,
-                                                    name,
-                                                    window,
-                                                    cx,
-                                                );
+                                                open_thread_view(workspace, name, window, cx);
                                             });
                                         }
                                     }))
@@ -318,11 +313,7 @@ impl CommandCenterItem {
                             ),
                     )
                     .when_some(error, |this, err| {
-                        this.child(
-                            Label::new(err)
-                                .size(LabelSize::XSmall)
-                                .color(Color::Error),
-                        )
+                        this.child(Label::new(err).size(LabelSize::XSmall).color(Color::Error))
                     }),
             )
     }
@@ -385,14 +376,9 @@ impl Render for CommandCenterItem {
                             .bg(cx.theme().colors().surface_background)
                             .cursor_pointer()
                             .on_click(cx.listener(move |_, _, window, cx| {
-                                if let Some(ws_ref) =
-                                    ws.as_ref().and_then(|w| w.upgrade())
-                                {
+                                if let Some(ws_ref) = ws.as_ref().and_then(|w| w.upgrade()) {
                                     ws_ref.update(cx, |workspace, cx| {
-                                        let workspace_weak = cx.weak_entity();
-                                        workspace.toggle_modal(window, cx, move |_, cx| {
-                                            TaskDispatchModal::new(workspace_weak, cx)
-                                        });
+                                        PlanDispatchModal::open(workspace, window, cx);
                                     });
                                 }
                             }))

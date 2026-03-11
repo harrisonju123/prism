@@ -1,10 +1,10 @@
 use gpui::{
-    App, AppContext as _, Context, EventEmitter, FocusHandle, Focusable, IntoElement,
-    KeyDownEvent, ParentElement, Render, SharedString, Styled, Task, WeakEntity, Window, actions,
+    App, AppContext as _, Context, EventEmitter, FocusHandle, Focusable, IntoElement, KeyDownEvent,
+    ParentElement, Render, SharedString, Styled, Task, WeakEntity, Window, actions,
 };
 use uglyhat::model::{
-    AgentSession, AgentState, AgentStatus, Decision, Handoff, HandoffConstraints,
-    HandoffStatus, Memory, ThreadContext, ThreadStatus,
+    AgentSession, AgentState, AgentStatus, Decision, Handoff, HandoffConstraints, HandoffStatus,
+    Memory, ThreadContext, ThreadStatus,
 };
 use ui::{
     Button, ButtonStyle, Color, Icon, IconName, Label, LabelSize, TintColor, h_flex, prelude::*,
@@ -53,9 +53,13 @@ impl ThreadViewItem {
         cx.on_focus(&focus_handle, window, |_, _, cx| cx.notify())
             .detach();
 
-        let auto_refresh = cx.spawn(async move |this: WeakEntity<ThreadViewItem>, cx| loop {
-            cx.background_executor().timer(std::time::Duration::from_secs(5)).await;
-            this.update(cx, |item, cx| item.refresh(cx)).ok();
+        let auto_refresh = cx.spawn(async move |this: WeakEntity<ThreadViewItem>, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(5))
+                    .await;
+                this.update(cx, |item, cx| item.refresh(cx)).ok();
+            }
         });
 
         let mut item = ThreadViewItem {
@@ -87,15 +91,15 @@ impl ThreadViewItem {
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
             let handle = this
                 .update(cx, |_, cx| {
-                    cx.try_global::<UglyhatService>().and_then(|svc| svc.handle())
+                    cx.try_global::<UglyhatService>()
+                        .and_then(|svc| svc.handle())
                 })
                 .ok()
                 .flatten();
 
             let result: anyhow::Result<(ThreadContext, Vec<Handoff>, Vec<AgentStatus>)> = cx
                 .background_spawn(async move {
-                    let handle =
-                        handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
+                    let handle = handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
                     let ctx = handle.recall_thread(&thread_name)?;
                     let all_handoffs = handle.list_handoffs(None, None)?;
                     let handoffs: Vec<Handoff> = all_handoffs
@@ -116,7 +120,8 @@ impl ThreadViewItem {
                 let changed = match result {
                     Ok((ctx, handoffs, assigned)) => {
                         let changed = this.error.is_some()
-                            || this.thread_context.as_ref().map(|c| c.thread.id) != Some(ctx.thread.id)
+                            || this.thread_context.as_ref().map(|c| c.thread.id)
+                                != Some(ctx.thread.id)
                             || this.handoffs.len() != handoffs.len()
                             || this.assigned_agents.len() != assigned.len();
                         this.thread_context = Some(ctx);
@@ -155,15 +160,15 @@ impl ThreadViewItem {
         self.save_task = Some(cx.spawn(async move |this, cx| {
             let handle = this
                 .update(cx, |_, cx| {
-                    cx.try_global::<UglyhatService>().and_then(|svc| svc.handle())
+                    cx.try_global::<UglyhatService>()
+                        .and_then(|svc| svc.handle())
                 })
                 .ok()
                 .flatten();
 
             let result: anyhow::Result<()> = cx
                 .background_spawn(async move {
-                    let handle =
-                        handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
+                    let handle = handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
                     handle.save_memory(&key, &value, Some(&thread_name), vec![])?;
                     anyhow::Ok(())
                 })
@@ -195,24 +200,21 @@ impl ThreadViewItem {
         self.record_decision.saving = true;
         cx.notify();
 
-        let thread_id = self
-            .thread_context
-            .as_ref()
-            .map(|ctx| ctx.thread.id);
+        let thread_id = self.thread_context.as_ref().map(|ctx| ctx.thread.id);
         let scope = self.record_decision.scope.clone();
 
         self.save_task = Some(cx.spawn(async move |this, cx| {
             let handle = this
                 .update(cx, |_, cx| {
-                    cx.try_global::<UglyhatService>().and_then(|svc| svc.handle())
+                    cx.try_global::<UglyhatService>()
+                        .and_then(|svc| svc.handle())
                 })
                 .ok()
                 .flatten();
 
             let result: anyhow::Result<()> = cx
                 .background_spawn(async move {
-                    let handle =
-                        handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
+                    let handle = handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
                     handle.save_decision(&title, &content, thread_id, vec![], scope)?;
                     anyhow::Ok(())
                 })
@@ -243,24 +245,21 @@ impl ThreadViewItem {
         self.create_handoff.saving = true;
         cx.notify();
 
-        let thread_id = self
-            .thread_context
-            .as_ref()
-            .map(|ctx| ctx.thread.id);
+        let thread_id = self.thread_context.as_ref().map(|ctx| ctx.thread.id);
         let mode = self.create_handoff.mode.clone();
 
         self.save_task = Some(cx.spawn(async move |this, cx| {
             let handle = this
                 .update(cx, |_, cx| {
-                    cx.try_global::<UglyhatService>().and_then(|svc| svc.handle())
+                    cx.try_global::<UglyhatService>()
+                        .and_then(|svc| svc.handle())
                 })
                 .ok()
                 .flatten();
 
             let result: anyhow::Result<()> = cx
                 .background_spawn(async move {
-                    let handle =
-                        handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
+                    let handle = handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
                     handle.create_handoff(
                         "zed-user",
                         &task,
@@ -296,15 +295,15 @@ impl ThreadViewItem {
         self.save_task = Some(cx.spawn(async move |this, cx| {
             let handle = this
                 .update(cx, |_, cx| {
-                    cx.try_global::<UglyhatService>().and_then(|svc| svc.handle())
+                    cx.try_global::<UglyhatService>()
+                        .and_then(|svc| svc.handle())
                 })
                 .ok()
                 .flatten();
 
             let result: anyhow::Result<()> = cx
                 .background_spawn(async move {
-                    let handle =
-                        handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
+                    let handle = handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
                     handle.set_agent_state(&agent_name, state)
                 })
                 .await;
@@ -410,11 +409,11 @@ impl Render for ThreadViewItem {
                         };
                     }
                     ActiveForm::RecordDecision => {
-                        this.record_decision.active_field =
-                            match this.record_decision.active_field {
-                                DecisionField::Title => DecisionField::Content,
-                                DecisionField::Content => DecisionField::Title,
-                            };
+                        this.record_decision.active_field = match this.record_decision.active_field
+                        {
+                            DecisionField::Title => DecisionField::Content,
+                            DecisionField::Content => DecisionField::Title,
+                        };
                     }
                     _ => {}
                 }
@@ -429,9 +428,7 @@ impl Render for ThreadViewItem {
                             MemoryField::Value => this.add_memory.value_input.push_str(ch),
                         },
                         ActiveForm::RecordDecision => match this.record_decision.active_field {
-                            DecisionField::Title => {
-                                this.record_decision.title_input.push_str(ch)
-                            }
+                            DecisionField::Title => this.record_decision.title_input.push_str(ch),
                             DecisionField::Content => {
                                 this.record_decision.content_input.push_str(ch)
                             }
@@ -462,13 +459,16 @@ impl Render for ThreadViewItem {
                     .border_color(cx.theme().colors().border)
                     .gap_2()
                     .child(Label::new(thread_name).size(LabelSize::Small))
-                    .when_some(thread_context.as_ref().map(|c| c.thread.status.clone()), |this, status| {
-                        let (label, color) = match status {
-                            ThreadStatus::Active => ("active", Color::Success),
-                            ThreadStatus::Archived => ("archived", Color::Muted),
-                        };
-                        this.child(Label::new(label).size(LabelSize::XSmall).color(color))
-                    })
+                    .when_some(
+                        thread_context.as_ref().map(|c| c.thread.status.clone()),
+                        |this, status| {
+                            let (label, color) = match status {
+                                ThreadStatus::Active => ("active", Color::Success),
+                                ThreadStatus::Archived => ("archived", Color::Muted),
+                            };
+                            this.child(Label::new(label).size(LabelSize::XSmall).color(color))
+                        },
+                    )
                     .flex_1()
                     .child(
                         Button::new("archive", "Archive")
@@ -493,9 +493,7 @@ impl Render for ThreadViewItem {
                                             anyhow::Ok(())
                                         })
                                         .await;
-                                    this_weak
-                                        .update(cx, |this, cx| this.refresh(cx))
-                                        .ok();
+                                    this_weak.update(cx, |this, cx| this.refresh(cx)).ok();
                                 }));
                             })),
                     ),
@@ -517,9 +515,7 @@ impl Render for ThreadViewItem {
                         )
                     })
                     .when_some(error, |this, err| {
-                        this.child(
-                            Label::new(err).size(LabelSize::XSmall).color(Color::Error),
-                        )
+                        this.child(Label::new(err).size(LabelSize::XSmall).color(Color::Error))
                     })
                     // Assigned Agents section
                     .child(
@@ -551,8 +547,7 @@ impl Render for ThreadViewItem {
                                         agent.state,
                                         AgentState::Working | AgentState::Idle
                                     );
-                                    let can_resume =
-                                        matches!(agent.state, AgentState::Blocked);
+                                    let can_resume = matches!(agent.state, AgentState::Blocked);
                                     h_flex()
                                         .id(("assigned-agent", ix))
                                         .w_full()
@@ -566,28 +561,24 @@ impl Render for ThreadViewItem {
                                                 .color(state_color),
                                         )
                                         .child(
-                                            Label::new(agent.name.clone())
-                                                .size(LabelSize::Small),
+                                            Label::new(agent.name.clone()).size(LabelSize::Small),
                                         )
                                         .flex_1()
                                         .when(can_pause, |this| {
                                             let name = agent_name_pause.clone();
                                             this.child(
-                                                Button::new(
-                                                    ("pause", ix),
-                                                    "Pause",
-                                                )
-                                                .style(ButtonStyle::Subtle)
-                                                .label_size(LabelSize::XSmall)
-                                                .on_click(cx.listener(
-                                                    move |this, _, _, cx| {
-                                                        this.set_agent_state_inline(
-                                                            name.clone(),
-                                                            AgentState::Blocked,
-                                                            cx,
-                                                        );
-                                                    },
-                                                )),
+                                                Button::new(("pause", ix), "Pause")
+                                                    .style(ButtonStyle::Subtle)
+                                                    .label_size(LabelSize::XSmall)
+                                                    .on_click(cx.listener(
+                                                        move |this, _, _, cx| {
+                                                            this.set_agent_state_inline(
+                                                                name.clone(),
+                                                                AgentState::Blocked,
+                                                                cx,
+                                                            );
+                                                        },
+                                                    )),
                                             )
                                         })
                                         .when(can_resume, |this| {
@@ -611,204 +602,220 @@ impl Render for ThreadViewItem {
                                             Button::new(("kill-agent", ix), "Kill")
                                                 .style(ButtonStyle::Tinted(TintColor::Error))
                                                 .label_size(LabelSize::XSmall)
-                                                .on_click(cx.listener(
-                                                    move |this, _, _, cx| {
-                                                        this.set_agent_state_inline(
-                                                            agent_name_kill.clone(),
-                                                            AgentState::Dead,
-                                                            cx,
-                                                        );
-                                                    },
-                                                )),
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.set_agent_state_inline(
+                                                        agent_name_kill.clone(),
+                                                        AgentState::Dead,
+                                                        cx,
+                                                    );
+                                                })),
                                         )
                                 },
                             )),
                     )
                     // Activity Feed
-                    .when_some(thread_context.as_ref().map(|c| c.recent_activity.clone()), |this, activity| {
-                        this.child(
-                            v_flex()
-                                .gap_0p5()
-                                .child(
-                                    Label::new("RECENT ACTIVITY")
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Muted),
-                                )
-                                .when(activity.is_empty(), |this| {
-                                    this.child(
-                                        Label::new("No recent activity")
+                    .when_some(
+                        thread_context.as_ref().map(|c| c.recent_activity.clone()),
+                        |this, activity| {
+                            this.child(
+                                v_flex()
+                                    .gap_0p5()
+                                    .child(
+                                        Label::new("RECENT ACTIVITY")
                                             .size(LabelSize::XSmall)
                                             .color(Color::Muted),
                                     )
-                                })
-                                .children(activity.into_iter().map(|entry| {
-                                    let summary = if !entry.summary.is_empty() {
-                                        entry.summary.clone()
-                                    } else {
-                                        format!("{} {}", entry.action, entry.entity_type)
-                                    };
-                                    h_flex()
-                                        .gap_1()
-                                        .when(!entry.actor.is_empty(), |this| {
-                                            this.child(
-                                                Label::new(entry.actor)
-                                                    .size(LabelSize::XSmall)
-                                                    .color(Color::Accent),
-                                            )
-                                        })
-                                        .child(Label::new(summary).size(LabelSize::XSmall))
-                                })),
-                        )
-                    })
-                    // Memories section
-                    .when_some(thread_context.as_ref().map(|c| c.memories.clone()), |this, memories| {
-                        let show_memory_form = active_form == ActiveForm::AddMemory;
-                        this.child(
-                            v_flex()
-                                .gap_0p5()
-                                .child(
-                                    h_flex()
-                                        .gap_1()
-                                        .child(
-                                            Label::new("MEMORIES")
+                                    .when(activity.is_empty(), |this| {
+                                        this.child(
+                                            Label::new("No recent activity")
                                                 .size(LabelSize::XSmall)
                                                 .color(Color::Muted),
                                         )
-                                        .flex_1()
-                                        .child(
-                                            Button::new("add-memory", "+ Add Memory")
-                                                .style(ButtonStyle::Subtle)
-                                                .label_size(LabelSize::XSmall)
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.active_form = ActiveForm::AddMemory;
-                                                    cx.notify();
-                                                })),
-                                        ),
-                                )
-                                .when(memories.is_empty() && !show_memory_form, |this| {
-                                    this.child(
-                                        Label::new("No memories")
-                                            .size(LabelSize::XSmall)
-                                            .color(Color::Muted),
-                                    )
-                                })
-                                .children(memories.into_iter().map(|m: Memory| {
-                                    v_flex()
-                                        .gap_0p5()
-                                        .p_1()
-                                        .rounded_sm()
-                                        .bg(cx.theme().colors().element_background)
-                                        .child(
-                                            Label::new(m.key.clone())
-                                                .size(LabelSize::XSmall)
-                                                .color(Color::Accent),
-                                        )
-                                        .child(Label::new(m.value).size(LabelSize::XSmall))
-                                }))
-                                .when(show_memory_form, |this| {
-                                    let key_text = self.add_memory.key_input.clone();
-                                    let val_text = self.add_memory.value_input.clone();
-                                    let saving = self.add_memory.saving;
-                                    this.child(
-                                        v_flex()
+                                    })
+                                    .children(activity.into_iter().map(|entry| {
+                                        let summary = if !entry.summary.is_empty() {
+                                            entry.summary.clone()
+                                        } else {
+                                            format!("{} {}", entry.action, entry.entity_type)
+                                        };
+                                        h_flex()
                                             .gap_1()
+                                            .when(!entry.actor.is_empty(), |this| {
+                                                this.child(
+                                                    Label::new(entry.actor)
+                                                        .size(LabelSize::XSmall)
+                                                        .color(Color::Accent),
+                                                )
+                                            })
+                                            .child(Label::new(summary).size(LabelSize::XSmall))
+                                    })),
+                            )
+                        },
+                    )
+                    // Memories section
+                    .when_some(
+                        thread_context.as_ref().map(|c| c.memories.clone()),
+                        |this, memories| {
+                            let show_memory_form = active_form == ActiveForm::AddMemory;
+                            this.child(
+                                v_flex()
+                                    .gap_0p5()
+                                    .child(
+                                        h_flex()
+                                            .gap_1()
+                                            .child(
+                                                Label::new("MEMORIES")
+                                                    .size(LabelSize::XSmall)
+                                                    .color(Color::Muted),
+                                            )
+                                            .flex_1()
+                                            .child(
+                                                Button::new("add-memory", "+ Add Memory")
+                                                    .style(ButtonStyle::Subtle)
+                                                    .label_size(LabelSize::XSmall)
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.active_form = ActiveForm::AddMemory;
+                                                        cx.notify();
+                                                    })),
+                                            ),
+                                    )
+                                    .when(memories.is_empty() && !show_memory_form, |this| {
+                                        this.child(
+                                            Label::new("No memories")
+                                                .size(LabelSize::XSmall)
+                                                .color(Color::Muted),
+                                        )
+                                    })
+                                    .children(memories.into_iter().map(|m: Memory| {
+                                        v_flex()
+                                            .gap_0p5()
                                             .p_1()
-                                            .border_1()
-                                            .border_color(cx.theme().colors().border_focused)
                                             .rounded_sm()
+                                            .bg(cx.theme().colors().element_background)
                                             .child(
-                                                h_flex()
-                                                    .gap_1()
-                                                    .child(
-                                                        Label::new("Key:")
-                                                            .size(LabelSize::XSmall)
-                                                            .color(Color::Muted),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .id(mem_key_id.clone())
-                                                            .flex_1()
-                                                            .px_1()
-                                                            .border_1()
-                                                            .border_color(
-                                                                if self.add_memory.active_field
-                                                                    == MemoryField::Key
-                                                                {
-                                                                    cx.theme()
-                                                                        .colors()
-                                                                        .border_focused
+                                                Label::new(m.key.clone())
+                                                    .size(LabelSize::XSmall)
+                                                    .color(Color::Accent),
+                                            )
+                                            .child(Label::new(m.value).size(LabelSize::XSmall))
+                                    }))
+                                    .when(show_memory_form, |this| {
+                                        let key_text = self.add_memory.key_input.clone();
+                                        let val_text = self.add_memory.value_input.clone();
+                                        let saving = self.add_memory.saving;
+                                        this.child(
+                                            v_flex()
+                                                .gap_1()
+                                                .p_1()
+                                                .border_1()
+                                                .border_color(cx.theme().colors().border_focused)
+                                                .rounded_sm()
+                                                .child(
+                                                    h_flex()
+                                                        .gap_1()
+                                                        .child(
+                                                            Label::new("Key:")
+                                                                .size(LabelSize::XSmall)
+                                                                .color(Color::Muted),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .id(mem_key_id.clone())
+                                                                .flex_1()
+                                                                .px_1()
+                                                                .border_1()
+                                                                .border_color(
+                                                                    if self.add_memory.active_field
+                                                                        == MemoryField::Key
+                                                                    {
+                                                                        cx.theme()
+                                                                            .colors()
+                                                                            .border_focused
+                                                                    } else {
+                                                                        cx.theme().colors().border
+                                                                    },
+                                                                )
+                                                                .rounded_sm()
+                                                                .cursor_text()
+                                                                .on_click(cx.listener(
+                                                                    |this, _, _, cx| {
+                                                                        this.add_memory
+                                                                            .active_field =
+                                                                            MemoryField::Key;
+                                                                        cx.notify();
+                                                                    },
+                                                                ))
+                                                                .child(if key_text.is_empty() {
+                                                                    Label::new("key")
+                                                                        .size(LabelSize::XSmall)
+                                                                        .color(Color::Muted)
+                                                                        .into_any_element()
                                                                 } else {
-                                                                    cx.theme().colors().border
+                                                                    Label::new(key_text)
+                                                                        .size(LabelSize::XSmall)
+                                                                        .into_any_element()
+                                                                }),
+                                                        ),
+                                                )
+                                                .child(
+                                                    h_flex()
+                                                        .gap_1()
+                                                        .child(
+                                                            Label::new("Value:")
+                                                                .size(LabelSize::XSmall)
+                                                                .color(Color::Muted),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .id(mem_val_id.clone())
+                                                                .flex_1()
+                                                                .px_1()
+                                                                .border_1()
+                                                                .border_color(
+                                                                    if self.add_memory.active_field
+                                                                        == MemoryField::Value
+                                                                    {
+                                                                        cx.theme()
+                                                                            .colors()
+                                                                            .border_focused
+                                                                    } else {
+                                                                        cx.theme().colors().border
+                                                                    },
+                                                                )
+                                                                .rounded_sm()
+                                                                .cursor_text()
+                                                                .on_click(cx.listener(
+                                                                    |this, _, _, cx| {
+                                                                        this.add_memory
+                                                                            .active_field =
+                                                                            MemoryField::Value;
+                                                                        cx.notify();
+                                                                    },
+                                                                ))
+                                                                .child(if val_text.is_empty() {
+                                                                    Label::new("value")
+                                                                        .size(LabelSize::XSmall)
+                                                                        .color(Color::Muted)
+                                                                        .into_any_element()
+                                                                } else {
+                                                                    Label::new(val_text)
+                                                                        .size(LabelSize::XSmall)
+                                                                        .into_any_element()
+                                                                }),
+                                                        ),
+                                                )
+                                                .child(
+                                                    h_flex()
+                                                        .gap_1()
+                                                        .child(
+                                                            Button::new(
+                                                                "save-memory",
+                                                                if saving {
+                                                                    "Saving…"
+                                                                } else {
+                                                                    "Save"
                                                                 },
                                                             )
-                                                            .rounded_sm()
-                                                            .cursor_text()
-                                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                                this.add_memory.active_field =
-                                                                    MemoryField::Key;
-                                                                cx.notify();
-                                                            }))
-                                                            .child(if key_text.is_empty() {
-                                                                Label::new("key")
-                                                                    .size(LabelSize::XSmall)
-                                                                    .color(Color::Muted)
-                                                                    .into_any_element()
-                                                            } else {
-                                                                Label::new(key_text)
-                                                                    .size(LabelSize::XSmall)
-                                                                    .into_any_element()
-                                                            }),
-                                                    ),
-                                            )
-                                            .child(
-                                                h_flex()
-                                                    .gap_1()
-                                                    .child(
-                                                        Label::new("Value:")
-                                                            .size(LabelSize::XSmall)
-                                                            .color(Color::Muted),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .id(mem_val_id.clone())
-                                                            .flex_1()
-                                                            .px_1()
-                                                            .border_1()
-                                                            .border_color(
-                                                                if self.add_memory.active_field
-                                                                    == MemoryField::Value
-                                                                {
-                                                                    cx.theme()
-                                                                        .colors()
-                                                                        .border_focused
-                                                                } else {
-                                                                    cx.theme().colors().border
-                                                                },
-                                                            )
-                                                            .rounded_sm()
-                                                            .cursor_text()
-                                                            .on_click(cx.listener(|this, _, _, cx| {
-                                                                this.add_memory.active_field =
-                                                                    MemoryField::Value;
-                                                                cx.notify();
-                                                            }))
-                                                            .child(if val_text.is_empty() {
-                                                                Label::new("value")
-                                                                    .size(LabelSize::XSmall)
-                                                                    .color(Color::Muted)
-                                                                    .into_any_element()
-                                                            } else {
-                                                                Label::new(val_text)
-                                                                    .size(LabelSize::XSmall)
-                                                                    .into_any_element()
-                                                            }),
-                                                    ),
-                                            )
-                                            .child(
-                                                h_flex()
-                                                    .gap_1()
-                                                    .child(
-                                                        Button::new("save-memory", if saving { "Saving…" } else { "Save" })
                                                             .style(ButtonStyle::Filled)
                                                             .label_size(LabelSize::XSmall)
                                                             .disabled(saving)
@@ -817,9 +824,183 @@ impl Render for ThreadViewItem {
                                                                     this.save_memory(cx);
                                                                 },
                                                             )),
-                                                    )
-                                                    .child(
-                                                        Button::new("cancel-memory", "Cancel")
+                                                        )
+                                                        .child(
+                                                            Button::new("cancel-memory", "Cancel")
+                                                                .style(ButtonStyle::Subtle)
+                                                                .label_size(LabelSize::XSmall)
+                                                                .on_click(cx.listener(
+                                                                    |this, _, _, cx| {
+                                                                        this.active_form =
+                                                                            ActiveForm::None;
+                                                                        cx.notify();
+                                                                    },
+                                                                )),
+                                                        ),
+                                                ),
+                                        )
+                                    }),
+                            )
+                        },
+                    )
+                    // Decisions section
+                    .when_some(
+                        thread_context.as_ref().map(|c| c.decisions.clone()),
+                        |this, decisions| {
+                            let show_decision_form = active_form == ActiveForm::RecordDecision;
+                            this.child(
+                                v_flex()
+                                    .gap_0p5()
+                                    .child(
+                                        h_flex()
+                                            .gap_1()
+                                            .child(
+                                                Label::new("DECISIONS")
+                                                    .size(LabelSize::XSmall)
+                                                    .color(Color::Muted),
+                                            )
+                                            .flex_1()
+                                            .child(
+                                                Button::new("add-decision", "+ Record Decision")
+                                                    .style(ButtonStyle::Subtle)
+                                                    .label_size(LabelSize::XSmall)
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.active_form =
+                                                            ActiveForm::RecordDecision;
+                                                        cx.notify();
+                                                    })),
+                                            ),
+                                    )
+                                    .when(decisions.is_empty() && !show_decision_form, |this| {
+                                        this.child(
+                                            Label::new("No decisions")
+                                                .size(LabelSize::XSmall)
+                                                .color(Color::Muted),
+                                        )
+                                    })
+                                    .children(decisions.into_iter().map(|d: Decision| {
+                                        v_flex()
+                                            .gap_0p5()
+                                            .p_1()
+                                            .rounded_sm()
+                                            .bg(cx.theme().colors().element_background)
+                                            .child(
+                                                Label::new(d.title.clone())
+                                                    .size(LabelSize::XSmall)
+                                                    .color(Color::Accent),
+                                            )
+                                            .when(!d.content.is_empty(), |this| {
+                                                this.child(
+                                                    Label::new(d.content.clone())
+                                                        .size(LabelSize::XSmall),
+                                                )
+                                            })
+                                    }))
+                                    .when(show_decision_form, |this| {
+                                        let title_text = self.record_decision.title_input.clone();
+                                        let content_text =
+                                            self.record_decision.content_input.clone();
+                                        let saving = self.record_decision.saving;
+                                        this.child(
+                                            v_flex()
+                                                .gap_1()
+                                                .p_1()
+                                                .border_1()
+                                                .border_color(cx.theme().colors().border_focused)
+                                                .rounded_sm()
+                                                .child(
+                                                    div()
+                                                        .id(dec_title_id.clone())
+                                                        .px_1()
+                                                        .border_1()
+                                                        .border_color(
+                                                            if self.record_decision.active_field
+                                                                == DecisionField::Title
+                                                            {
+                                                                cx.theme().colors().border_focused
+                                                            } else {
+                                                                cx.theme().colors().border
+                                                            },
+                                                        )
+                                                        .rounded_sm()
+                                                        .cursor_text()
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.record_decision.active_field =
+                                                                DecisionField::Title;
+                                                            cx.notify();
+                                                        }))
+                                                        .child(if title_text.is_empty() {
+                                                            Label::new("Decision title…")
+                                                                .size(LabelSize::XSmall)
+                                                                .color(Color::Muted)
+                                                                .into_any_element()
+                                                        } else {
+                                                            Label::new(title_text)
+                                                                .size(LabelSize::XSmall)
+                                                                .into_any_element()
+                                                        }),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .id(dec_content_id.clone())
+                                                        .px_1()
+                                                        .min_h(px(40.))
+                                                        .border_1()
+                                                        .border_color(
+                                                            if self.record_decision.active_field
+                                                                == DecisionField::Content
+                                                            {
+                                                                cx.theme().colors().border_focused
+                                                            } else {
+                                                                cx.theme().colors().border
+                                                            },
+                                                        )
+                                                        .rounded_sm()
+                                                        .cursor_text()
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.record_decision.active_field =
+                                                                DecisionField::Content;
+                                                            cx.notify();
+                                                        }))
+                                                        .child(if content_text.is_empty() {
+                                                            Label::new(
+                                                                "Rationale (why this decision)…",
+                                                            )
+                                                            .size(LabelSize::XSmall)
+                                                            .color(Color::Muted)
+                                                            .into_any_element()
+                                                        } else {
+                                                            Label::new(content_text)
+                                                                .size(LabelSize::XSmall)
+                                                                .into_any_element()
+                                                        }),
+                                                )
+                                                .child(
+                                                    h_flex()
+                                                        .gap_1()
+                                                        .child(
+                                                            Button::new(
+                                                                "save-decision",
+                                                                if saving {
+                                                                    "Saving…"
+                                                                } else {
+                                                                    "Save"
+                                                                },
+                                                            )
+                                                            .style(ButtonStyle::Filled)
+                                                            .label_size(LabelSize::XSmall)
+                                                            .disabled(saving)
+                                                            .on_click(cx.listener(
+                                                                |this, _, _, cx| {
+                                                                    this.save_decision(cx);
+                                                                },
+                                                            )),
+                                                        )
+                                                        .child(
+                                                            Button::new(
+                                                                "cancel-decision",
+                                                                "Cancel",
+                                                            )
                                                             .style(ButtonStyle::Subtle)
                                                             .label_size(LabelSize::XSmall)
                                                             .on_click(cx.listener(
@@ -829,182 +1010,13 @@ impl Render for ThreadViewItem {
                                                                     cx.notify();
                                                                 },
                                                             )),
-                                                    ),
-                                            ),
-                                    )
-                                }),
-                        )
-                    })
-                    // Decisions section
-                    .when_some(thread_context.as_ref().map(|c| c.decisions.clone()), |this, decisions| {
-                        let show_decision_form = active_form == ActiveForm::RecordDecision;
-                        this.child(
-                            v_flex()
-                                .gap_0p5()
-                                .child(
-                                    h_flex()
-                                        .gap_1()
-                                        .child(
-                                            Label::new("DECISIONS")
-                                                .size(LabelSize::XSmall)
-                                                .color(Color::Muted),
+                                                        ),
+                                                ),
                                         )
-                                        .flex_1()
-                                        .child(
-                                            Button::new("add-decision", "+ Record Decision")
-                                                .style(ButtonStyle::Subtle)
-                                                .label_size(LabelSize::XSmall)
-                                                .on_click(cx.listener(|this, _, _, cx| {
-                                                    this.active_form =
-                                                        ActiveForm::RecordDecision;
-                                                    cx.notify();
-                                                })),
-                                        ),
-                                )
-                                .when(decisions.is_empty() && !show_decision_form, |this| {
-                                    this.child(
-                                        Label::new("No decisions")
-                                            .size(LabelSize::XSmall)
-                                            .color(Color::Muted),
-                                    )
-                                })
-                                .children(decisions.into_iter().map(|d: Decision| {
-                                    v_flex()
-                                        .gap_0p5()
-                                        .p_1()
-                                        .rounded_sm()
-                                        .bg(cx.theme().colors().element_background)
-                                        .child(
-                                            Label::new(d.title.clone())
-                                                .size(LabelSize::XSmall)
-                                                .color(Color::Accent),
-                                        )
-                                        .when(!d.content.is_empty(), |this| {
-                                            this.child(
-                                                Label::new(d.content.clone())
-                                                    .size(LabelSize::XSmall),
-                                            )
-                                        })
-                                }))
-                                .when(show_decision_form, |this| {
-                                    let title_text =
-                                        self.record_decision.title_input.clone();
-                                    let content_text =
-                                        self.record_decision.content_input.clone();
-                                    let saving = self.record_decision.saving;
-                                    this.child(
-                                        v_flex()
-                                            .gap_1()
-                                            .p_1()
-                                            .border_1()
-                                            .border_color(cx.theme().colors().border_focused)
-                                            .rounded_sm()
-                                            .child(
-                                                div()
-                                                    .id(dec_title_id.clone())
-                                                    .px_1()
-                                                    .border_1()
-                                                    .border_color(
-                                                        if self.record_decision.active_field
-                                                            == DecisionField::Title
-                                                        {
-                                                            cx.theme().colors().border_focused
-                                                        } else {
-                                                            cx.theme().colors().border
-                                                        },
-                                                    )
-                                                    .rounded_sm()
-                                                    .cursor_text()
-                                                    .on_click(cx.listener(|this, _, _, cx| {
-                                                        this.record_decision.active_field =
-                                                            DecisionField::Title;
-                                                        cx.notify();
-                                                    }))
-                                                    .child(if title_text.is_empty() {
-                                                        Label::new("Decision title…")
-                                                            .size(LabelSize::XSmall)
-                                                            .color(Color::Muted)
-                                                            .into_any_element()
-                                                    } else {
-                                                        Label::new(title_text)
-                                                            .size(LabelSize::XSmall)
-                                                            .into_any_element()
-                                                    }),
-                                            )
-                                            .child(
-                                                div()
-                                                    .id(dec_content_id.clone())
-                                                    .px_1()
-                                                    .min_h(px(40.))
-                                                    .border_1()
-                                                    .border_color(
-                                                        if self.record_decision.active_field
-                                                            == DecisionField::Content
-                                                        {
-                                                            cx.theme().colors().border_focused
-                                                        } else {
-                                                            cx.theme().colors().border
-                                                        },
-                                                    )
-                                                    .rounded_sm()
-                                                    .cursor_text()
-                                                    .on_click(cx.listener(|this, _, _, cx| {
-                                                        this.record_decision.active_field =
-                                                            DecisionField::Content;
-                                                        cx.notify();
-                                                    }))
-                                                    .child(if content_text.is_empty() {
-                                                        Label::new("Rationale (why this decision)…")
-                                                            .size(LabelSize::XSmall)
-                                                            .color(Color::Muted)
-                                                            .into_any_element()
-                                                    } else {
-                                                        Label::new(content_text)
-                                                            .size(LabelSize::XSmall)
-                                                            .into_any_element()
-                                                    }),
-                                            )
-                                            .child(
-                                                h_flex()
-                                                    .gap_1()
-                                                    .child(
-                                                        Button::new(
-                                                            "save-decision",
-                                                            if saving {
-                                                                "Saving…"
-                                                            } else {
-                                                                "Save"
-                                                            },
-                                                        )
-                                                        .style(ButtonStyle::Filled)
-                                                        .label_size(LabelSize::XSmall)
-                                                        .disabled(saving)
-                                                        .on_click(cx.listener(
-                                                            |this, _, _, cx| {
-                                                                this.save_decision(cx);
-                                                            },
-                                                        )),
-                                                    )
-                                                    .child(
-                                                        Button::new(
-                                                            "cancel-decision",
-                                                            "Cancel",
-                                                        )
-                                                        .style(ButtonStyle::Subtle)
-                                                        .label_size(LabelSize::XSmall)
-                                                        .on_click(cx.listener(
-                                                            |this, _, _, cx| {
-                                                                this.active_form =
-                                                                    ActiveForm::None;
-                                                                cx.notify();
-                                                            },
-                                                        )),
-                                                    ),
-                                            ),
-                                    )
-                                }),
-                        )
-                    })
+                                    }),
+                            )
+                        },
+                    )
                     // Handoffs section
                     .child({
                         let show_handoff_form = active_form == ActiveForm::CreateHandoff;
@@ -1097,93 +1109,91 @@ impl Render for ThreadViewItem {
                                                     .style(ButtonStyle::Filled)
                                                     .label_size(LabelSize::XSmall)
                                                     .disabled(saving)
-                                                    .on_click(cx.listener(
-                                                        |this, _, _, cx| {
-                                                            this.save_handoff(cx);
-                                                        },
-                                                    )),
+                                                    .on_click(cx.listener(|this, _, _, cx| {
+                                                        this.save_handoff(cx);
+                                                    })),
                                                 )
                                                 .child(
                                                     Button::new("cancel-handoff", "Cancel")
                                                         .style(ButtonStyle::Subtle)
                                                         .label_size(LabelSize::XSmall)
-                                                        .on_click(cx.listener(
-                                                            |this, _, _, cx| {
-                                                                this.active_form =
-                                                                    ActiveForm::None;
-                                                                cx.notify();
-                                                            },
-                                                        )),
+                                                        .on_click(cx.listener(|this, _, _, cx| {
+                                                            this.active_form = ActiveForm::None;
+                                                            cx.notify();
+                                                        })),
                                                 ),
                                         ),
                                 )
                             })
                     })
                     // Sessions section
-                    .when_some(thread_context.as_ref().map(|c| c.recent_sessions.clone()), |this, sessions| {
-                        this.child(
-                            v_flex()
-                                .gap_0p5()
-                                .child(
-                                    Label::new("SESSIONS")
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Muted),
-                                )
-                                .when(sessions.is_empty(), |this| {
-                                    this.child(
-                                        Label::new("No sessions")
+                    .when_some(
+                        thread_context.as_ref().map(|c| c.recent_sessions.clone()),
+                        |this, sessions| {
+                            this.child(
+                                v_flex()
+                                    .gap_0p5()
+                                    .child(
+                                        Label::new("SESSIONS")
                                             .size(LabelSize::XSmall)
                                             .color(Color::Muted),
                                     )
-                                })
-                                .children(sessions.into_iter().map(|s: AgentSession| {
-                                    let summary = if s.summary.is_empty() {
-                                        "no summary".to_string()
-                                    } else {
-                                        s.summary.clone()
-                                    };
-                                    v_flex()
-                                        .gap_0p5()
-                                        .p_1()
-                                        .rounded_sm()
-                                        .bg(cx.theme().colors().element_background)
-                                        .child(
-                                            h_flex()
-                                                .gap_1()
-                                                .child(
-                                                    Label::new(
-                                                        s.started_at
-                                                            .format("%Y-%m-%d %H:%M")
-                                                            .to_string(),
-                                                    )
-                                                    .size(LabelSize::XSmall)
-                                                    .color(Color::Muted),
-                                                )
-                                                .when(!s.findings.is_empty(), |this| {
-                                                    this.child(
-                                                        Label::new(format!(
-                                                            "{} findings",
-                                                            s.findings.len()
-                                                        ))
-                                                        .size(LabelSize::XSmall)
-                                                        .color(Color::Accent),
-                                                    )
-                                                })
-                                                .when(!s.files_touched.is_empty(), |this| {
-                                                    this.child(
-                                                        Label::new(format!(
-                                                            "{} files",
-                                                            s.files_touched.len()
-                                                        ))
-                                                        .size(LabelSize::XSmall)
-                                                        .color(Color::Accent),
-                                                    )
-                                                }),
+                                    .when(sessions.is_empty(), |this| {
+                                        this.child(
+                                            Label::new("No sessions")
+                                                .size(LabelSize::XSmall)
+                                                .color(Color::Muted),
                                         )
-                                        .child(Label::new(summary).size(LabelSize::XSmall))
-                                })),
-                        )
-                    }),
+                                    })
+                                    .children(sessions.into_iter().map(|s: AgentSession| {
+                                        let summary = if s.summary.is_empty() {
+                                            "no summary".to_string()
+                                        } else {
+                                            s.summary.clone()
+                                        };
+                                        v_flex()
+                                            .gap_0p5()
+                                            .p_1()
+                                            .rounded_sm()
+                                            .bg(cx.theme().colors().element_background)
+                                            .child(
+                                                h_flex()
+                                                    .gap_1()
+                                                    .child(
+                                                        Label::new(
+                                                            s.started_at
+                                                                .format("%Y-%m-%d %H:%M")
+                                                                .to_string(),
+                                                        )
+                                                        .size(LabelSize::XSmall)
+                                                        .color(Color::Muted),
+                                                    )
+                                                    .when(!s.findings.is_empty(), |this| {
+                                                        this.child(
+                                                            Label::new(format!(
+                                                                "{} findings",
+                                                                s.findings.len()
+                                                            ))
+                                                            .size(LabelSize::XSmall)
+                                                            .color(Color::Accent),
+                                                        )
+                                                    })
+                                                    .when(!s.files_touched.is_empty(), |this| {
+                                                        this.child(
+                                                            Label::new(format!(
+                                                                "{} files",
+                                                                s.files_touched.len()
+                                                            ))
+                                                            .size(LabelSize::XSmall)
+                                                            .color(Color::Accent),
+                                                        )
+                                                    }),
+                                            )
+                                            .child(Label::new(summary).size(LabelSize::XSmall))
+                                    })),
+                            )
+                        },
+                    ),
             )
     }
 }
@@ -1207,9 +1217,8 @@ pub fn open_thread_view(
     if let Some(existing) = existing {
         workspace.activate_item(&existing, true, true, window, cx);
     } else {
-        let item = cx.new(|cx: &mut Context<ThreadViewItem>| {
-            ThreadViewItem::new(thread_name, window, cx)
-        });
+        let item =
+            cx.new(|cx: &mut Context<ThreadViewItem>| ThreadViewItem::new(thread_name, window, cx));
         workspace.add_item_to_center(Box::new(item), window, cx);
     }
 }

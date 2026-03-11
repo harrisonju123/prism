@@ -8,7 +8,7 @@
 //! derive impls that belong to the store layer).
 
 pub use uglyhat::model::{
-    Agent, AgentSession, AgentState, AgentStatus, ActivityEntry, CheckinContext, Decision,
+    ActivityEntry, Agent, AgentSession, AgentState, AgentStatus, CheckinContext, Decision,
     DecisionScope, DecisionStatus, GuardrailCheck, Handoff, HandoffConstraints, HandoffMode,
     HandoffStatus, Memory, RecallResult, Snapshot, Thread, ThreadContext, ThreadGuardrails,
     ThreadStatus, Workspace, WorkspaceOverview,

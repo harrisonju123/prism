@@ -119,12 +119,17 @@ impl ToolPermissionGate {
                 self.prompt_or_allow(tool_name, args)
             }
             PermissionMode::Plan => {
-                // In structural plan mode, reads are always allowed — guardrails handle
-                // write restriction at the tool execution layer, not at the prompt layer.
-                if self.plan_file_set && is_read_only(tool_name) {
+                // Reads always allowed in plan mode — the whole point is exploration
+                if is_read_only(tool_name) {
                     return PermissionDecision::Allow;
                 }
-                self.prompt_or_allow(tool_name, args)
+                // With plan file: writes go through prompt+guardrail chain (restricted to plan file)
+                // Without plan file: hard-deny all writes (no prompt, no override)
+                if self.plan_file_set {
+                    self.prompt_or_allow(tool_name, args)
+                } else {
+                    PermissionDecision::Deny
+                }
             }
         }
     }
@@ -325,14 +330,42 @@ mod tests {
     }
 
     #[test]
-    fn plan_mode_denies_all_non_interactive() {
+    fn plan_mode_allows_reads_denies_writes_without_plan_file() {
         let mut gate = ToolPermissionGate::new(PermissionMode::Plan, false);
+        // Reads always allowed in plan mode, even without plan file
         assert_eq!(
             gate.check_permission("read_file", &json!({"path": "foo.rs"})),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            gate.check_permission("glob_files", &json!({"pattern": "*.rs"})),
+            PermissionDecision::Allow
+        );
+        // Writes hard-denied without plan file
+        assert_eq!(
+            gate.check_permission("bash", &json!({"command": "ls"})),
             PermissionDecision::Deny
         );
         assert_eq!(
-            gate.check_permission("bash", &json!({"command": "ls"})),
+            gate.check_permission("write_file", &json!({"path": "foo.rs"})),
+            PermissionDecision::Deny
+        );
+    }
+
+    #[test]
+    fn plan_mode_hard_denies_writes_interactive_no_plan_file() {
+        // Even with interactive=true, writes are hard-denied without plan file
+        let mut gate = ToolPermissionGate::new(PermissionMode::Plan, true);
+        assert_eq!(
+            gate.check_permission("read_file", &json!({"path": "foo.rs"})),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            gate.check_permission("bash", &json!({"command": "rm -rf /"})),
+            PermissionDecision::Deny
+        );
+        assert_eq!(
+            gate.check_permission("write_file", &json!({"path": "foo.rs"})),
             PermissionDecision::Deny
         );
     }
@@ -361,16 +394,6 @@ mod tests {
         assert_eq!(
             gate.check_permission("bash", &json!({"command": "ls"})),
             PermissionDecision::Deny,
-        );
-    }
-
-    #[test]
-    fn structural_plan_mode_off_still_denies_reads_without_tty() {
-        // Baseline: without plan_file_set, plan mode denies reads too
-        let mut gate = ToolPermissionGate::new(PermissionMode::Plan, false);
-        assert_eq!(
-            gate.check_permission("read_file", &json!({"path": "foo.rs"})),
-            PermissionDecision::Deny
         );
     }
 

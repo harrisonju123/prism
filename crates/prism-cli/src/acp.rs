@@ -706,8 +706,8 @@ impl PrismAgent {
                         }
 
                         // Detect external file modifications since last read.
-                        // If the mtime changed, the agent is working from stale content.
-                        let staleness_warning: Option<String> = if matches!(bt, Some(BuiltinTool::EditFile | BuiltinTool::WriteFile)) {
+                        // Stores (path, is_write) so we can decide post-tool whether to warn.
+                        let staleness_info: Option<(String, bool)> = if matches!(bt, Some(BuiltinTool::EditFile | BuiltinTool::WriteFile)) {
                             if let Some(path) = args["path"].as_str() {
                                 let stored = {
                                     let sessions = self.sessions.borrow();
@@ -717,9 +717,7 @@ impl PrismAgent {
                                     if let Ok(meta) = tokio::fs::metadata(path).await {
                                         if let Ok(current_mtime) = meta.modified() {
                                             if current_mtime != stored_mtime {
-                                                Some(format!(
-                                                    "Warning: `{path}` was modified externally since last read. Re-read the file first to avoid editing stale content.\n\n"
-                                                ))
+                                                Some((path.to_owned(), matches!(bt, Some(BuiltinTool::WriteFile))))
                                             } else { None }
                                         } else { None }
                                     } else { None }
@@ -812,9 +810,20 @@ impl PrismAgent {
                             }
                         }
 
-                        // Prepend staleness warning if we detected external modification
-                        let result = if let Some(warning) = staleness_warning {
-                            format!("{warning}{result}")
+                        // Apply staleness warning based on tool outcome:
+                        // - WriteFile: always warn (overwriting stale content is dangerous)
+                        // - EditFile success: suppress — the edit landed fine, no re-read needed
+                        // - EditFile failure + stale: embed fresh content so agent can retry inline
+                        let result = if let Some((stale_path, is_write)) = staleness_info {
+                            if is_write {
+                                format!("Warning: `{stale_path}` was modified externally since last read. Re-read the file first to avoid overwriting changes.\n\n{result}")
+                            } else if result.starts_with("edited ") {
+                                result
+                            } else {
+                                let fresh = tokio::fs::read_to_string(&stale_path).await
+                                    .unwrap_or_else(|e| format!("(could not read file: {e})"));
+                                format!("Warning: `{stale_path}` was modified since your last read. Your edit did not apply. Current file contents:\n\n{fresh}")
+                            }
                         } else {
                             result
                         };

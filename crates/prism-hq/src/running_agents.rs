@@ -11,7 +11,9 @@ pub struct AgentOutput(Arc<Mutex<VecDeque<String>>>);
 
 impl AgentOutput {
     fn new() -> Self {
-        Self(Arc::new(Mutex::new(VecDeque::with_capacity(MAX_OUTPUT_LINES))))
+        Self(Arc::new(Mutex::new(VecDeque::with_capacity(
+            MAX_OUTPUT_LINES,
+        ))))
     }
 
     pub fn push(&self, line: String) {

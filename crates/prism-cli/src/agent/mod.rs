@@ -66,6 +66,7 @@ fn has_decision_signals(text: &str) -> bool {
 
 const DECISION_CHECKPOINT_THRESHOLD_DEFAULT: u32 = 8;
 const QUESTION_CHECKPOINT_INTERVAL_DEFAULT: u32 = 5;
+const NEW_FILE_DESIGN_THRESHOLD_DEFAULT: u32 = 6;
 
 fn decision_checkpoint_threshold() -> u32 {
     std::env::var("PRISM_DECISION_CHECKPOINT_THRESHOLD")
@@ -79,6 +80,13 @@ fn question_checkpoint_interval() -> u32 {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(QUESTION_CHECKPOINT_INTERVAL_DEFAULT)
+}
+
+fn new_file_design_threshold() -> u32 {
+    std::env::var("PRISM_NEW_FILE_DESIGN_THRESHOLD")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(NEW_FILE_DESIGN_THRESHOLD_DEFAULT)
 }
 
 /// Tracks consecutive read-only turns and emits a convergence nudge when the threshold is reached.
@@ -234,6 +242,10 @@ pub struct Agent {
     decision_checkpoint_fired: bool,
     /// Turn number at which the last question checkpoint fired (0 = never).
     last_question_checkpoint_turn: u32,
+    /// Files written via write_file (full overwrite) this session — for repeat-rewrite detection.
+    files_full_written: HashSet<String>,
+    /// New file paths already prompted for design confirmation — prevents the gate from re-firing.
+    new_file_design_prompted: HashSet<String>,
 }
 
 const UH_AGENT_NAME_ENV: &str = "UH_AGENT_NAME";
@@ -280,6 +292,8 @@ impl Agent {
             exploration_count: 0,
             decision_checkpoint_fired: false,
             last_question_checkpoint_turn: 0,
+            files_full_written: HashSet::new(),
+            new_file_design_prompted: HashSet::new(),
         }
     }
 
@@ -320,6 +334,8 @@ impl Agent {
             exploration_count: 0,
             decision_checkpoint_fired: false,
             last_question_checkpoint_turn: 0,
+            files_full_written: HashSet::new(),
+            new_file_design_prompted: HashSet::new(),
         }
     }
 
@@ -821,6 +837,51 @@ If you have questions, ask them now. If you're confident, continue."
                             continue;
                         }
 
+                        // Write discipline guards
+                        if matches!(BuiltinTool::from_str(&name), Some(BuiltinTool::WriteFile)) {
+                            if let Some(path) = args["path"].as_str() {
+                                let normed = normalize_path(path);
+
+                                // Guard A: Repeated full rewrite — redirect to edit_file
+                                if self.files_full_written.contains(&normed) {
+                                    self.permission_gate.renderer().tool_denied(&name);
+                                    outcomes.push(ToolOutcome::Denied {
+                                        index,
+                                        id,
+                                        message: format!(
+                                            "[Write Guard] You already wrote {} this session. \
+                                             Use edit_file to make targeted changes — identify exactly what \
+                                             needs to change and replace just that string.",
+                                            normed
+                                        ),
+                                    });
+                                    continue;
+                                }
+
+                                // Guard B: New file without design confirmation
+                                if self.exploration_count >= new_file_design_threshold()
+                                    && !self.new_file_design_prompted.contains(&normed)
+                                    && !std::path::Path::new(path).exists()
+                                {
+                                    self.new_file_design_prompted.insert(normed.clone());
+                                    self.permission_gate.renderer().tool_denied(&name);
+                                    outcomes.push(ToolOutcome::Denied {
+                                        index,
+                                        id,
+                                        message: format!(
+                                            "[Design Check] Before creating {}, state your intended public interface:\n\
+                                             1. What types/structs does this module export?\n\
+                                             2. What are the key function signatures?\n\
+                                             3. Are there existing utilities to reuse?\n\
+                                             Confirm the interface, then call write_file again.",
+                                            normed
+                                        ),
+                                    });
+                                    continue;
+                                }
+                            }
+                        }
+
                         // Guardrail check: enforce thread-scoped restrictions
                         if let Some(denial) = self.check_guardrails(&name, &args).await {
                             self.permission_gate.renderer().tool_denied(&name);
@@ -1214,13 +1275,18 @@ If you have questions, ask them now. If you're confident, continue."
                                 });
 
                                 // Track files mutated by write/edit tools
+                                let builtin = BuiltinTool::from_str(&name);
                                 if matches!(
-                                    BuiltinTool::from_str(&name),
+                                    builtin,
                                     Some(BuiltinTool::WriteFile | BuiltinTool::EditFile)
                                 ) && let Some(path) = args["path"].as_str()
                                 {
                                     let normed = normalize_path(path);
                                     self.files_touched.insert(normed.clone());
+                                    // Track full writes separately for repeat-rewrite guard
+                                    if matches!(builtin, Some(BuiltinTool::WriteFile)) {
+                                        self.files_full_written.insert(normed.clone());
+                                    }
                                     turn_files.push(normed);
                                 }
 

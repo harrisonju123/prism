@@ -4,11 +4,12 @@ use anyhow::{Context as _, Result};
 use gpui::{App, Global, WeakEntity};
 use uglyhat::model::{
     ActivityEntry, AgentSession, AgentState, AgentStatus, CheckinContext, Decision, DecisionScope,
-    Handoff, HandoffConstraints, HandoffMode, HandoffStatus, Memory, Thread, ThreadContext,
-    ThreadGuardrails, ThreadStatus, WorkspaceOverview,
+    Handoff, HandoffConstraints, HandoffMode, HandoffStatus, InboxEntry, InboxEntryType,
+    InboxSeverity, Memory, Plan, PlanStatus, Thread, ThreadContext, ThreadGuardrails, ThreadStatus,
+    WorkPackage, WorkPackageStatus, WorkspaceOverview,
 };
 use uglyhat::store::sqlite::SqliteStore;
-use uglyhat::store::{ActivityFilters, Store};
+use uglyhat::store::{ActivityFilters, InboxFilters, Store};
 use uuid::Uuid;
 
 /// GPUI Global that holds uglyhat state. Lives on the main thread.
@@ -275,7 +276,55 @@ impl UglyhatHandle {
         agent_name: Option<&str>,
         status: Option<HandoffStatus>,
     ) -> Result<Vec<Handoff>> {
-        self.run(self.store.list_handoffs(self.workspace_id, agent_name, status))
+        self.run(
+            self.store
+                .list_handoffs(self.workspace_id, agent_name, status),
+        )
+    }
+
+    pub fn create_inbox_entry(
+        &self,
+        entry_type: InboxEntryType,
+        title: &str,
+        body: &str,
+        severity: InboxSeverity,
+        source_agent: Option<&str>,
+        ref_type: Option<&str>,
+        ref_id: Option<Uuid>,
+    ) -> Result<InboxEntry> {
+        let title = title.to_string();
+        let body = body.to_string();
+        let source_agent = source_agent.map(|s| s.to_string());
+        let ref_type = ref_type.map(|s| s.to_string());
+        let store = self.store.clone();
+        let wid = self.workspace_id;
+        self.handle.block_on(async move {
+            store
+                .create_inbox_entry(
+                    wid,
+                    entry_type,
+                    &title,
+                    &body,
+                    severity,
+                    source_agent.as_deref(),
+                    ref_type.as_deref(),
+                    ref_id,
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))
+        })
+    }
+
+    pub fn list_inbox_entries(&self, filters: InboxFilters) -> Result<Vec<InboxEntry>> {
+        self.run(self.store.list_inbox_entries(self.workspace_id, filters))
+    }
+
+    pub fn mark_inbox_read(&self, id: Uuid) -> Result<()> {
+        self.run(self.store.mark_inbox_read(self.workspace_id, id))
+    }
+
+    pub fn dismiss_inbox_entry(&self, id: Uuid) -> Result<()> {
+        self.run(self.store.dismiss_inbox_entry(self.workspace_id, id))
     }
 
     pub fn send_message(
@@ -284,7 +333,10 @@ impl UglyhatHandle {
         to_agent: &str,
         content: &str,
     ) -> Result<uglyhat::model::Message> {
-        self.run(self.store.send_message(self.workspace_id, from_agent, to_agent, content))
+        self.run(
+            self.store
+                .send_message(self.workspace_id, from_agent, to_agent, content),
+        )
     }
 
     pub fn list_messages(
@@ -292,7 +344,10 @@ impl UglyhatHandle {
         to_agent: &str,
         unread_only: bool,
     ) -> Result<Vec<uglyhat::model::Message>> {
-        self.run(self.store.list_messages(self.workspace_id, to_agent, unread_only))
+        self.run(
+            self.store
+                .list_messages(self.workspace_id, to_agent, unread_only),
+        )
     }
 
     pub fn mark_messages_read(&self, to_agent: &str) -> Result<()> {
@@ -300,11 +355,119 @@ impl UglyhatHandle {
     }
 
     pub fn count_unread_messages(&self, to_agent: &str) -> Result<i64> {
-        self.run(self.store.count_unread_messages(self.workspace_id, to_agent))
+        self.run(
+            self.store
+                .count_unread_messages(self.workspace_id, to_agent),
+        )
     }
 
     pub fn count_all_unread_messages(&self) -> Result<std::collections::HashMap<String, i64>> {
         self.run(self.store.count_all_unread_messages(self.workspace_id))
+    }
+
+    pub fn create_plan(&self, intent: &str) -> Result<Plan> {
+        let intent = intent.to_string();
+        let store = self.store.clone();
+        let wid = self.workspace_id;
+        self.handle.block_on(async move {
+            store
+                .create_plan(wid, &intent)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))
+        })
+    }
+
+    pub fn get_plan(&self, plan_id: Uuid) -> Result<Plan> {
+        self.run(self.store.get_plan(self.workspace_id, plan_id))
+    }
+
+    pub fn update_plan_status(&self, plan_id: Uuid, status: PlanStatus) -> Result<Plan> {
+        self.run(
+            self.store
+                .update_plan_status(self.workspace_id, plan_id, status),
+        )
+    }
+
+    pub fn list_plans(&self, status: Option<PlanStatus>) -> Result<Vec<Plan>> {
+        self.run(self.store.list_plans(self.workspace_id, status))
+    }
+
+    pub fn create_work_package(
+        &self,
+        plan_id: Option<Uuid>,
+        intent: &str,
+        acceptance_criteria: Vec<String>,
+        ordinal: i32,
+        depends_on: Vec<Uuid>,
+        tags: Vec<String>,
+    ) -> Result<WorkPackage> {
+        let intent = intent.to_string();
+        let store = self.store.clone();
+        let wid = self.workspace_id;
+        self.handle.block_on(async move {
+            store
+                .create_work_package(
+                    wid,
+                    plan_id,
+                    &intent,
+                    acceptance_criteria,
+                    ordinal,
+                    depends_on,
+                    tags,
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))
+        })
+    }
+
+    pub fn get_work_package(&self, wp_id: Uuid) -> Result<WorkPackage> {
+        self.run(self.store.get_work_package(self.workspace_id, wp_id))
+    }
+
+    pub fn update_work_package_status(
+        &self,
+        wp_id: Uuid,
+        status: WorkPackageStatus,
+    ) -> Result<WorkPackage> {
+        self.run(
+            self.store
+                .update_work_package_status(self.workspace_id, wp_id, status),
+        )
+    }
+
+    pub fn assign_work_package(
+        &self,
+        wp_id: Uuid,
+        agent_name: &str,
+        thread_id: Uuid,
+    ) -> Result<WorkPackage> {
+        let agent_name = agent_name.to_string();
+        let store = self.store.clone();
+        let wid = self.workspace_id;
+        self.handle.block_on(async move {
+            store
+                .assign_work_package(wid, wp_id, &agent_name, thread_id)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e}"))
+        })
+    }
+
+    pub fn list_work_packages(
+        &self,
+        plan_id: Option<Uuid>,
+        status: Option<WorkPackageStatus>,
+    ) -> Result<Vec<WorkPackage>> {
+        self.run(
+            self.store
+                .list_work_packages(self.workspace_id, plan_id, status),
+        )
+    }
+
+    pub fn refresh_work_package_readiness(&self, plan_id: Uuid) -> Result<Vec<WorkPackage>> {
+        self.run(
+            self.store
+                .refresh_work_package_readiness(self.workspace_id, plan_id),
+        )
     }
 }
 

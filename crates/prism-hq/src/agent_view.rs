@@ -1,6 +1,6 @@
 use gpui::{
     App, Context, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render,
-    SharedString, Styled, Task, Window, actions,
+    SharedString, Styled, Task, WeakEntity, Window, actions,
 };
 use uglyhat::model::{AgentSession, AgentState, AgentStatus};
 use ui::{
@@ -23,6 +23,7 @@ pub struct AgentViewItem {
     is_loading: bool,
     error: Option<String>,
     refresh_task: Option<Task<()>>,
+    _auto_refresh: Task<()>,
 }
 
 impl AgentViewItem {
@@ -30,6 +31,27 @@ impl AgentViewItem {
         let focus_handle = cx.focus_handle();
         cx.on_focus(&focus_handle, window, |_, _, cx| cx.notify())
             .detach();
+
+        let auto_refresh = cx.spawn(async move |this: WeakEntity<AgentViewItem>, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(5))
+                    .await;
+                // Stop polling once the agent has reached a terminal state.
+                let is_dead = this
+                    .read_with(cx, |item, _| {
+                        matches!(
+                            item.agent_status.as_ref().map(|s| &s.state),
+                            Some(AgentState::Dead)
+                        )
+                    })
+                    .unwrap_or(true);
+                if is_dead {
+                    break;
+                }
+                this.update(cx, |item, cx| item.refresh(cx)).ok();
+            }
+        });
 
         let mut item = AgentViewItem {
             focus_handle,
@@ -39,6 +61,7 @@ impl AgentViewItem {
             is_loading: false,
             error: None,
             refresh_task: None,
+            _auto_refresh: auto_refresh,
         };
         item.refresh(cx);
         item
@@ -61,8 +84,7 @@ impl AgentViewItem {
 
             let result: anyhow::Result<(Option<AgentStatus>, Vec<AgentSession>)> = cx
                 .background_spawn(async move {
-                    let handle =
-                        handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
+                    let handle = handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
                     let agents = handle.list_agents()?;
                     let overview = handle.get_workspace_overview()?;
                     let agent_status = agents.into_iter().find(|a| a.name == agent_name);
@@ -102,8 +124,7 @@ impl AgentViewItem {
 
             let result: anyhow::Result<()> = cx
                 .background_spawn(async move {
-                    let handle =
-                        handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
+                    let handle = handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
                     handle.set_agent_state(&agent_name, state)
                 })
                 .await;
@@ -131,8 +152,7 @@ impl AgentViewItem {
 
             let result: anyhow::Result<()> = cx
                 .background_spawn(async move {
-                    let handle =
-                        handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
+                    let handle = handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
                     handle.set_agent_state(&agent_name, AgentState::Dead)
                 })
                 .await;
@@ -183,18 +203,22 @@ impl Render for AgentViewItem {
         let error = self.error.clone();
         let sessions = self.sessions.clone();
 
-        let (state_label, state_color, current_thread) =
-            if let Some(ref status) = self.agent_status {
-                let color = match status.state {
-                    AgentState::Working => Color::Accent,
-                    AgentState::Idle => Color::Success,
-                    AgentState::Blocked => Color::Warning,
-                    AgentState::Dead => Color::Muted,
-                };
-                (status.state.to_string(), color, status.current_thread.clone())
-            } else {
-                ("unknown".to_string(), Color::Muted, None)
+        let (state_label, state_color, current_thread) = if let Some(ref status) = self.agent_status
+        {
+            let color = match status.state {
+                AgentState::Working => Color::Accent,
+                AgentState::Idle => Color::Success,
+                AgentState::Blocked => Color::Warning,
+                AgentState::Dead => Color::Muted,
             };
+            (
+                status.state.to_string(),
+                color,
+                status.current_thread.clone(),
+            )
+        } else {
+            ("unknown".to_string(), Color::Muted, None)
+        };
 
         v_flex()
             .key_context("AgentView")
@@ -232,9 +256,7 @@ impl Render for AgentViewItem {
                         )
                     })
                     .when_some(error, |this, err| {
-                        this.child(
-                            Label::new(err).size(LabelSize::XSmall).color(Color::Error),
-                        )
+                        this.child(Label::new(err).size(LabelSize::XSmall).color(Color::Error))
                     })
                     .when_some(current_thread, |this, thread| {
                         this.child(
@@ -251,6 +273,13 @@ impl Render for AgentViewItem {
                     .child(
                         h_flex()
                             .gap_1()
+                            .child(
+                                Button::new("refresh", "Refresh")
+                                    .style(ButtonStyle::Subtle)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.refresh(cx);
+                                    })),
+                            )
                             .when(
                                 matches!(
                                     self.agent_status.as_ref().map(|s| &s.state),
@@ -341,12 +370,9 @@ impl Render for AgentViewItem {
                                             })
                                             .when(files_count > 0, |this| {
                                                 this.child(
-                                                    Label::new(format!(
-                                                        "{} files",
-                                                        files_count
-                                                    ))
-                                                    .size(LabelSize::XSmall)
-                                                    .color(Color::Accent),
+                                                    Label::new(format!("{} files", files_count))
+                                                        .size(LabelSize::XSmall)
+                                                        .color(Color::Accent),
                                                 )
                                             }),
                                     )
@@ -359,15 +385,11 @@ impl Render for AgentViewItem {
                         if lines.is_empty() {
                             return this;
                         }
-                        let mut output_view = v_flex()
-                            .w_full()
-                            .px_2()
-                            .gap_0p5()
-                            .child(
-                                Label::new("LIVE OUTPUT")
-                                    .size(LabelSize::XSmall)
-                                    .color(Color::Muted),
-                            );
+                        let mut output_view = v_flex().w_full().px_2().gap_0p5().child(
+                            Label::new("LIVE OUTPUT")
+                                .size(LabelSize::XSmall)
+                                .color(Color::Muted),
+                        );
                         for line in lines.iter().rev().take(20).rev() {
                             output_view = output_view.child(
                                 Label::new(line.clone())

@@ -53,7 +53,8 @@ When given a task, follow this sequence:
    Never ask the user for details you can derive from existing code.
 
 4. **Propose approach** (text output): After targeted search, state what files need to change,
-   the specific approach, and any risks. Then proceed to implementation.
+   the specific approach, and any risks. For new modules, list the public types and function
+   signatures before writing any code. Then proceed to implementation.
 
 If you have made more than 10 exploration calls without a clear proposal, stop and summarize
 what you know and what is blocking you.
@@ -66,6 +67,12 @@ what you know and what is blocking you.
 ## Tool Usage
 
 - Read before editing — understand the file first.
+- **edit_file for existing files, write_file for new files only.** Use write_file only to create
+  a new file. For any change to an existing file — even large structural reworks — use edit_file
+  with targeted old/new strings. Multiple edit_file calls are better than a full rewrite.
+- **Design before implementing new modules.** When creating a new file, state the public
+  types, struct fields, and function signatures in text first. Requirements discovered
+  mid-implementation call for edit_file adjustments, not a full rewrite.
 - Use bash for compiling, testing, and running programs.
 - Use grep_files to find specific code by identifier or pattern. Prefer narrow regex over broad terms.
 - Use read_file with offset+limit for large files — avoid reading thousands of lines you don't need.

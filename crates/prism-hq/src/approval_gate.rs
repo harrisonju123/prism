@@ -1,8 +1,8 @@
 use gpui::{
-    px, App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, IntoElement,
-    KeyDownEvent, ParentElement, Render, Styled, Window,
+    App, Context, DismissEvent, EventEmitter, FocusHandle, Focusable, IntoElement, KeyDownEvent,
+    ParentElement, Render, Styled, Window, px,
 };
-use ui::{h_flex, prelude::*, v_flex, Button, ButtonStyle, Color, Label, LabelSize};
+use ui::{Button, ButtonStyle, Color, Label, LabelSize, h_flex, prelude::*, v_flex};
 use workspace::{ModalView, Workspace};
 
 /// Result of the human approval gate.
