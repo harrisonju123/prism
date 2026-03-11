@@ -69,6 +69,10 @@ pub struct SessionConfig {
     pub sandbox_mode: SandboxMode,
     pub max_session_messages: usize,
     pub max_sessions: usize,
+    /// Shell command to run after each turn that touches code files. None = disabled.
+    pub compile_check_command: Option<String>,
+    /// Timeout in seconds for the compile check command.
+    pub compile_check_timeout: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -215,6 +219,11 @@ impl Config {
                 sandbox_mode,
                 max_session_messages,
                 max_sessions,
+                compile_check_command: std::env::var("PRISM_COMPILE_CHECK").ok(),
+                compile_check_timeout: std::env::var("PRISM_COMPILE_CHECK_TIMEOUT")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(30),
             },
             compression: CompressionConfig {
                 model: compression_model,

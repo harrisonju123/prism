@@ -17,7 +17,7 @@ use uuid::Uuid;
 use background::BackgroundTaskManager;
 
 use crate::common::{
-    self, ToolCallBuilder, accumulate_tool_call_deltas, build_system_prompt,
+    self, ToolCallBuilder, accumulate_tool_call_deltas, additional_dirs_section, build_system_prompt,
     reconstruct_tool_calls, truncate_tool_output,
 };
 use crate::compression::{self, ContextCompressor};
@@ -139,6 +139,8 @@ pub struct Agent {
     files_touched: HashSet<String>,
     /// Cancels the previous run's ctrl-c listener task when a new run starts.
     cancel_interrupt: Arc<AtomicBool>,
+    /// Directories added via `add_dir` — ephemeral, scoped to this session.
+    additional_dirs: Vec<std::path::PathBuf>,
 }
 
 const UH_AGENT_NAME_ENV: &str = "UH_AGENT_NAME";
@@ -180,6 +182,7 @@ impl Agent {
             plan_thread_auto_created: false,
             files_touched: HashSet::new(),
             cancel_interrupt: Arc::new(AtomicBool::new(false)),
+            additional_dirs: Vec::new(),
         }
     }
 
@@ -215,6 +218,7 @@ impl Agent {
             plan_thread_auto_created: false,
             files_touched: HashSet::new(),
             cancel_interrupt: Arc::new(AtomicBool::new(false)),
+            additional_dirs: Vec::new(),
         }
     }
 
@@ -230,10 +234,11 @@ impl Agent {
         let instructions_section = crate::instructions::load_project_instructions(&cwd);
         let git_section = crate::git::gather_git_context(&cwd);
         let skills_section = self.skill_registry.system_prompt_section();
+        let dirs_section = additional_dirs_section(&self.additional_dirs);
         build_system_prompt(
             self.config.model.system_prompt.as_deref(),
             &memory_content,
-            &format!("{instructions_section}{git_section}{skills_section}"),
+            &format!("{instructions_section}{git_section}{dirs_section}{skills_section}"),
             mcp_section,
         )
     }
@@ -762,6 +767,45 @@ impl Agent {
                                     elapsed_ms: t0.elapsed().as_millis(),
                                 });
                             }
+                            Some(BuiltinTool::AddDir) => {
+                                let t0 = std::time::Instant::now();
+                                let path_str = ptc.args["path"].as_str().unwrap_or("").to_string();
+                                let path = std::path::PathBuf::from(&path_str);
+                                let result = if !path.is_absolute() {
+                                    serde_json::json!({"error": "path must be absolute"}).to_string()
+                                } else if !path.is_dir() {
+                                    serde_json::json!({"error": format!("not a directory: {path_str}")}).to_string()
+                                } else {
+                                    if !self.additional_dirs.contains(&path) {
+                                        self.additional_dirs.push(path);
+                                    }
+                                    // Rebuild system prompt so the LLM sees the new dir
+                                    let new_sys = self.build_full_system_prompt().await;
+                                    let active = self.session.active_messages();
+                                    if !active.is_empty() {
+                                        let mut msgs = active;
+                                        msgs[0] = common::system_message(new_sys);
+                                        self.session.set_active_messages(msgs);
+                                    }
+                                    tools::dispatch(
+                                        BuiltinTool::ListDir.as_str(),
+                                        &serde_json::json!({"path": path_str}),
+                                        &self.config,
+                                        None,
+                                        None,
+                                    )
+                                    .await
+                                    .into_text()
+                                };
+                                outcomes.push(ToolOutcome::Result {
+                                    index: ptc.index,
+                                    id: ptc.id,
+                                    name: ptc.name,
+                                    args: ptc.args,
+                                    result,
+                                    elapsed_ms: t0.elapsed().as_millis(),
+                                });
+                            }
                             Some(BuiltinTool::CheckBackgroundTasks) => {
                                 let t0 = std::time::Instant::now();
                                 let completed = self.background.take_pending();
@@ -952,6 +996,8 @@ impl Agent {
                     // --- Phase 3: Sequential assembly — sort, post-hooks, push messages ---
                     outcomes.sort_by_key(|o| o.index());
 
+                    let mut turn_files: Vec<String> = Vec::new();
+
                     for outcome in outcomes {
                         match outcome {
                             ToolOutcome::Denied { id, message, .. } => {
@@ -999,7 +1045,9 @@ impl Agent {
                                 )
                                     && let Some(path) = args["path"].as_str()
                                 {
-                                    self.files_touched.insert(normalize_path(path));
+                                    let normed = normalize_path(path);
+                                    turn_files.push(normed.clone());
+                                    self.files_touched.insert(normed);
                                 }
                             }
                         }
@@ -1009,6 +1057,22 @@ impl Agent {
                     for skill_content in pending_skill_messages {
                         self.session
                             .push_message(common::user_message(skill_content));
+                    }
+
+                    // Post-turn compile validation
+                    if let Some(ref cmd) = self.config.session.compile_check_command {
+                        if let Some(msg) = crate::compile_check::run_compile_check(
+                            &turn_files,
+                            cmd,
+                            self.config.session.compile_check_timeout,
+                            None,
+                        )
+                        .await
+                        {
+                            tracing::info!(compile_check = %msg, "post-turn compile check");
+                            self.permission_gate.renderer().compile_check(&msg);
+                            self.session.push_message(common::user_message(msg));
+                        }
                     }
                 }
             }

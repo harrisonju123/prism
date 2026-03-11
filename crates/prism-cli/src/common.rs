@@ -81,6 +81,22 @@ pub fn user_message(content: String) -> Message {
     }
 }
 
+/// Format additional directories for injection into the system prompt.
+/// Returns empty string when no dirs have been added.
+pub fn additional_dirs_section(dirs: &[std::path::PathBuf]) -> String {
+    if dirs.is_empty() {
+        return String::new();
+    }
+    let list = dirs
+        .iter()
+        .map(|p| format!("- {}", p.display()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "\n\n## Additional Directories\nYou also have access to these directories:\n{list}\nUse absolute paths to read, write, search, and run commands in these directories."
+    )
+}
+
 // --- SSE tool call accumulation ---
 
 pub struct ToolCallBuilder {
@@ -249,6 +265,24 @@ mod tests {
     use super::*;
 
     // --- system prompt tests ---
+
+    #[test]
+    fn additional_dirs_section_empty() {
+        assert_eq!(additional_dirs_section(&[]), "");
+    }
+
+    #[test]
+    fn additional_dirs_section_with_dirs() {
+        let dirs = vec![
+            std::path::PathBuf::from("/home/user/project"),
+            std::path::PathBuf::from("/tmp/scratch"),
+        ];
+        let s = additional_dirs_section(&dirs);
+        assert!(s.contains("## Additional Directories"));
+        assert!(s.contains("/home/user/project"));
+        assert!(s.contains("/tmp/scratch"));
+        assert!(s.contains("absolute paths"));
+    }
 
     #[test]
     fn build_system_prompt_no_memory() {

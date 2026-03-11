@@ -39,7 +39,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use crate::common::{
-    self, ToolCallBuilder, accumulate_tool_call_deltas, build_system_prompt,
+    self, ToolCallBuilder, accumulate_tool_call_deltas, additional_dirs_section, build_system_prompt,
     reconstruct_tool_calls, truncate_tool_output,
 };
 use crate::compression::{self, ContextCompressor};
@@ -88,6 +88,11 @@ struct AcpSession {
     cwd: PathBuf,
     /// When the session was created — used for deterministic LRU eviction
     created_at: Instant,
+    /// Plan mode: when set, only this file may be written; bash/run_command are blocked.
+    /// Activated mid-session via `/plan <file>`, deactivated with `/plan off`.
+    plan_file: Option<String>,
+    /// Directories added via `add_dir` — ephemeral, scoped to this session.
+    additional_dirs: Vec<PathBuf>,
 }
 
 // SAFETY: PrismAgent uses RefCell because the ACP Agent trait is !Send and runs
@@ -157,7 +162,7 @@ impl PrismAgent {
         .await;
     }
 
-    async fn build_system_message(&self, cwd: Option<&Path>) -> Message {
+    async fn build_system_message(&self, cwd: Option<&Path>, additional_dirs: &[PathBuf]) -> Message {
         // Extract what load() needs synchronously so the RefCell borrow is dropped
         // before the first .await (holding a RefCell borrow across an await is UB
         // if anything else borrows memory on the same thread while suspended).
@@ -177,6 +182,7 @@ impl PrismAgent {
                 )
             })
             .unwrap_or_default();
+        let dirs_section = additional_dirs_section(additional_dirs);
 
         let mcp_section = self
             .mcp_registry
@@ -187,7 +193,7 @@ impl PrismAgent {
         let full_system = build_system_prompt(
             self.config.model.system_prompt.as_deref(),
             &memory_content,
-            &format!("{cwd_section}{skills_section}"),
+            &format!("{cwd_section}{dirs_section}{skills_section}"),
             mcp_section,
         );
 
@@ -296,6 +302,8 @@ impl PrismAgent {
                 model: None,
                 cwd: std::env::current_dir().unwrap_or_default(),
                 created_at: Instant::now(),
+                plan_file: None,
+                additional_dirs: Vec::new(),
             });
 
         let tool_call_id = acp::ToolCallId::new("bridge_tc");
@@ -361,13 +369,14 @@ impl PrismAgent {
         for _turn in 0..self.config.model.max_turns {
             // Take messages out of RefCell to avoid clone. We'll put them back after
             // the stream completes. Safe: single-threaded LocalSet, no concurrent access.
-            let (cancelled, mut messages, session_model) = {
+            let (cancelled, mut messages, session_model, plan_file) = {
                 let mut sessions = self.sessions.borrow_mut();
                 match sessions.get_mut(session_id) {
                     Some(s) => (
                         s.cancelled.clone(),
                         std::mem::take(&mut s.messages),
                         s.model.clone(),
+                        s.plan_file.clone(),
                     ),
                     None => return acp::StopReason::EndTurn,
                 }
@@ -502,6 +511,7 @@ impl PrismAgent {
                     return acp::StopReason::EndTurn;
                 }
                 Some(FinishReason::ToolCalls) => {
+                    let mut turn_files: Vec<String> = Vec::new();
                     for tc in tool_calls_vec.unwrap_or_default() {
                         if cancelled.load(Ordering::Acquire) {
                             put_back!(messages);
@@ -611,6 +621,44 @@ impl PrismAgent {
                                 skill_injection = exec.injection;
                                 exec.tool_result
                             }
+                            Some(BuiltinTool::AddDir) => {
+                                let path_str = args["path"].as_str().unwrap_or("").to_string();
+                                let path = PathBuf::from(&path_str);
+                                if !path.is_absolute() {
+                                    json!({"error": "path must be absolute"}).to_string()
+                                } else if !path.is_dir() {
+                                    json!({"error": format!("not a directory: {path_str}")}).to_string()
+                                } else {
+                                    // Add dir (dedup) and snapshot the updated list in one borrow.
+                                    let dirs_snapshot = {
+                                        let mut sessions = self.sessions.borrow_mut();
+                                        if let Some(session) = sessions.get_mut(session_id) {
+                                            if !session.additional_dirs.contains(&path) {
+                                                session.additional_dirs.push(path);
+                                            }
+                                            session.additional_dirs.clone()
+                                        } else {
+                                            Vec::new()
+                                        }
+                                    };
+                                    // Rebuild system message (messages[0] is still in local vec)
+                                    let new_sys = self
+                                        .build_system_message(Some(&session_cwd), &dirs_snapshot)
+                                        .await;
+                                    if !messages.is_empty() {
+                                        messages[0] = new_sys;
+                                    }
+                                    tools::dispatch(
+                                        BuiltinTool::ListDir.as_str(),
+                                        &json!({"path": path_str}),
+                                        &self.config,
+                                        Some(&session_cwd),
+                                        None,
+                                    )
+                                    .await
+                                    .into_text()
+                                }
+                            }
                             _ => {
                                 tools::dispatch(
                                     name,
@@ -651,9 +699,34 @@ impl PrismAgent {
                         )
                         .await;
 
+                        // Track files mutated by write/edit tools (for compile check)
+                        if matches!(
+                            BuiltinTool::from_str(name),
+                            Some(BuiltinTool::WriteFile | BuiltinTool::EditFile)
+                        ) {
+                            if let Some(path) = args["path"].as_str() {
+                                turn_files.push(path.to_string());
+                            }
+                        }
+
                         // Inject skill content as a user message after the tool result
                         if let Some(content) = skill_injection {
                             messages.push(common::user_message(content));
+                        }
+                    }
+
+                    // Post-turn compile validation
+                    if let Some(ref cmd) = self.config.session.compile_check_command {
+                        if let Some(msg) = crate::compile_check::run_compile_check(
+                            &turn_files,
+                            cmd,
+                            self.config.session.compile_check_timeout,
+                            None,
+                        )
+                        .await
+                        {
+                            tracing::info!(compile_check = %msg, "post-turn compile check");
+                            messages.push(common::user_message(msg));
                         }
                     }
                 }
@@ -670,7 +743,7 @@ impl PrismAgent {
 
 fn tool_kind(bt: Option<BuiltinTool>) -> acp::ToolKind {
     match bt {
-        Some(BuiltinTool::ReadFile | BuiltinTool::ListDir) => acp::ToolKind::Read,
+        Some(BuiltinTool::ReadFile | BuiltinTool::ListDir | BuiltinTool::AddDir) => acp::ToolKind::Read,
         Some(BuiltinTool::WriteFile | BuiltinTool::EditFile) => acp::ToolKind::Edit,
         Some(BuiltinTool::GlobFiles | BuiltinTool::GrepFiles) => acp::ToolKind::Search,
         Some(BuiltinTool::Bash | BuiltinTool::RunCommand) => acp::ToolKind::Execute,
@@ -721,6 +794,9 @@ fn tool_title(bt: Option<BuiltinTool>, name: &str, args: &serde_json::Value) -> 
         Some(BuiltinTool::RecordDecision) => {
             format!("Decide: {}", args["title"].as_str().unwrap_or("decision"))
         }
+        Some(BuiltinTool::AddDir) => {
+            format!("Add dir {}", args["path"].as_str().unwrap_or("(unknown)"))
+        }
         None => name.to_string(),
     }
 }
@@ -755,7 +831,7 @@ impl acp::Agent for PrismAgent {
 
         let session_id = Uuid::new_v4().to_string();
         let cwd = args.cwd;
-        let messages = vec![self.build_system_message(Some(&cwd)).await];
+        let messages = vec![self.build_system_message(Some(&cwd), &[]).await];
 
         self.sessions.borrow_mut().insert(
             session_id.clone(),
@@ -766,6 +842,8 @@ impl acp::Agent for PrismAgent {
                 model: None,
                 cwd,
                 created_at: Instant::now(),
+                plan_file: None,
+                additional_dirs: Vec::new(),
             },
         );
 
@@ -787,6 +865,28 @@ impl acp::Agent for PrismAgent {
             })
             .collect::<Vec<_>>()
             .join("\n");
+
+        // Handle /plan slash command — activates or deactivates plan mode without an LLM call.
+        // Usage:  /plan PLAN.md   → only PLAN.md may be written; bash/run_command blocked
+        //         /plan off       → deactivate plan mode
+        if let Some(rest) = user_text.strip_prefix("/plan") {
+            let arg = rest.trim();
+            let response = if arg.is_empty() || arg == "off" {
+                let mut sessions = self.sessions.borrow_mut();
+                if let Some(s) = sessions.get_mut(&session_id) {
+                    s.plan_file = None;
+                }
+                "Plan mode deactivated — all tools available.".to_string()
+            } else {
+                let mut sessions = self.sessions.borrow_mut();
+                if let Some(s) = sessions.get_mut(&session_id) {
+                    s.plan_file = Some(arg.to_string());
+                }
+                format!("Plan mode active. Only `{arg}` may be written; bash and run_command are blocked.")
+            };
+            self.send_text_chunk(&session_id, &response).await;
+            return Ok(acp::PromptResponse::new(acp::StopReason::EndTurn));
+        }
 
         // Reset cancellation flag and push user message
         {
@@ -839,7 +939,7 @@ impl acp::Agent for PrismAgent {
 
         // Rebuild messages: system prompt + saved conversation history
         let cwd = args.cwd;
-        let mut messages = vec![self.build_system_message(Some(&cwd)).await];
+        let mut messages = vec![self.build_system_message(Some(&cwd), &[]).await];
         messages.extend(session.messages);
         compression::trim_messages_fifo(&mut messages, self.config.session.max_session_messages);
 
@@ -852,6 +952,8 @@ impl acp::Agent for PrismAgent {
                 model: Some(session.model),
                 cwd,
                 created_at: Instant::now(),
+                plan_file: None,
+                additional_dirs: Vec::new(),
             },
         );
 

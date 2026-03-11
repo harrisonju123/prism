@@ -36,6 +36,7 @@ pub fn is_read_only(tool_name: &str) -> bool {
                 | BuiltinTool::GlobFiles
                 | BuiltinTool::GrepFiles
                 | BuiltinTool::WebFetch
+                | BuiltinTool::AddDir
         )
     )
 }
@@ -390,6 +391,7 @@ mod tests {
         assert!(is_read_only("glob_files"));
         assert!(is_read_only("grep_files"));
         assert!(is_read_only("web_fetch"));
+        assert!(is_read_only("add_dir"));
         assert!(!is_read_only("bash"));
         assert!(!is_read_only("write_file"));
         assert!(!is_read_only("edit_file"));

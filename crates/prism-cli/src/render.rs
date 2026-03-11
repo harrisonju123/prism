@@ -228,6 +228,19 @@ impl Renderer {
         }
     }
 
+    pub fn compile_check(&self, msg: &str) {
+        let color = if msg.contains("passed") { Color::Green } else { Color::Yellow };
+        if self.colored {
+            eprintln!(
+                "{}[compile]{} {msg}",
+                SetForegroundColor(color),
+                ResetColor,
+            );
+        } else {
+            eprintln!("[compile] {msg}");
+        }
+    }
+
     pub fn interrupt_notice(&self) {
         if self.colored {
             eprintln!(

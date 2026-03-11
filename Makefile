@@ -2,7 +2,7 @@ CARGO := $(HOME)/.cargo/bin/cargo
 export CARGO_TARGET_DIR ?= $(HOME)/.cache/prism-build
 
 .PHONY: build run check test lint dev fmt ci clean \
-        run-prism run-uh run-acp install-uh install-prism-cli \
+        run-prism run-uh run-acp install-uh install-prism-cli dev-all \
         docker-up docker-down docker-build docker-logs docker-deps \
         health models uh-health \
         dev-setup dev dev-min \
@@ -165,6 +165,14 @@ prune-build-cache:
 		echo "  Running cargo-sweep..."; \
 		$(MAKE) --no-print-directory sweep; \
 	fi
+
+# Run Prism in background + Zed in foreground; kills Prism on exit
+dev-all:
+	@echo "Starting Prism in background..."
+	$(CARGO) run -p prism &
+	@PRISM_PID=$$!; \
+	trap "kill $$PRISM_PID 2>/dev/null" EXIT INT TERM; \
+	$(CARGO) run -p zed
 
 # Dogfood: validate env then launch Zed with PrisM embedded gateway
 dogfood: prune-build-cache

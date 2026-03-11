@@ -47,6 +47,7 @@ pub enum BuiltinTool {
     RecordDecision,
     Skill,
     CheckBackgroundTasks,
+    AddDir,
 }
 
 impl BuiltinTool {
@@ -68,6 +69,7 @@ impl BuiltinTool {
             "record_decision" => Some(Self::RecordDecision),
             "skill" => Some(Self::Skill),
             "check_background_tasks" => Some(Self::CheckBackgroundTasks),
+            "add_dir" => Some(Self::AddDir),
             _ => None,
         }
     }
@@ -89,6 +91,7 @@ impl BuiltinTool {
             Self::RecordDecision => "record_decision",
             Self::Skill => "skill",
             Self::CheckBackgroundTasks => "check_background_tasks",
+            Self::AddDir => "add_dir",
         }
     }
 
@@ -109,6 +112,7 @@ impl BuiltinTool {
             Self::RecordDecision,
             Self::Skill,
             Self::CheckBackgroundTasks,
+            Self::AddDir,
         ]
     }
 }
@@ -256,6 +260,13 @@ pub fn tool_definitions() -> Vec<Tool> {
             "Check the status of background tasks. Returns active (still running) and newly completed tasks.",
             json!({ "type": "object", "properties": {} }),
         ),
+        make_tool(
+            "add_dir",
+            "Add a directory to the working context. Returns a listing of the directory contents. Use this when you need to work with files outside the primary working directory.",
+            json!({ "type": "object", "properties": {
+                "path": { "type": "string", "description": "Absolute path to the directory to add" }
+            }, "required": ["path"] }),
+        ),
     ]
 }
 
@@ -343,7 +354,7 @@ fn check_single_command(cmd: &str, denied: &[String]) -> bool {
         if cmd_trimmed.starts_with(d_trimmed) {
             // Require a word boundary after the denied prefix (space, tab, or exact match)
             let rest = &cmd_trimmed[d_trimmed.len()..];
-            if rest.is_empty() || rest.starts_with(' ') || rest.starts_with('\t') {
+            if rest.is_empty() || rest.starts_with(|c: char| c.is_whitespace()) {
                 return true;
             }
         }
@@ -578,7 +589,8 @@ async fn dispatch_inner(name: &str, args: &serde_json::Value, session_cwd: Optio
             | BuiltinTool::Recall
             | BuiltinTool::RecordDecision
             | BuiltinTool::Skill
-            | BuiltinTool::CheckBackgroundTasks,
+            | BuiltinTool::CheckBackgroundTasks
+            | BuiltinTool::AddDir,
         ) => {
             // Intercepted before dispatch() in the agent loop; reaching here means
             // the caller invoked dispatch() directly without agent context.
