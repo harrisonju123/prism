@@ -96,6 +96,9 @@ struct AcpSession {
     /// Auto-approve mode: when true, write tools execute without prompting the user.
     /// Activated via `/auto`, cleared by `/default`.
     auto_approve: bool,
+    /// Canonical path → mtime at last ReadFile/WriteFile/EditFile.
+    /// Used to detect external modifications between read and edit.
+    file_read_mtimes: HashMap<String, std::time::SystemTime>,
 }
 
 fn available_commands() -> Vec<acp::AvailableCommand> {
@@ -361,6 +364,7 @@ impl PrismAgent {
                 plan_file: None,
                 additional_dirs: Vec::new(),
                 auto_approve: false,
+                file_read_mtimes: HashMap::new(),
             });
 
         let tool_call_id = acp::ToolCallId::new("bridge_tc");
@@ -628,11 +632,10 @@ impl PrismAgent {
                         // Enforce plan_file restrictions: block bash/run_command and any write
                         // to a file other than the designated plan file.
                         if let Some(ref pf) = plan_file {
-                            let is_blocked = matches!(
-                                bt,
-                                Some(BuiltinTool::Bash | BuiltinTool::RunCommand)
-                            ) || (!crate::permissions::is_read_only(name)
-                                && args["path"].as_str().unwrap_or("") != pf.as_str());
+                            let is_blocked =
+                                matches!(bt, Some(BuiltinTool::Bash | BuiltinTool::RunCommand))
+                                    || (!crate::permissions::is_read_only(name)
+                                        && args["path"].as_str().unwrap_or("") != pf.as_str());
                             if is_blocked {
                                 let reason = format!(
                                     "Blocked by plan mode — only `{pf}` may be written and bash/run_command are disabled."
@@ -644,7 +647,7 @@ impl PrismAgent {
                                         acp::ToolCallUpdateFields::new()
                                             .status(acp::ToolCallStatus::Failed)
                                             .content(vec![
-                                                acp::ContentBlock::from(reason.as_str()).into()
+                                                acp::ContentBlock::from(reason.as_str()).into(),
                                             ]),
                                     )),
                                 )
@@ -701,6 +704,28 @@ impl PrismAgent {
                                 continue;
                             }
                         }
+
+                        // Detect external file modifications since last read.
+                        // If the mtime changed, the agent is working from stale content.
+                        let staleness_warning: Option<String> = if matches!(bt, Some(BuiltinTool::EditFile | BuiltinTool::WriteFile)) {
+                            if let Some(path) = args["path"].as_str() {
+                                let stored = {
+                                    let sessions = self.sessions.borrow();
+                                    sessions.get(session_id).and_then(|s| s.file_read_mtimes.get(path).copied())
+                                };
+                                if let Some(stored_mtime) = stored {
+                                    if let Ok(meta) = tokio::fs::metadata(path).await {
+                                        if let Ok(current_mtime) = meta.modified() {
+                                            if current_mtime != stored_mtime {
+                                                Some(format!(
+                                                    "Warning: `{path}` was modified externally since last read. Re-read the file first to avoid editing stale content.\n\n"
+                                                ))
+                                            } else { None }
+                                        } else { None }
+                                    } else { None }
+                                } else { None }
+                            } else { None }
+                        } else { None };
 
                         let mut skill_injection: Option<String> = None;
                         let result = match bt {
@@ -772,6 +797,27 @@ impl PrismAgent {
 
                         // Post-tool-use hooks
                         let result = self.hook_runner.run_post_hooks(name, &args, &result).await;
+
+                        // Update stored mtime after read/write/edit so own-writes don't trigger false positives
+                        if matches!(bt, Some(BuiltinTool::ReadFile | BuiltinTool::WriteFile | BuiltinTool::EditFile)) {
+                            if let Some(path) = args["path"].as_str() {
+                                if let Ok(meta) = tokio::fs::metadata(path).await {
+                                    if let Ok(mtime) = meta.modified() {
+                                        let mut sessions = self.sessions.borrow_mut();
+                                        if let Some(session) = sessions.get_mut(session_id) {
+                                            session.file_read_mtimes.insert(path.to_owned(), mtime);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Prepend staleness warning if we detected external modification
+                        let result = if let Some(warning) = staleness_warning {
+                            format!("{warning}{result}")
+                        } else {
+                            result
+                        };
 
                         // Push tool result to local messages vec
                         messages.push(Message {
@@ -945,6 +991,7 @@ impl acp::Agent for PrismAgent {
                 plan_file: None,
                 additional_dirs: Vec::new(),
                 auto_approve: false,
+                file_read_mtimes: HashMap::new(),
             },
         );
 
@@ -1035,7 +1082,9 @@ impl acp::Agent for PrismAgent {
                         .unwrap_or_else(|| self.config.model.model.clone());
                     // messages[0] is always the system prompt, so subtract 1 for user/assistant
                     let exchanges = s.messages.len().saturating_sub(1);
-                    format!("**Mode:** {mode}\n**Model:** {model}\n**Messages in context:** {exchanges}")
+                    format!(
+                        "**Mode:** {mode}\n**Model:** {model}\n**Messages in context:** {exchanges}"
+                    )
                 } else {
                     "Session not found.".to_string()
                 }
@@ -1083,10 +1132,7 @@ impl acp::Agent for PrismAgent {
                 let mut sessions = self.sessions.borrow_mut();
                 if let Some(s) = sessions.get_mut(&session_id) {
                     // Find the last user message (messages[0] is always the system prompt)
-                    let last_user = s
-                        .messages
-                        .iter()
-                        .rposition(|m| m.role == MessageRole::User);
+                    let last_user = s.messages.iter().rposition(|m| m.role == MessageRole::User);
                     match last_user {
                         Some(idx) if idx > 0 => {
                             let before = s.messages.len();
@@ -1200,6 +1246,7 @@ impl acp::Agent for PrismAgent {
                 plan_file: None,
                 additional_dirs: Vec::new(),
                 auto_approve: false,
+                file_read_mtimes: HashMap::new(),
             },
         );
 
