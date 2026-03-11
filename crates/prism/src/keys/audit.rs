@@ -27,6 +27,22 @@ impl AuditEventType {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn variant_strings_match_expected() {
+        assert_eq!(AuditEventType::KeyCreated.as_str(), "key_created");
+        assert_eq!(AuditEventType::KeyUpdated.as_str(), "key_updated");
+        assert_eq!(AuditEventType::KeyRevoked.as_str(), "key_revoked");
+        assert_eq!(AuditEventType::KeyRotated.as_str(), "key_rotated");
+        assert_eq!(AuditEventType::AuthFailure.as_str(), "auth_failure");
+        assert_eq!(AuditEventType::RateLimitHit.as_str(), "rate_limit_hit");
+        assert_eq!(AuditEventType::BudgetExceeded.as_str(), "budget_exceeded");
+    }
+}
+
 #[cfg(feature = "postgres")]
 pub struct AuditService {
     pool: PgPool,

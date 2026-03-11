@@ -319,10 +319,18 @@ impl Default for BudgetAlertsConfig {
     }
 }
 
-fn default_budget_alert_interval_secs() -> u64 { 300 }
-fn default_budget_alert_cooldown_secs() -> u64 { 3600 }
-fn default_budget_warn_threshold_pct() -> f64 { 0.8 }
-fn default_budget_alert_channel() -> String { "log".into() }
+fn default_budget_alert_interval_secs() -> u64 {
+    300
+}
+fn default_budget_alert_cooldown_secs() -> u64 {
+    3600
+}
+fn default_budget_warn_threshold_pct() -> f64 {
+    0.8
+}
+fn default_budget_alert_channel() -> String {
+    "log".into()
+}
 
 fn default_cache_capacity() -> usize {
     10_000

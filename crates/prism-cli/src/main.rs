@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use prism_cli::{agent::Agent, config::Config, session::Session};
+use prism_cli::{agent::Agent, config::Config, persona, session::Session};
 use prism_client::PrismClient;
 
 #[derive(Parser)]
@@ -27,11 +27,18 @@ enum Commands {
         cost_cap: Option<f64>,
         #[arg(long, help = "Custom system prompt (overrides default)")]
         system: Option<String>,
+        #[arg(long, help = "Persona name to load from ~/.prism/personas/<name>.toml")]
+        persona: Option<String>,
         #[arg(
             long,
             help = "Resume a previous session. Omit value for most recent; pass UUID prefix for specific."
         )]
         resume: Option<Option<String>>,
+    },
+    /// List and manage agent personas
+    Personas {
+        #[command(subcommand)]
+        cmd: PersonasCmd,
     },
     /// List available models via the PrisM gateway
     Models,
@@ -53,6 +60,14 @@ enum Commands {
         #[arg(long, help = "Timeout in seconds (default 300)")]
         timeout: Option<u64>,
     },
+}
+
+#[derive(Subcommand)]
+enum PersonasCmd {
+    /// List all available personas
+    List,
+    /// Show details of a specific persona
+    Show { name: String },
 }
 
 #[derive(Subcommand)]
@@ -85,9 +100,20 @@ async fn run(cli: Cli) -> Result<()> {
             max_turns,
             cost_cap,
             system,
+            persona: persona_name,
             resume,
         } => {
             let mut config = Config::from_env()?;
+
+            // Apply persona first (lowest priority), then CLI overrides
+            let effective_persona = persona_name.or_else(|| config.persona.clone());
+            if let Some(ref name) = effective_persona {
+                let p = persona::load_persona(name)
+                    .map_err(|e| anyhow::anyhow!("failed to load persona '{}': {}", name, e))?;
+                eprintln!("[persona] loaded '{}' — {}", p.name, p.description.as_deref().unwrap_or(""));
+                p.apply(&mut config);
+            }
+
             if let Some(m) = model {
                 config.prism_model = m;
             }
@@ -120,6 +146,25 @@ async fn run(cli: Cli) -> Result<()> {
                     task.ok_or_else(|| anyhow::anyhow!("task is required for new sessions"))?;
                 let mut agent = Agent::new(client, config, &task_str);
                 agent.run(&task_str).await?;
+            }
+        }
+        Commands::Personas { cmd } => {
+            match cmd {
+                PersonasCmd::List => {
+                    let personas = persona::list_personas();
+                    if personas.is_empty() {
+                        eprintln!("no personas found. Create ~/.prism/personas/<name>.toml to get started.");
+                    } else {
+                        eprintln!("{:<20} {}", "NAME", "PATH");
+                        for (name, path) in &personas {
+                            eprintln!("{:<20} {}", name, path.display());
+                        }
+                    }
+                }
+                PersonasCmd::Show { name } => {
+                    let p = persona::load_persona(&name)?;
+                    println!("{}", toml::to_string_pretty(&p)?);
+                }
             }
         }
         Commands::Models => {

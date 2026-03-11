@@ -110,7 +110,7 @@ fn render_inspector_id(inspector_id: &InspectorElementId, cx: &App) -> Div {
     // For unknown reasons, for some elements the path is absolute.
     let source_location_string = source_location.to_string();
     let source_location_string = source_location_string
-        .strip_prefix(env!("ZED_REPO_DIR"))
+        .strip_prefix(env!("PRISM_REPO_DIR"))
         .and_then(|s| s.strip_prefix("/"))
         .map(|s| s.to_string())
         .unwrap_or(source_location_string);
@@ -160,7 +160,7 @@ fn render_inspector_id(inspector_id: &InspectorElementId, cx: &App) -> Div {
 async fn open_zed_source_location(
     location: &'static std::panic::Location<'static>,
 ) -> anyhow::Result<()> {
-    let mut path = Path::new(env!("ZED_REPO_DIR")).to_path_buf();
+    let mut path = Path::new(env!("PRISM_REPO_DIR")).to_path_buf();
     path.push(Path::new(location.file()));
     let path_arg = format!(
         "{}:{}:{}",

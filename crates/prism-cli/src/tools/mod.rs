@@ -1,11 +1,32 @@
 mod files;
+pub mod computer;
 mod search;
 mod shell;
 mod web;
 
+use crate::config::{Config, SandboxMode};
 use prism_types::{Tool, ToolFunction};
 use serde_json::json;
 
+/// Result type for tool dispatch — text or multimodal image content.
+pub enum ToolResult {
+    Text(String),
+    Multimodal(serde_json::Value),
+}
+
+impl ToolResult {
+    pub fn into_text(self) -> String {
+        match self {
+            ToolResult::Text(s) => s,
+            ToolResult::Multimodal(v) => v.to_string(),
+        }
+    }
+}
+
+/// Write-capable tool names (blocked in ReadOnly mode).
+const WRITE_TOOLS: &[&str] = &["write_file", "edit_file", "bash", "run_command"];
+
+/// Returns all tool definitions (unfiltered).
 pub fn tool_definitions() -> Vec<Tool> {
     vec![
         make_tool(
@@ -105,21 +126,116 @@ pub fn tool_definitions() -> Vec<Tool> {
     ]
 }
 
-pub async fn dispatch(name: &str, args: &serde_json::Value) -> String {
+/// Filter tool list based on sandbox mode and allow/deny configuration.
+pub fn tool_definitions_filtered(config: &Config) -> Vec<Tool> {
+    tool_definitions()
+        .into_iter()
+        .chain(computer::computer_tool_definitions())
+        .filter(|t| is_tool_allowed(&t.function.name, config))
+        .collect()
+}
+
+/// Check whether a named tool may be called under the current config.
+pub fn is_tool_allowed(name: &str, config: &Config) -> bool {
+    // ReadOnly mode: block write tools
+    if config.sandbox_mode == SandboxMode::ReadOnly && WRITE_TOOLS.contains(&name) {
+        return false;
+    }
+    // Restricted mode: enforce allow/deny lists
+    if config.sandbox_mode == SandboxMode::Restricted {
+        if let Some(allowed) = &config.allowed_tools {
+            if !allowed.iter().any(|a| a == name) {
+                return false;
+            }
+        }
+    }
+    // Deny list always applies
+    if config.denied_tools.iter().any(|d| d == name) {
+        return false;
+    }
+    true
+}
+
+/// Check whether a file path is denied by the config.
+pub fn is_path_denied(path: &str, config: &Config) -> bool {
+    use globset::Glob;
+    let path_norm = shellexpand::tilde(path).into_owned();
+    for pattern in &config.denied_paths {
+        let pat_norm = shellexpand::tilde(pattern).into_owned();
+        if let Ok(glob) = Glob::new(&pat_norm) {
+            let matcher = glob.compile_matcher();
+            if matcher.is_match(&path_norm) || matcher.is_match(path) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Check whether a shell command is denied by the config.
+pub fn is_command_denied(cmd: &str, config: &Config) -> bool {
+    let cmd_trimmed = cmd.trim();
+    for denied in &config.denied_commands {
+        if cmd_trimmed.starts_with(denied.trim()) {
+            return true;
+        }
+    }
+    false
+}
+
+pub async fn dispatch(name: &str, args: &serde_json::Value, config: &Config) -> ToolResult {
+    // Permission check
+    if !is_tool_allowed(name, config) {
+        return ToolResult::Text(format!(
+            "{{\"error\": \"tool '{name}' is not permitted in current sandbox mode\"}}"
+        ));
+    }
+
+    // Path-based permission for file tools
+    if matches!(name, "read_file" | "write_file" | "edit_file") {
+        if let Some(path) = args["path"].as_str() {
+            if is_path_denied(path, config) {
+                return ToolResult::Text(format!(
+                    "{{\"error\": \"access to path '{}' is denied by policy\"}}", path
+                ));
+            }
+        }
+    }
+
+    // Command-based permission for shell tools
+    if matches!(name, "bash" | "run_command") {
+        let cmd = if name == "bash" {
+            args["command"].as_str().unwrap_or("")
+        } else {
+            args["command"].as_str().unwrap_or("")
+        };
+        if is_command_denied(cmd, config) {
+            return ToolResult::Text(format!(
+                "{{\"error\": \"command is denied by policy\"}}"
+            ));
+        }
+    }
+
+    dispatch_inner(name, args).await
+}
+
+async fn dispatch_inner(name: &str, args: &serde_json::Value) -> ToolResult {
     match name {
         "read_file" => {
             let offset = args["offset"].as_u64().map(|n| n as usize);
             let limit = args["limit"].as_u64().map(|n| n as usize);
-            files::read_file(args["path"].as_str().unwrap_or(""), offset, limit).await
+            ToolResult::Text(files::read_file(args["path"].as_str().unwrap_or(""), offset, limit).await)
         }
         "write_file" => {
-            files::write_file(
-                args["path"].as_str().unwrap_or(""),
-                args["content"].as_str().unwrap_or(""),
+            ToolResult::Text(
+                files::write_file(
+                    args["path"].as_str().unwrap_or(""),
+                    args["content"].as_str().unwrap_or(""),
+                )
+                .await,
             )
-            .await
         }
-        "list_dir" => files::list_dir(args["path"].as_str().unwrap_or(".")).await,
+        "list_dir" => ToolResult::Text(files::list_dir(args["path"].as_str().unwrap_or(".")).await),
         "run_command" => {
             let cmd = args["command"].as_str().unwrap_or("");
             let raw_args: Vec<String> = args["args"]
@@ -132,43 +248,64 @@ pub async fn dispatch(name: &str, args: &serde_json::Value) -> String {
                 .unwrap_or_default();
             let timeout = args["timeout_secs"].as_u64().unwrap_or(30).min(120);
             let cwd = args["cwd"].as_str();
-            shell::run_command(cmd, &raw_args, timeout, cwd).await
+            ToolResult::Text(shell::run_command(cmd, &raw_args, timeout, cwd).await)
         }
         "bash" => {
             let cmd = args["command"].as_str().unwrap_or("");
             let timeout = args["timeout_secs"].as_u64().unwrap_or(30).min(120);
             let cwd = args["cwd"].as_str();
-            shell::bash(cmd, timeout, cwd).await
+            ToolResult::Text(shell::bash(cmd, timeout, cwd).await)
         }
         "edit_file" => {
             let path = args["path"].as_str().unwrap_or("");
             let old_string = args["old_string"].as_str().unwrap_or("");
             let new_string = args["new_string"].as_str().unwrap_or("");
-            files::edit_file(path, old_string, new_string).await
+            ToolResult::Text(files::edit_file(path, old_string, new_string).await)
         }
         "glob_files" => {
             let pattern = args["pattern"].as_str().unwrap_or("");
             let dir = args["dir"].as_str().unwrap_or(".");
             let max_results = args["max_results"].as_u64().unwrap_or(100) as usize;
-            search::glob_files(pattern, dir, max_results)
+            ToolResult::Text(search::glob_files(pattern, dir, max_results))
         }
         "grep_files" => {
             let pattern = args["pattern"].as_str().unwrap_or("");
             let dir = args["dir"].as_str().unwrap_or(".");
             let file_glob = args["file_glob"].as_str();
             let max_results = args["max_results"].as_u64().unwrap_or(50) as usize;
-            search::grep_files(pattern, dir, file_glob, max_results)
+            ToolResult::Text(search::grep_files(pattern, dir, file_glob, max_results))
         }
         "web_fetch" => {
             let url = args["url"].as_str().unwrap_or("");
-            web::web_fetch(url).await
+            ToolResult::Text(web::web_fetch(url).await)
+        }
+        "screenshot" => {
+            let region = args.get("region");
+            computer::screenshot(region).await
+        }
+        "click" => {
+            let x = args["x"].as_i64().unwrap_or(0) as i32;
+            let y = args["y"].as_i64().unwrap_or(0) as i32;
+            ToolResult::Text(computer::click(x, y).await)
+        }
+        "type_text" => {
+            let text = args["text"].as_str().unwrap_or("");
+            ToolResult::Text(computer::type_text(text).await)
+        }
+        "key_press" => {
+            let key = args["key"].as_str().unwrap_or("");
+            let modifiers: Vec<String> = args["modifiers"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            ToolResult::Text(computer::key_press(key, &modifiers).await)
         }
         "save_memory" | "spawn_agent" => {
             // Intercepted before dispatch() in the agent loop; reaching here means
             // the caller invoked dispatch() directly without agent context.
-            format!("{{\"error\": \"tool '{name}' requires agent loop context\"}}")
+            ToolResult::Text(format!("{{\"error\": \"tool '{name}' requires agent loop context\"}}"))
         }
-        other => format!("unknown tool: {other}"),
+        other => ToolResult::Text(format!("unknown tool: {other}")),
     }
 }
 

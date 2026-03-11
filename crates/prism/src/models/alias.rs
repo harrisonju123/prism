@@ -167,6 +167,54 @@ impl From<AliasRow> for ModelAlias {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn cache_get_miss() {
+        let c = AliasCache::new();
+        assert_eq!(c.get("nonexistent").await, None);
+    }
+
+    #[tokio::test]
+    async fn cache_set_then_get() {
+        let c = AliasCache::new();
+        c.set("fast".into(), "gpt-4o-mini".into()).await;
+        assert_eq!(c.get("fast").await, Some("gpt-4o-mini".into()));
+    }
+
+    #[tokio::test]
+    async fn cache_remove() {
+        let c = AliasCache::new();
+        c.set("k".into(), "v".into()).await;
+        c.remove("k").await;
+        assert_eq!(c.get("k").await, None);
+    }
+
+    #[tokio::test]
+    async fn cache_load_all_replaces() {
+        let c = AliasCache::new();
+        c.set("old".into(), "old-target".into()).await;
+        c.load_all([
+            ("a".into(), "model-a".into()),
+            ("b".into(), "model-b".into()),
+        ])
+        .await;
+        assert_eq!(c.get("old").await, None);
+        assert_eq!(c.get("a").await, Some("model-a".into()));
+        assert_eq!(c.get("b").await, Some("model-b".into()));
+    }
+
+    #[tokio::test]
+    async fn cache_overwrite() {
+        let c = AliasCache::new();
+        c.set("key".into(), "first".into()).await;
+        c.set("key".into(), "second".into()).await;
+        assert_eq!(c.get("key").await, Some("second".into()));
+    }
+}
+
 /// Stub for non-Postgres builds.
 #[cfg(not(feature = "postgres"))]
 pub struct AliasRepository;

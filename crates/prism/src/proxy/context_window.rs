@@ -20,7 +20,10 @@ fn message_text(msg: &Message) -> String {
 
 /// Estimate total tokens for a message list.
 pub fn estimate_messages_tokens(messages: &[Message]) -> u32 {
-    messages.iter().map(|m| estimate_tokens(&message_text(m))).sum()
+    messages
+        .iter()
+        .map(|m| estimate_tokens(&message_text(m)))
+        .sum()
 }
 
 /// Truncate oldest non-system messages until estimated tokens fit budget.

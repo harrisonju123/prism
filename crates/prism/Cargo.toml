@@ -110,3 +110,4 @@ utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
+wiremock = "0.6"

@@ -211,3 +211,16 @@ response_reserve_tokens = 1000
 
 [logging]
 format = "text"
+
+[routing]
+enabled = true
+
+[[routing.rules]]
+task_type = "code_generation"
+criteria = "cheapest_above_quality"
+min_quality = 0.70
+
+[[routing.rules]]
+task_type = "*"
+criteria = "cheapest_above_quality"
+min_quality = 0.55

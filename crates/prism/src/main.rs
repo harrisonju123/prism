@@ -44,9 +44,9 @@ use crate::keys::audit::AuditService;
 use crate::keys::budget::BudgetTracker;
 use crate::keys::rate_limit::RateLimiter;
 use crate::keys::virtual_key::KeyRepository;
-use crate::models::alias::{AliasCache, AliasRepository};
 use crate::mcp::types::McpCall;
 use crate::mcp::writer::McpWriter;
+use crate::models::alias::{AliasCache, AliasRepository};
 use crate::observability::writer::{BenchmarkWriter, FeedbackWriter, InferenceWriter};
 use crate::providers::ProviderRegistry;
 use crate::types::InferenceEvent;
@@ -80,9 +80,7 @@ async fn main() -> anyhow::Result<()> {
                 .with_env_filter(env_filter)
                 .init();
         } else {
-            tracing_subscriber::fmt()
-                .with_env_filter(env_filter)
-                .init();
+            tracing_subscriber::fmt().with_env_filter(env_filter).init();
         }
     }
 
@@ -93,9 +91,7 @@ async fn main() -> anyhow::Result<()> {
             .with_env_filter(env_filter)
             .init();
     } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(env_filter)
-            .init();
+        tracing_subscriber::fmt().with_env_filter(env_filter).init();
     }
 
     // Initialize start time for health endpoint
@@ -695,7 +691,11 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
-        (Some(audit_svc), Some(alias_repository), Some(alias_cache_instance))
+        (
+            Some(audit_svc),
+            Some(alias_repository),
+            Some(alias_cache_instance),
+        )
     } else {
         (None, None, None)
     };
@@ -726,9 +726,8 @@ async fn main() -> anyhow::Result<()> {
     // Clone what we need before key_service is moved into AppState.
     #[cfg(feature = "postgres")]
     {
-        let rotation_repo: Option<KeyRepository> = key_service
-            .as_deref()
-            .map(|ks| ks.repo().clone());
+        let rotation_repo: Option<KeyRepository> =
+            key_service.as_deref().map(|ks| ks.repo().clone());
         let rotation_audit = audit_service.clone();
         if let (Some(repo), Some(audit)) = (rotation_repo, rotation_audit) {
             let cancel = cancel.clone();

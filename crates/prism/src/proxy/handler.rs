@@ -315,8 +315,7 @@ pub async fn chat_completions(
         if let Some(window) = ctx_window {
             let reserve = state.config.context_management.response_reserve_tokens;
             let budget = window.saturating_sub(reserve);
-            let current =
-                crate::proxy::context_window::estimate_messages_tokens(&request.messages);
+            let current = crate::proxy::context_window::estimate_messages_tokens(&request.messages);
             if current > budget {
                 match state.config.context_management.strategy.as_str() {
                     "error" => {
@@ -1349,10 +1348,9 @@ fn build_rate_limit_headers(ctx: &AuthContext, state: &Arc<AppState>) -> HeaderM
     if let Some(rpm_limit) = ctx.rpm_limit {
         let current = state.rate_limiter.current_rpm(&ctx.key_hash);
         let remaining = (rpm_limit as usize).saturating_sub(current);
-        if let (Ok(limit_val), Ok(rem_val)) = (
-            rpm_limit.to_string().parse(),
-            remaining.to_string().parse(),
-        ) {
+        if let (Ok(limit_val), Ok(rem_val)) =
+            (rpm_limit.to_string().parse(), remaining.to_string().parse())
+        {
             headers.insert("x-ratelimit-limit-requests", limit_val);
             headers.insert("x-ratelimit-remaining-requests", rem_val);
             headers.insert("x-ratelimit-reset-requests", "60".parse().unwrap());
@@ -1361,10 +1359,9 @@ fn build_rate_limit_headers(ctx: &AuthContext, state: &Arc<AppState>) -> HeaderM
     if let Some(tpm_limit) = ctx.tpm_limit {
         let current = state.rate_limiter.current_tpm(&ctx.key_hash);
         let remaining = (tpm_limit as u32).saturating_sub(current);
-        if let (Ok(limit_val), Ok(rem_val)) = (
-            tpm_limit.to_string().parse(),
-            remaining.to_string().parse(),
-        ) {
+        if let (Ok(limit_val), Ok(rem_val)) =
+            (tpm_limit.to_string().parse(), remaining.to_string().parse())
+        {
             headers.insert("x-ratelimit-limit-tokens", limit_val);
             headers.insert("x-ratelimit-remaining-tokens", rem_val);
             headers.insert("x-ratelimit-reset-tokens", "60".parse().unwrap());

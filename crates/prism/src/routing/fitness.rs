@@ -135,7 +135,16 @@ impl FitnessCache {
                 sample_size: 1,
             });
         }
-        data.by_task_type = Self::build_index(&data.entries);
+        // Rebuild only the affected task type's bucket rather than the full cross-product index
+        let bucket: Vec<FitnessEntry> = data
+            .entries
+            .iter()
+            .filter(|e| e.task_type == task_type)
+            .cloned()
+            .collect();
+        let mut sorted = bucket;
+        sorted.sort_by(|a, b| b.avg_quality.total_cmp(&a.avg_quality));
+        data.by_task_type.insert(task_type, sorted);
         data.last_updated = std::time::Instant::now();
     }
 
@@ -149,5 +158,139 @@ impl FitnessCache {
             list.sort_by(|a, b| b.avg_quality.total_cmp(&a.avg_quality));
         }
         map
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn synthetic_entries_populated() {
+        let cache = FitnessCache::new(300);
+        // Each routable task type should have at least one entry
+        for &tt in TaskType::ALL_ROUTABLE {
+            let entries = cache.get_entries_for_task(tt).await;
+            assert!(!entries.is_empty(), "no entry for task type {:?}", tt);
+        }
+    }
+
+    #[tokio::test]
+    async fn entries_sorted_by_quality_desc() {
+        let cache = FitnessCache::new(300);
+        for &tt in TaskType::ALL_ROUTABLE {
+            let list = cache.get_entries_for_task(tt).await;
+            if list.len() < 2 {
+                continue;
+            }
+            for w in list.windows(2) {
+                assert!(
+                    w[0].avg_quality >= w[1].avg_quality,
+                    "task {:?}: {} < {} out of order",
+                    tt,
+                    w[0].avg_quality,
+                    w[1].avg_quality
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn update_replaces_all() {
+        let cache = FitnessCache::new(300);
+        let custom = vec![FitnessEntry {
+            task_type: TaskType::Summarization,
+            model: "custom-model".into(),
+            avg_quality: 0.99,
+            avg_cost_per_1k: 0.001,
+            avg_latency_ms: 100.0,
+            sample_size: 5,
+        }];
+        cache.update(custom).await;
+        // After replacing, only the custom entry should exist for Summarization
+        let entries = cache.get_entries_for_task(TaskType::Summarization).await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].model, "custom-model");
+        // Other task types should have no entries
+        let other = cache.get_entries_for_task(TaskType::CodeGeneration).await;
+        assert!(other.is_empty());
+    }
+
+    #[tokio::test]
+    async fn is_stale_fresh() {
+        let cache = FitnessCache::new(3600);
+        assert!(!cache.is_stale().await);
+    }
+
+    #[tokio::test]
+    async fn mark_stale_forces_true() {
+        let cache = FitnessCache::new(3600);
+        cache.mark_stale();
+        assert!(cache.is_stale().await);
+    }
+
+    #[tokio::test]
+    async fn record_benchmark_existing() {
+        let cache = FitnessCache::new(300);
+        let entries_before = cache.get_entries_for_task(TaskType::CodeGeneration).await;
+        let first = entries_before
+            .into_iter()
+            .next()
+            .expect("should have CodeGeneration entry");
+
+        let old_quality = first.avg_quality;
+        cache
+            .record_benchmark(TaskType::CodeGeneration, &first.model, 1.0, 0.01, 500.0)
+            .await;
+
+        let entries_after = cache.get_entries_for_task(TaskType::CodeGeneration).await;
+        let updated = entries_after
+            .iter()
+            .find(|e| e.model == first.model)
+            .expect("entry should still exist");
+        // Running mean with quality=1.0 (above any synthetic score) → quality must increase
+        assert!(
+            updated.avg_quality > old_quality,
+            "quality should increase after recording benchmark=1.0, was {old_quality}"
+        );
+        assert_eq!(updated.sample_size, first.sample_size + 1);
+    }
+
+    #[tokio::test]
+    async fn record_benchmark_new() {
+        let cache = FitnessCache::new(300);
+        cache
+            .record_benchmark(
+                TaskType::Summarization,
+                "brand-new-model",
+                0.88,
+                0.002,
+                300.0,
+            )
+            .await;
+        let entries = cache.get_entries_for_task(TaskType::Summarization).await;
+        let new_entry = entries
+            .iter()
+            .find(|e| e.model == "brand-new-model")
+            .expect("new entry should be created");
+        assert_eq!(new_entry.sample_size, 1);
+        assert!((new_entry.avg_quality - 0.88).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn record_benchmark_rebuilds_index() {
+        let cache = FitnessCache::new(300);
+        // Insert a perfect-quality entry for a new model
+        cache
+            .record_benchmark(TaskType::Reasoning, "perfect-model", 1.0, 0.0, 1.0)
+            .await;
+        let list = cache.get_entries_for_task(TaskType::Reasoning).await;
+        // Existing synthetic entries should still be present
+        assert!(list.len() > 1, "existing entries should be retained after recording new benchmark");
+        // First entry should be the one with highest quality (perfect-model with q=1.0)
+        assert_eq!(
+            list[0].model, "perfect-model",
+            "perfect-model should sort first"
+        );
     }
 }

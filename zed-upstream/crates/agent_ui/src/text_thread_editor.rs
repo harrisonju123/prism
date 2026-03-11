@@ -3181,7 +3181,7 @@ mod tests {
             (Role::User, "What is the Zed editor?"),
             (
                 Role::Assistant,
-                "Zed is a modern, high-performance code editor designed from the ground up for speed and collaboration.",
+                "Prism is a powerful code editor with built-in LLM gateway integration.",
             ),
             (Role::User, ""),
         ],cx).await;

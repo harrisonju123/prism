@@ -123,7 +123,7 @@ fn main() {
         let telemetry = app_state.client.telemetry();
         telemetry.start(system_id, installation_id, session_id, cx);
 
-        let enable_telemetry = env::var("ZED_EVAL_TELEMETRY").is_ok_and(|value| value == "1")
+        let enable_telemetry = env::var("PRISM_EVAL_TELEMETRY").is_ok_and(|value| value == "1")
             && telemetry.has_checksum_seed();
         if enable_telemetry {
             println!("Telemetry enabled");
@@ -349,11 +349,11 @@ pub struct AgentAppState {
 }
 
 pub fn init(cx: &mut App) -> Arc<AgentAppState> {
-    let app_commit_sha = option_env!("ZED_COMMIT_SHA").map(|s| AppCommitSha::new(s.to_owned()));
+    let app_commit_sha = option_env!("PRISM_COMMIT_SHA").map(|s| AppCommitSha::new(s.to_owned()));
 
     let app_version = AppVersion::load(
-        env!("ZED_PKG_VERSION"),
-        option_env!("ZED_BUILD_ID"),
+        env!("PRISM_PKG_VERSION"),
+        option_env!("PRISM_BUILD_ID"),
         app_commit_sha,
     );
 
@@ -365,7 +365,7 @@ pub fn init(cx: &mut App) -> Arc<AgentAppState> {
 
     // Set User-Agent so we can download language servers from GitHub
     let user_agent = format!(
-        "Zed Agent Eval/{} ({}; {})",
+        "Prism Agent Eval/{} ({}; {})",
         app_version,
         std::env::consts::OS,
         std::env::consts::ARCH

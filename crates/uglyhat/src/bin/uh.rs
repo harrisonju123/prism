@@ -441,7 +441,10 @@ enum GithubCmd {
     Sync {
         #[arg(long, help = "GitHub repo (owner/repo)")]
         repo: Option<String>,
-        #[arg(long, help = "Only sync issues updated since date (YYYY-MM-DD or RFC3339)")]
+        #[arg(
+            long,
+            help = "Only sync issues updated since date (YYYY-MM-DD or RFC3339)"
+        )]
         since: Option<String>,
         #[arg(long, help = "Epic ID to create tasks under")]
         epic: Option<String>,
@@ -498,7 +501,12 @@ async fn run(cli: Cli) -> Result<(), String> {
     }
 }
 
-async fn run_command_local(cmd: Commands, store: &SqliteStore, ws_id: Uuid, cfg: &Config) -> Result<(), String> {
+async fn run_command_local(
+    cmd: Commands,
+    store: &SqliteStore,
+    ws_id: Uuid,
+    cfg: &Config,
+) -> Result<(), String> {
     match cmd {
         Commands::Init { .. } | Commands::Remote(_) => unreachable!(),
         Commands::Context => {
@@ -910,16 +918,19 @@ async fn run_command_local(cmd: Commands, store: &SqliteStore, ws_id: Uuid, cfg:
                     .as_deref()
                     .and_then(|s| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
                 let sprint = store
-                    .create_sprint(ws_id, &name, goal.as_deref().unwrap_or(""), start_date, end_date)
+                    .create_sprint(
+                        ws_id,
+                        &name,
+                        goal.as_deref().unwrap_or(""),
+                        start_date,
+                        end_date,
+                    )
                     .await
                     .map_err(|e| e.to_string())?;
                 print_json(&sprint);
             }
             SprintCmd::List => {
-                let sprints = store
-                    .list_sprints(ws_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let sprints = store.list_sprints(ws_id).await.map_err(|e| e.to_string())?;
                 print_json(&sprints);
             }
             SprintCmd::Close { id } => {
@@ -938,12 +949,13 @@ async fn run_command_local(cmd: Commands, store: &SqliteStore, ws_id: Uuid, cfg:
                     .map_err(|e| e.to_string())?;
                 print_json(&velocity);
             }
-            SprintCmd::Assign {
-                task_id,
-                sprint_id,
-            } => {
-                let tid: Uuid = task_id.parse().map_err(|e| format!("invalid task ID: {e}"))?;
-                let sid: Uuid = sprint_id.parse().map_err(|e| format!("invalid sprint ID: {e}"))?;
+            SprintCmd::Assign { task_id, sprint_id } => {
+                let tid: Uuid = task_id
+                    .parse()
+                    .map_err(|e| format!("invalid task ID: {e}"))?;
+                let sid: Uuid = sprint_id
+                    .parse()
+                    .map_err(|e| format!("invalid sprint ID: {e}"))?;
                 store
                     .assign_task_to_sprint(tid, sid)
                     .await
@@ -1017,7 +1029,9 @@ async fn run_command_local(cmd: Commands, store: &SqliteStore, ws_id: Uuid, cfg:
                     .await
                     .map_err(|e| format!("webhook failed: {e}"))?;
                 if resp.status().is_success() {
-                    print_json(&serde_json::json!({"status": "ok", "code": resp.status().as_u16()}));
+                    print_json(
+                        &serde_json::json!({"status": "ok", "code": resp.status().as_u16()}),
+                    );
                 } else {
                     let code = resp.status().as_u16();
                     return Err(format!("webhook returned status {code}"));

@@ -78,7 +78,9 @@ pub async fn create_alias(
 
     // Update cache
     if let Some(ref cache) = state.alias_cache {
-        cache.set(alias.name.clone(), alias.target_model.clone()).await;
+        cache
+            .set(alias.name.clone(), alias.target_model.clone())
+            .await;
     }
 
     Ok(Json(AliasResponse::from(alias)))
@@ -109,7 +111,9 @@ pub async fn update_alias(
 
     // Update cache
     if let Some(ref cache) = state.alias_cache {
-        cache.set(alias.name.clone(), alias.target_model.clone()).await;
+        cache
+            .set(alias.name.clone(), alias.target_model.clone())
+            .await;
     }
 
     Ok(Json(AliasResponse::from(alias)))
@@ -132,7 +136,9 @@ pub async fn delete_alias(
         .map_err(|e| PrismError::Internal(format!("alias delete failed: {e}")))?;
 
     if !deleted {
-        return Err(PrismError::ModelNotFound(format!("alias '{name}' not found")));
+        return Err(PrismError::ModelNotFound(format!(
+            "alias '{name}' not found"
+        )));
     }
 
     // Remove from cache

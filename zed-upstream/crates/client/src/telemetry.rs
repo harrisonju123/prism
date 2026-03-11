@@ -80,19 +80,19 @@ const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 #[cfg(not(debug_assertions))]
 const FLUSH_INTERVAL: Duration = Duration::from_secs(60 * 5);
 static ZED_CLIENT_CHECKSUM_SEED: LazyLock<Option<Vec<u8>>> = LazyLock::new(|| {
-    option_env!("ZED_CLIENT_CHECKSUM_SEED")
+    option_env!("PRISM_CLIENT_CHECKSUM_SEED")
         .map(|s| s.as_bytes().into())
         .or_else(|| {
-            env::var("ZED_CLIENT_CHECKSUM_SEED")
+            env::var("PRISM_CLIENT_CHECKSUM_SEED")
                 .ok()
                 .map(|s| s.as_bytes().into())
         })
 });
 
 pub static MINIDUMP_ENDPOINT: LazyLock<Option<String>> = LazyLock::new(|| {
-    option_env!("ZED_MINIDUMP_ENDPOINT")
+    option_env!("PRISM_MINIDUMP_ENDPOINT")
         .map(str::to_string)
-        .or_else(|| env::var("ZED_MINIDUMP_ENDPOINT").ok())
+        .or_else(|| env::var("PRISM_MINIDUMP_ENDPOINT").ok())
 });
 
 static DOTNET_PROJECT_FILES_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -597,7 +597,7 @@ impl Telemetry {
             .method(Method::POST)
             .uri(
                 self.http_client
-                    .build_zed_api_url("/telemetry/events", &[])?
+                    .build_prism_api_url("/telemetry/events", &[])?
                     .as_ref(),
             )
             .header("Content-Type", "application/json")

@@ -83,7 +83,7 @@ let
       stdenv' = stdenv;
     in
     rec {
-      pname = "zed-editor";
+      pname = "prism-editor";
       version = zedCargoLock.package.version + "-nightly";
       src = builtins.path {
         path = ../.;
@@ -101,7 +101,7 @@ let
         pkg-config
         protobuf
         # Pin cargo-about to 0.8.2. Newer versions don't work with the current license identifiers
-        # See https://github.com/zed-industries/zed/pull/44012
+        # See https://github.com/harrisonju123/PrisM/pull/44012
         (cargo-about.overrideAttrs (
           new: old: rec {
             version = "0.8.2";
@@ -135,7 +135,7 @@ let
           new: old: {
             version = "0.6.1-zed";
             src = fetchFromGitHub {
-              owner = "zed-industries";
+              owner = "harrisonju123";
               repo = "cargo-bundle";
               rev = "2be2669972dff3ddd4daf89a2cb29d2d06cad7c7";
               hash = "sha256-cSvW0ND148AGdIGWg/ku0yIacVgW+9f1Nsi+kAQxVrI=";
@@ -218,7 +218,7 @@ let
             ../assets/fonts/ibm-plex-sans
           ];
         };
-        ZED_UPDATE_EXPLANATION = "Zed has been installed using Nix. Auto-updates have thus been disabled.";
+        ZED_UPDATE_EXPLANATION = "Prism has been installed using Nix. Auto-updates have thus been disabled.";
         RELEASE_VERSION = version;
         LK_CUSTOM_WEBRTC = pkgs.callPackage ./livekit-libwebrtc/package.nix { };
         PROTOC = "${protobuf}/bin/protoc";
@@ -324,7 +324,7 @@ craneLib.buildPackage (
 
           # Physical location of the CLI must be inside the app bundle as this is used
           # to determine which app to start
-          ln -s "$out/Applications/Zed Nightly.app/Contents/MacOS/cli" $out/bin/zed
+          ln -s "$out/Applications/Prism Nightly.app/Contents/MacOS/cli" $out/bin/zed
 
           runHook postInstall
         ''
@@ -348,7 +348,7 @@ craneLib.buildPackage (
             export DO_STARTUP_NOTIFY="true"
             export APP_CLI="zed"
             export APP_ICON="zed"
-            export APP_NAME="Zed Nightly"
+            export APP_NAME="Prism Nightly"
             export APP_ARGS="%U"
             mkdir -p "$out/share/applications"
             ${lib.getExe envsubst} < "crates/zed/resources/zed.desktop.in" > "$out/share/applications/dev.zed.Zed-Nightly.desktop"
@@ -364,9 +364,9 @@ craneLib.buildPackage (
     '';
 
     meta = {
-      description = "High-performance, multiplayer code editor from the creators of Atom and Tree-sitter";
-      homepage = "https://zed.dev";
-      changelog = "https://zed.dev/releases/preview";
+      description = "High-performance, multiplayer code editor — Prism fork";
+      homepage = "https://github.com/harrisonju123/PrisM";
+      changelog = "https://github.com/harrisonju123/PrisM/releases";
       license = lib.licenses.gpl3Only;
       mainProgram = "zed";
       platforms = lib.platforms.linux ++ lib.platforms.darwin;

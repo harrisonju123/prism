@@ -405,7 +405,7 @@ impl AgentType {
 
     fn label(&self) -> SharedString {
         match self {
-            Self::NativeAgent | Self::TextThread => "Zed Agent".into(),
+            Self::NativeAgent | Self::TextThread => "Prism Agent".into(),
             Self::Custom { name, .. } => name.into(),
         }
     }
@@ -3335,7 +3335,7 @@ impl AgentPanel {
                             }
                         })
                         .item(
-                            ContextMenuEntry::new("Zed Agent")
+                            ContextMenuEntry::new("Prism Agent")
                                 .when(
                                     is_agent_selected(AgentType::NativeAgent)
                                         | is_agent_selected(AgentType::TextThread),

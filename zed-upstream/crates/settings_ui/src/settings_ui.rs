@@ -653,7 +653,7 @@ pub fn open_settings_editor(
         let scaled_bounds: gpui::Size<Pixels> = default_bounds.map(|axis| axis * scale_factor);
 
         let app_id = ReleaseChannel::global(cx).app_id();
-        let window_decorations = match std::env::var("ZED_WINDOW_DECORATIONS") {
+        let window_decorations = match std::env::var("PRISM_WINDOW_DECORATIONS") {
             Ok(val) if val == "server" => gpui::WindowDecorations::Server,
             Ok(val) if val == "client" => gpui::WindowDecorations::Client,
             _ => gpui::WindowDecorations::Client,
@@ -662,7 +662,7 @@ pub fn open_settings_editor(
         cx.open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Zed — Settings".into()),
+                    title: Some("Prism — Settings".into()),
                     appears_transparent: true,
                     traffic_light_position: Some(point(px(12.0), px(12.0))),
                 }),
@@ -1405,7 +1405,7 @@ fn all_language_names(cx: &App) -> Vec<SharedString> {
                 .languages
                 .language_names()
                 .into_iter()
-                .filter(|name| name.as_ref() != "Zed Keybind Context")
+                .filter(|name| name.as_ref() != "Prism Keybind Context")
                 .map(Into::into)
                 .collect()
         })

@@ -1831,7 +1831,7 @@ impl Render for KeymapEditor {
                                                         Some(ContextMenu::build(window, cx, |menu, _, _| {
                                                             menu.header("View Default...")
                                                                 .action(
-                                                                    "Zed Key Bindings",
+                                                                    "Prism Key Bindings",
                                                                     zed_actions::OpenDefaultKeymap
                                                                         .boxed_clone(),
                                                                 )
@@ -3366,7 +3366,7 @@ async fn load_keybind_context_language(
                 .project()
                 .read(cx)
                 .languages()
-                .language_for_name("Zed Keybind Context")
+                .language_for_name("Prism Keybind Context")
         })
         .context("Failed to load Zed Keybind Context language")
         .log_err();
@@ -3380,7 +3380,7 @@ async fn load_keybind_context_language(
     language.unwrap_or_else(|| {
         Arc::new(Language::new(
             LanguageConfig {
-                name: "Zed Keybind Context".into(),
+                name: "Prism Keybind Context".into(),
                 ..Default::default()
             },
             Some(tree_sitter_rust::LANGUAGE.into()),

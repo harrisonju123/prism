@@ -201,7 +201,7 @@ mod tests {
         // And now, the actual replacing
         let replacer = EnvVariableReplacer::new(HashMap::from_iter([(
             "PATH".to_owned(),
-            "ZED_PATH".to_owned(),
+            "PRISM_PATH".to_owned(),
         )]));
         assert_eq!(replacer.replace("Food"), "Food");
         assert_eq!(

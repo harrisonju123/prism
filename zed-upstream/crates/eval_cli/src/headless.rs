@@ -26,11 +26,11 @@ pub struct AgentCliAppState {
 }
 
 pub fn init(cx: &mut App) -> Arc<AgentCliAppState> {
-    let app_commit_sha = option_env!("ZED_COMMIT_SHA").map(|s| AppCommitSha::new(s.to_owned()));
+    let app_commit_sha = option_env!("PRISM_COMMIT_SHA").map(|s| AppCommitSha::new(s.to_owned()));
 
     let app_version = AppVersion::load(
-        env!("ZED_PKG_VERSION"),
-        option_env!("ZED_BUILD_ID"),
+        env!("PRISM_PKG_VERSION"),
+        option_env!("PRISM_BUILD_ID"),
         app_commit_sha,
     );
 
@@ -41,7 +41,7 @@ pub fn init(cx: &mut App) -> Arc<AgentCliAppState> {
     cx.set_global(settings_store);
 
     let user_agent = format!(
-        "Zed Agent CLI/{} ({}; {})",
+        "Prism Agent CLI/{} ({}; {})",
         app_version,
         std::env::consts::OS,
         std::env::consts::ARCH

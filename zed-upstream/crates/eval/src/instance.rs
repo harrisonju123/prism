@@ -284,7 +284,7 @@ impl ExampleInstance {
                 None
             };
 
-            anyhow::ensure!(std::env::var("ZED_EVAL_SETUP_ONLY").is_err(), "Setup only mode");
+            anyhow::ensure!(std::env::var("PRISM_EVAL_SETUP_ONLY").is_err(), "Setup only mode");
 
             let last_diff_file_path = this.run_directory.join("last.diff");
 
@@ -907,7 +907,7 @@ pub fn wait_for_lang_server(
     log_prefix: String,
     cx: &mut AsyncApp,
 ) -> Task<Result<()>> {
-    if std::env::var("ZED_EVAL_SKIP_LS").is_ok() {
+    if std::env::var("PRISM_EVAL_SKIP_LS").is_ok() {
         return Task::ready(Ok(()));
     }
 

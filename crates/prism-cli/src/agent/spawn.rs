@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -20,7 +20,11 @@ pub struct AgentResult {
     pub turns: u32,
 }
 
-pub async fn spawn_agent(config: SpawnConfig, prism_url: &str, api_key: &str) -> Result<AgentResult> {
+pub async fn spawn_agent(
+    config: SpawnConfig,
+    prism_url: &str,
+    api_key: &str,
+) -> Result<AgentResult> {
     let mut cmd = Command::new(std::env::current_exe()?);
     cmd.arg("run")
         .arg(&config.task)
@@ -38,7 +42,9 @@ pub async fn spawn_agent(config: SpawnConfig, prism_url: &str, api_key: &str) ->
 
     let timeout = std::time::Duration::from_secs(config.timeout_secs.unwrap_or(300));
 
-    let mut child = cmd.spawn().map_err(|e| anyhow!("failed to spawn child: {e}"))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| anyhow!("failed to spawn child: {e}"))?;
 
     let stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
     let mut lines = BufReader::new(stdout).lines();

@@ -36,6 +36,20 @@ CREATE TABLE IF NOT EXISTS epics (
 CREATE INDEX IF NOT EXISTS idx_epics_initiative ON epics(initiative_id);
 CREATE INDEX IF NOT EXISTS idx_epics_workspace ON epics(workspace_id);
 
+-- Sprints
+CREATE TABLE IF NOT EXISTS sprints (
+    id            TEXT PRIMARY KEY,
+    workspace_id  TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    name          TEXT NOT NULL,
+    goal          TEXT NOT NULL DEFAULT '',
+    start_date    TEXT,
+    end_date      TEXT,
+    status        TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','closed')),
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sprints_workspace ON sprints(workspace_id);
+
 -- Tasks
 CREATE TABLE IF NOT EXISTS tasks (
     id              TEXT PRIMARY KEY,
@@ -51,6 +65,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     assignee        TEXT NOT NULL DEFAULT '',
     domain_tags     TEXT NOT NULL DEFAULT '[]',
     metadata        TEXT,
+    sprint_id       TEXT REFERENCES sprints(id) ON DELETE SET NULL,
+    github_issue_id TEXT,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );
@@ -61,6 +77,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(workspace_id, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(workspace_id, priority);
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(workspace_id, assignee)
     WHERE assignee != '';
+CREATE INDEX IF NOT EXISTS idx_tasks_sprint ON tasks(sprint_id);
 
 -- Decisions (at least one parent required)
 CREATE TABLE IF NOT EXISTS decisions (

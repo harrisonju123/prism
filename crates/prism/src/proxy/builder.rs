@@ -303,7 +303,10 @@ impl AppStateBuilder {
         self
     }
 
-    pub fn with_health_tracker_opt(mut self, health_tracker: Option<Arc<ProviderHealthTracker>>) -> Self {
+    pub fn with_health_tracker_opt(
+        mut self,
+        health_tracker: Option<Arc<ProviderHealthTracker>>,
+    ) -> Self {
         self.health_tracker = health_tracker;
         self
     }

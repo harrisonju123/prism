@@ -182,7 +182,12 @@ impl InMemoryRateLimiter {
         let cutoff = Instant::now() - Duration::from_secs(WINDOW_SECS);
         self.tpm
             .get(key_hash)
-            .map(|e| e.iter().filter(|(t, _)| *t >= cutoff).map(|(_, c)| *c).sum())
+            .map(|e| {
+                e.iter()
+                    .filter(|(t, _)| *t >= cutoff)
+                    .map(|(_, c)| *c)
+                    .sum()
+            })
             .unwrap_or(0)
     }
 

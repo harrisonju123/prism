@@ -226,7 +226,7 @@ impl FromStr for VariableName {
 }
 
 /// A prefix that all [`VariableName`] variants are prefixed with when used in environment variables and similar template contexts.
-pub const ZED_VARIABLE_NAME_PREFIX: &str = "ZED_";
+pub const ZED_VARIABLE_NAME_PREFIX: &str = "PRISM_";
 const ZED_CUSTOM_VARIABLE_NAME_PREFIX: &str = "CUSTOM_";
 
 impl std::fmt::Display for VariableName {

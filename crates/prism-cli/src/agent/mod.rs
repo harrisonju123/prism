@@ -1,6 +1,7 @@
 pub mod spawn;
 
 use anyhow::{Result, anyhow};
+use dirs;
 use futures::StreamExt;
 use prism_client::PrismClient;
 use prism_types::{ChatCompletionRequest, Message};
@@ -8,9 +9,8 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use uuid::Uuid;
-use dirs;
 
 use crate::config::Config;
 use crate::memory::MemoryManager;
@@ -155,12 +155,20 @@ impl Agent {
     }
 
     async fn inner_run(&mut self) -> Result<()> {
-        // SIGINT handler
-        let interrupted = Arc::new(AtomicBool::new(false));
-        let flag = interrupted.clone();
+        // SIGINT handler — first Ctrl+C finishes current turn, second force-quits
+        let interrupt_count = Arc::new(AtomicU32::new(0));
+        let flag = interrupt_count.clone();
         tokio::spawn(async move {
-            let _ = tokio::signal::ctrl_c().await;
-            flag.store(true, Ordering::SeqCst);
+            loop {
+                let _ = tokio::signal::ctrl_c().await;
+                let prev = flag.fetch_add(1, Ordering::SeqCst);
+                if prev == 0 {
+                    eprintln!("\n\x1b[33m[interrupt] Finishing current turn — press Ctrl+C again to force quit\x1b[0m");
+                } else {
+                    eprintln!("\n\x1b[31m[interrupt] Force quit\x1b[0m");
+                    std::process::exit(130);
+                }
+            }
         });
 
         let mut total_prompt: u32 = 0;
@@ -171,8 +179,7 @@ impl Agent {
         let mut stop_reason: Option<String> = None;
 
         for _turn in 0..self.config.max_turns {
-            if interrupted.load(Ordering::Relaxed) {
-                eprintln!("\n[interrupt] Ctrl+C — stopping");
+            if interrupt_count.load(Ordering::Relaxed) > 0 {
                 stop_reason = Some("interrupt".to_string());
                 break;
             }
@@ -180,7 +187,7 @@ impl Agent {
             let req = ChatCompletionRequest {
                 model: self.config.prism_model.clone(),
                 messages: self.messages.clone(),
-                tools: Some(tools::tool_definitions()),
+                tools: Some(tools::tool_definitions_filtered(&self.config)),
                 tool_choice: Some(json!("auto")),
                 ..Default::default()
             };
@@ -193,14 +200,18 @@ impl Agent {
 
             turns += 1;
 
+            // Per-turn counters for cost display
+            let mut turn_prompt: u32 = 0;
+            let mut turn_completion: u32 = 0;
+            let mut turn_cost: f64 = 0.0;
+
             // Accumulate streaming response
             let mut content_buf = String::new();
             let mut tc_builders: HashMap<usize, ToolCallBuilder> = HashMap::new();
             let mut finish_reason: Option<String> = None;
 
             while let Some(chunk_result) = stream.next().await {
-                if interrupted.load(Ordering::Relaxed) {
-                    eprintln!("\n[interrupt] Ctrl+C — stopping");
+                if interrupt_count.load(Ordering::Relaxed) > 0 {
                     stop_reason = Some("interrupt".to_string());
                     break;
                 }
@@ -266,6 +277,8 @@ impl Agent {
 
                 // Capture usage from final chunk
                 if let Some(u) = &chunk.usage {
+                    turn_prompt = u.prompt_tokens;
+                    turn_completion = u.completion_tokens;
                     total_prompt += u.prompt_tokens;
                     total_completion += u.completion_tokens;
                     model_name = self.config.prism_model.clone();
@@ -280,15 +293,33 @@ impl Agent {
                         m if m.contains("gemini-1.5-flash") => (0.075, 0.3),
                         _ => (0.0, 0.0),
                     };
-                    let turn_cost = (u.prompt_tokens as f64 * in_rate
+                    turn_cost = (u.prompt_tokens as f64 * in_rate
                         + u.completion_tokens as f64 * out_rate)
                         / 1_000_000.0;
                     total_cost_usd += turn_cost;
                 }
             }
 
-            // If interrupted mid-stream, break out of turn loop
+            // Print per-turn cost summary
+            if self.config.show_cost && (turn_prompt > 0 || turn_completion > 0) {
+                eprintln!(
+                    "\x1b[2m[turn {} · {} in / {} out · ~${:.4} · session ${:.4}]\x1b[0m",
+                    turns, turn_prompt, turn_completion, turn_cost, total_cost_usd
+                );
+            }
+
+            // If interrupted mid-stream, save partial content so session is resumable
             if stop_reason.as_deref() == Some("interrupt") {
+                if !content_buf.is_empty() {
+                    self.messages.push(Message {
+                        role: "assistant".into(),
+                        content: Some(json!(content_buf)),
+                        name: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                        extra: Default::default(),
+                    });
+                }
                 break;
             }
 
@@ -379,11 +410,14 @@ impl Agent {
                         eprintln!("[tool] {name}  args={args_preview}");
 
                         let t0 = std::time::Instant::now();
-                        let result = if name == "save_memory" {
+                        // Execute the tool; save_memory and spawn_agent are intercepted here
+                        let (tool_content, byte_len) = if name == "save_memory" {
                             let key = args["key"].as_str().unwrap_or("note").to_string();
                             let value = args["value"].as_str().unwrap_or("").to_string();
                             self.memory.append(key.clone(), value);
-                            serde_json::json!({"saved": true, "key": key}).to_string()
+                            let s = serde_json::json!({"saved": true, "key": key}).to_string();
+                            let len = s.len();
+                            (json!(s), len)
                         } else if name == "spawn_agent" {
                             let task = args["task"].as_str().unwrap_or("").to_string();
                             let model = args["model"].as_str().map(str::to_string);
@@ -396,41 +430,51 @@ impl Agent {
                                 tools: None,
                                 timeout_secs,
                             };
-                            match spawn::spawn_agent(
+                            let s = match spawn::spawn_agent(
                                 spawn_config,
                                 &self.config.prism_url,
                                 &self.config.prism_api_key,
                             )
                             .await
                             {
-                                Ok(r) => serde_json::to_string(&r)
-                                    .unwrap_or_else(|_| r.summary.clone()),
+                                Ok(r) => serde_json::to_string(&r).unwrap_or_else(|_| r.summary.clone()),
                                 Err(e) => format!("{{\"status\":\"error\",\"summary\":\"{e}\"}}"),
-                            }
+                            };
+                            let len = s.len();
+                            (json!(s), len)
                         } else {
-                            tools::dispatch(name, &args).await
+                            match tools::dispatch(name, &args, &self.config).await {
+                                tools::ToolResult::Text(s) => {
+                                    let s = truncate_tool_output(name, &s, self.config.max_tool_output);
+                                    let len = s.len();
+                                    (json!(s), len)
+                                }
+                                tools::ToolResult::Multimodal(v) => {
+                                    let len = v.to_string().len();
+                                    (v, len)
+                                }
+                            }
                         };
-                        let result =
-                            truncate_tool_output(name, &result, self.config.max_tool_output);
                         let elapsed_ms = t0.elapsed().as_millis();
 
                         let result_preview = {
-                            let trimmed = result.trim_start();
+                            let s = tool_content.to_string();
+                            let trimmed = s.trim_start().to_string();
                             if trimmed.len() > 80 {
                                 format!("{}…", &trimmed[..80.min(trimmed.len())])
                             } else {
-                                trimmed.to_string()
+                                trimmed
                             }
                         };
                         eprintln!(
                             "[tool] {name}  {}ms  {} bytes  {result_preview}",
                             elapsed_ms,
-                            result.len()
+                            byte_len
                         );
 
                         self.messages.push(Message {
                             role: "tool".into(),
-                            content: Some(json!(result)),
+                            content: Some(tool_content),
                             name: None,
                             tool_calls: None,
                             tool_call_id: Some(id),
@@ -463,6 +507,12 @@ impl Agent {
             "[session] episode {}",
             self.session.episode_id.to_string()[..8].to_string()
         );
+        if stop_reason.as_deref() == Some("interrupt") {
+            eprintln!(
+                "Resume with: prism run --resume {}",
+                &self.session.episode_id.to_string()[..8]
+            );
+        }
 
         // Final session update
         self.session.messages = self.messages.clone();

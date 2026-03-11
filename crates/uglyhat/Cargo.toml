@@ -33,3 +33,6 @@ path = "src/main.rs"
 [[bin]]
 name = "uh"
 path = "src/bin/uh.rs"
+
+[dev-dependencies]
+wiremock = "0.6"

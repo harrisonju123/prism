@@ -39,13 +39,16 @@ impl ProviderHealthTracker {
     }
 
     pub fn record_success(&self, provider: &str) {
-        let mut entry = self.entries.entry(provider.to_string()).or_insert_with(|| ProviderHealth {
-            provider: provider.to_string(),
-            status: HealthStatus::Unknown,
-            last_check: None,
-            consecutive_failures: 0,
-            error: None,
-        });
+        let mut entry =
+            self.entries
+                .entry(provider.to_string())
+                .or_insert_with(|| ProviderHealth {
+                    provider: provider.to_string(),
+                    status: HealthStatus::Unknown,
+                    last_check: None,
+                    consecutive_failures: 0,
+                    error: None,
+                });
         entry.status = HealthStatus::Healthy;
         entry.consecutive_failures = 0;
         entry.last_check = Some(Utc::now());
@@ -53,13 +56,16 @@ impl ProviderHealthTracker {
     }
 
     pub fn record_failure(&self, provider: &str, error: String) -> HealthStatus {
-        let mut entry = self.entries.entry(provider.to_string()).or_insert_with(|| ProviderHealth {
-            provider: provider.to_string(),
-            status: HealthStatus::Unknown,
-            last_check: None,
-            consecutive_failures: 0,
-            error: None,
-        });
+        let mut entry =
+            self.entries
+                .entry(provider.to_string())
+                .or_insert_with(|| ProviderHealth {
+                    provider: provider.to_string(),
+                    status: HealthStatus::Unknown,
+                    last_check: None,
+                    consecutive_failures: 0,
+                    error: None,
+                });
         entry.consecutive_failures += 1;
         entry.last_check = Some(Utc::now());
         entry.error = Some(error);
@@ -93,6 +99,146 @@ static PROVIDER_HEALTH_URLS: &[(&str, &str)] = &[
     ("azure_openai", "https://management.azure.com"),
 ];
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_tracker_empty_snapshot() {
+        let t = ProviderHealthTracker::new(3);
+        assert!(t.snapshot().is_empty());
+    }
+
+    #[test]
+    fn record_success_sets_healthy() {
+        let t = ProviderHealthTracker::new(3);
+        t.record_success("openai");
+        let snap = t.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].status, HealthStatus::Healthy);
+        assert_eq!(snap[0].consecutive_failures, 0);
+    }
+
+    #[test]
+    fn record_failure_increments() {
+        let t = ProviderHealthTracker::new(3);
+        t.record_failure("openai", "timeout".into());
+        let snap = t.snapshot();
+        assert_eq!(snap[0].consecutive_failures, 1);
+        // 1 failure < threshold=3, should NOT be Degraded yet
+        assert_ne!(snap[0].status, HealthStatus::Degraded);
+    }
+
+    #[test]
+    fn failure_threshold_triggers_degraded() {
+        let t = ProviderHealthTracker::new(3);
+        t.record_failure("openai", "e".into());
+        t.record_failure("openai", "e".into());
+        t.record_failure("openai", "e".into());
+        let snap = t.snapshot();
+        assert_eq!(snap[0].status, HealthStatus::Degraded);
+    }
+
+    #[test]
+    fn is_available_unknown_returns_true() {
+        let t = ProviderHealthTracker::new(3);
+        assert!(t.is_available("anthropic"));
+    }
+
+    #[test]
+    fn is_available_degraded_returns_false() {
+        let t = ProviderHealthTracker::new(1);
+        t.record_failure("groq", "err".into());
+        assert!(!t.is_available("groq"));
+    }
+
+    #[test]
+    fn success_resets_failure_counter() {
+        let t = ProviderHealthTracker::new(5);
+        t.record_failure("mistral", "e".into());
+        t.record_failure("mistral", "e".into());
+        t.record_success("mistral");
+        let snap = t.snapshot();
+        assert_eq!(snap[0].status, HealthStatus::Healthy);
+        assert_eq!(snap[0].consecutive_failures, 0);
+    }
+
+    #[tokio::test]
+    async fn health_check_records_success() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let tracker = ProviderHealthTracker::new(3);
+        let urls = vec![("test-provider".to_string(), mock_server.uri())];
+        let client = reqwest::Client::new();
+
+        check_providers_once(&tracker, &urls, &client).await;
+
+        let snap = tracker.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].status, HealthStatus::Healthy);
+        assert_eq!(snap[0].consecutive_failures, 0);
+    }
+
+    #[tokio::test]
+    async fn health_check_records_failure_on_connection_error() {
+        let tracker = ProviderHealthTracker::new(3);
+        let urls = vec![("dead-provider".to_string(), "http://127.0.0.1:1".to_string())];
+        let client = reqwest::Client::new();
+
+        check_providers_once(&tracker, &urls, &client).await;
+
+        let snap = tracker.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].consecutive_failures, 1);
+        assert!(snap[0].error.is_some());
+    }
+}
+
+pub(crate) async fn check_providers_once(
+    tracker: &ProviderHealthTracker,
+    urls: &[(String, String)],
+    http_client: &reqwest::Client,
+) {
+    for (provider, url) in urls {
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            http_client.head(url.as_str()).send(),
+        )
+        .await;
+        match result {
+            Ok(Ok(_)) => {
+                tracker.record_success(provider);
+                tracing::debug!(provider = provider, "health check ok");
+            }
+            Ok(Err(e)) => {
+                let status = tracker.record_failure(provider, e.to_string());
+                tracing::warn!(
+                    provider = provider,
+                    error = %e,
+                    status = ?status,
+                    "health check failed"
+                );
+            }
+            Err(_) => {
+                let status = tracker.record_failure(provider, "timeout".into());
+                tracing::warn!(
+                    provider = provider,
+                    status = ?status,
+                    "health check timed out"
+                );
+            }
+        }
+    }
+}
+
 pub async fn spawn_health_checker(
     tracker: Arc<ProviderHealthTracker>,
     registry: Arc<ProviderRegistry>,
@@ -111,36 +257,7 @@ pub async fn spawn_health_checker(
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(Duration::from_secs(interval_secs)) => {
-                    for (provider, url) in &urls {
-                        let result = tokio::time::timeout(
-                            Duration::from_secs(10),
-                            http_client.head(url.as_str()).send(),
-                        )
-                        .await;
-                        match result {
-                            Ok(Ok(_)) => {
-                                tracker.record_success(provider);
-                                tracing::debug!(provider = provider, "health check ok");
-                            }
-                            Ok(Err(e)) => {
-                                let status = tracker.record_failure(provider, e.to_string());
-                                tracing::warn!(
-                                    provider = provider,
-                                    error = %e,
-                                    status = ?status,
-                                    "health check failed"
-                                );
-                            }
-                            Err(_) => {
-                                let status = tracker.record_failure(provider, "timeout".into());
-                                tracing::warn!(
-                                    provider = provider,
-                                    status = ?status,
-                                    "health check timed out"
-                                );
-                            }
-                        }
-                    }
+                    check_providers_once(&tracker, &urls, &http_client).await;
                 }
                 _ = cancel.cancelled() => break,
             }

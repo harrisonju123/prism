@@ -287,7 +287,11 @@ pub fn hash_key(plaintext: &str) -> String {
 /// Extract the client IP address from request headers (X-Forwarded-For → X-Real-IP → None).
 pub fn extract_client_ip(parts: &Parts) -> Option<String> {
     // X-Forwarded-For: client, proxy1, proxy2 — take first hop
-    if let Some(xff) = parts.headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+    if let Some(xff) = parts
+        .headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+    {
         if let Some(first) = xff.split(',').next() {
             return Some(first.trim().to_string());
         }

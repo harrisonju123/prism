@@ -38,6 +38,22 @@ async fn create_test_task(store: &SqliteStore, epic_id: Uuid) -> Task {
         .expect("create_task failed")
 }
 
+async fn set_task_status(store: &SqliteStore, task: &Task, status: TaskStatus) {
+    store
+        .update_task_impl(
+            task.id,
+            &task.name,
+            &task.description,
+            status,
+            task.priority.clone(),
+            &task.assignee,
+            task.domain_tags.clone(),
+            None,
+        )
+        .await
+        .expect("update_task failed");
+}
+
 // ---------------------------------------------------------------------------
 // Workspace
 // ---------------------------------------------------------------------------
@@ -1823,4 +1839,290 @@ async fn cascade_task_deletes_deps_and_handoffs() {
     // Handoffs for deleted task return empty
     let handoffs = store.get_handoffs_by_task_impl(t1.id).await.unwrap();
     assert!(handoffs.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Sprint CRUD
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sprint_create_get() {
+    let (store, result) = setup().await;
+    let sprint = store
+        .create_sprint_impl(result.workspace.id, "Sprint 1", "Goal A", None, None)
+        .await
+        .unwrap();
+    assert_eq!(sprint.name, "Sprint 1");
+    assert_eq!(sprint.goal, "Goal A");
+    assert_eq!(sprint.status, "active");
+    let got = store.get_sprint_impl(sprint.id).await.unwrap();
+    assert_eq!(got.id, sprint.id);
+    assert_eq!(got.workspace_id, result.workspace.id);
+}
+
+#[tokio::test]
+async fn sprint_list() {
+    let (store, result) = setup().await;
+    store
+        .create_sprint_impl(result.workspace.id, "Sprint A", "", None, None)
+        .await
+        .unwrap();
+    store
+        .create_sprint_impl(result.workspace.id, "Sprint B", "", None, None)
+        .await
+        .unwrap();
+    let list = store.list_sprints_impl(result.workspace.id).await.unwrap();
+    assert_eq!(list.len(), 2);
+    let names: Vec<&str> = list.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"Sprint A"));
+    assert!(names.contains(&"Sprint B"));
+    // Sprints are workspace-scoped — a different workspace sees none
+    let other_ws = store
+        .create_workspace_impl("Other WS", "", None)
+        .await
+        .unwrap();
+    let other_list = store.list_sprints_impl(other_ws.id).await.unwrap();
+    assert!(other_list.is_empty(), "other workspace should see no sprints");
+}
+
+#[tokio::test]
+async fn sprint_close() {
+    let (store, result) = setup().await;
+    let sprint = store
+        .create_sprint_impl(result.workspace.id, "Close Me", "", None, None)
+        .await
+        .unwrap();
+    assert_eq!(sprint.status, "active");
+    let closed = store.close_sprint_impl(sprint.id).await.unwrap();
+    assert_eq!(closed.status, "closed");
+}
+
+#[tokio::test]
+async fn sprint_not_found() {
+    let (store, _) = setup().await;
+    let err = store
+        .get_sprint_impl(uuid::Uuid::new_v4())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::NotFound(_)));
+}
+
+#[tokio::test]
+async fn assign_task_to_sprint() {
+    let (store, result) = setup().await;
+    let sprint = store
+        .create_sprint_impl(result.workspace.id, "Sprint X", "", None, None)
+        .await
+        .unwrap();
+    let task = create_test_task(&store, result.epic_id).await;
+    store
+        .assign_task_to_sprint_impl(task.id, sprint.id)
+        .await
+        .unwrap();
+    // Verify via velocity: the sprint now has 1 task
+    let vel = store.sprint_velocity_impl(sprint.id).await.unwrap();
+    assert_eq!(vel.total_tasks, 1);
+}
+
+#[tokio::test]
+async fn sprint_velocity_empty() {
+    let (store, result) = setup().await;
+    let sprint = store
+        .create_sprint_impl(result.workspace.id, "Empty Sprint", "", None, None)
+        .await
+        .unwrap();
+    let vel = store.sprint_velocity_impl(sprint.id).await.unwrap();
+    assert_eq!(vel.total_tasks, 0);
+    assert_eq!(vel.done_tasks, 0);
+    assert_eq!(vel.velocity, 0.0);
+}
+
+#[tokio::test]
+async fn sprint_velocity_with_tasks() {
+    let (store, result) = setup().await;
+    let sprint = store
+        .create_sprint_impl(result.workspace.id, "Velocity Sprint", "", None, None)
+        .await
+        .unwrap();
+    let t1 = create_test_task(&store, result.epic_id).await;
+    let t2 = create_test_task(&store, result.epic_id).await;
+    let t3 = create_test_task(&store, result.epic_id).await;
+    for tid in [t1.id, t2.id, t3.id] {
+        store
+            .assign_task_to_sprint_impl(tid, sprint.id)
+            .await
+            .unwrap();
+    }
+    // Mark 2 done
+    set_task_status(&store, &t1, TaskStatus::Done).await;
+    set_task_status(&store, &t2, TaskStatus::Done).await;
+    let vel = store.sprint_velocity_impl(sprint.id).await.unwrap();
+    assert_eq!(vel.total_tasks, 3);
+    assert_eq!(vel.done_tasks, 2);
+    assert_eq!(vel.remaining, 1);
+    assert!((vel.velocity - 2.0 / 3.0).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn sprint_velocity_days_left() {
+    use chrono::NaiveDate;
+    let (store, result) = setup().await;
+    let future_end = NaiveDate::from_ymd_opt(2099, 12, 31).unwrap();
+    let sprint = store
+        .create_sprint_impl(
+            result.workspace.id,
+            "Future Sprint",
+            "",
+            None,
+            Some(future_end),
+        )
+        .await
+        .unwrap();
+    let vel = store.sprint_velocity_impl(sprint.id).await.unwrap();
+    assert!(
+        vel.days_left > 0,
+        "expected positive days_left for future end date"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// GitHub Upsert
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn github_upsert_creates_new_task() {
+    let (store, result) = setup().await;
+    let task = store
+        .upsert_task_by_github_id_impl(
+            result.workspace.id,
+            result.epic_id,
+            42,
+            "Fix bug",
+            "Details here",
+        )
+        .await
+        .unwrap();
+    assert_eq!(task.name, "Fix bug");
+    assert_eq!(task.description, "Details here");
+}
+
+#[tokio::test]
+async fn github_upsert_updates_existing_task() {
+    let (store, result) = setup().await;
+    store
+        .upsert_task_by_github_id_impl(
+            result.workspace.id,
+            result.epic_id,
+            99,
+            "Original title",
+            "Original desc",
+        )
+        .await
+        .unwrap();
+    let updated = store
+        .upsert_task_by_github_id_impl(
+            result.workspace.id,
+            result.epic_id,
+            99,
+            "Updated title",
+            "Updated desc",
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.name, "Updated title");
+    assert_eq!(updated.description, "Updated desc");
+}
+
+#[tokio::test]
+async fn github_upsert_idempotent_id() {
+    let (store, result) = setup().await;
+    let first = store
+        .upsert_task_by_github_id_impl(result.workspace.id, result.epic_id, 7, "Task", "Desc")
+        .await
+        .unwrap();
+    let second = store
+        .upsert_task_by_github_id_impl(
+            result.workspace.id,
+            result.epic_id,
+            7,
+            "Task Updated",
+            "New Desc",
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.id, second.id);
+}
+
+#[tokio::test]
+async fn github_upsert_different_ids_create_separate_tasks() {
+    let (store, result) = setup().await;
+    let t1 = store
+        .upsert_task_by_github_id_impl(result.workspace.id, result.epic_id, 100, "T100", "")
+        .await
+        .unwrap();
+    let t2 = store
+        .upsert_task_by_github_id_impl(result.workspace.id, result.epic_id, 200, "T200", "")
+        .await
+        .unwrap();
+    assert_ne!(t1.id, t2.id);
+    assert_eq!(t1.name, "T100");
+    assert_eq!(t2.name, "T200");
+}
+
+// ---------------------------------------------------------------------------
+// Agent Metrics
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn agent_metrics_empty_workspace() {
+    let (store, result) = setup().await;
+    let metrics = store.agent_metrics_impl(result.workspace.id).await.unwrap();
+    assert!(metrics.is_empty());
+}
+
+#[tokio::test]
+async fn agent_metrics_claim_counts() {
+    let (store, result) = setup().await;
+    let task = create_test_task(&store, result.epic_id).await;
+    store
+        .log_activity_impl(
+            result.workspace.id,
+            "agent-bob",
+            "claim",
+            "task",
+            task.id,
+            "claimed task",
+            None,
+        )
+        .await
+        .unwrap();
+    let metrics = store.agent_metrics_impl(result.workspace.id).await.unwrap();
+    let bob = metrics.iter().find(|m| m.agent == "agent-bob").unwrap();
+    assert_eq!(bob.tasks_claimed, 1);
+}
+
+#[tokio::test]
+async fn agent_metrics_multiple_agents() {
+    let (store, result) = setup().await;
+    let t1 = create_test_task(&store, result.epic_id).await;
+    let t2 = create_test_task(&store, result.epic_id).await;
+    for (agent, task) in [("alice", t1.id), ("bob", t2.id)] {
+        store
+            .log_activity_impl(
+                result.workspace.id,
+                agent,
+                "claim",
+                "task",
+                task,
+                "claim",
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let metrics = store.agent_metrics_impl(result.workspace.id).await.unwrap();
+    assert_eq!(metrics.len(), 2);
+    let agents: Vec<&str> = metrics.iter().map(|m| m.agent.as_str()).collect();
+    assert!(agents.contains(&"alice"));
+    assert!(agents.contains(&"bob"));
 }

@@ -51,7 +51,7 @@ impl InferenceWriter {
         struct VersionRow {
             version: String,
         }
-        let applied: Vec<String> = self
+        let applied: std::collections::HashSet<String> = self
             .client
             .query("SELECT version FROM schema_migrations")
             .fetch_all::<VersionRow>()
@@ -63,7 +63,7 @@ impl InferenceWriter {
 
         // 3. Apply only new migrations
         for (version, ddl) in MIGRATIONS {
-            if applied.contains(&version.to_string()) {
+            if applied.contains(*version) {
                 continue;
             }
             self.client.query(ddl).execute().await?;
@@ -499,6 +499,120 @@ struct ClickHouseEvent {
     ttft_ms: Option<u32>,
     session_id: Option<String>,
     provider_attempted: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{EventStatus, TaskType};
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    fn make_inference_event() -> InferenceEvent {
+        InferenceEvent {
+            id: Uuid::new_v4(),
+            timestamp: Utc::now(),
+            provider: "openai".into(),
+            model: "gpt-4o".into(),
+            status: EventStatus::Success,
+            input_tokens: 100,
+            output_tokens: 50,
+            total_tokens: 150,
+            cache_read_input_tokens: 10,
+            cache_creation_input_tokens: 5,
+            estimated_cost_usd: 0.001,
+            latency_ms: 800,
+            prompt_hash: "abc".into(),
+            completion_hash: "def".into(),
+            task_type: Some(TaskType::CodeGeneration),
+            routing_decision: None,
+            variant_name: None,
+            virtual_key_hash: Some("hash123".into()),
+            team_id: None,
+            end_user_id: None,
+            episode_id: None,
+            metadata: "{}".into(),
+            trace_id: None,
+            span_id: None,
+            parent_span_id: None,
+            agent_framework: None,
+            tool_calls_json: None,
+            ttft_ms: Some(200),
+            session_id: None,
+            provider_attempted: None,
+        }
+    }
+
+    #[test]
+    fn inference_event_from_maps_fields() {
+        let ev = make_inference_event();
+        let row = ClickHouseEvent::from(&ev);
+        assert_eq!(row.id, ev.id);
+        assert_eq!(row.provider, "openai");
+        assert_eq!(row.model, "gpt-4o");
+        assert_eq!(row.status, "success");
+        assert_eq!(row.input_tokens, 100);
+        assert_eq!(row.output_tokens, 50);
+        assert_eq!(row.total_tokens, 150);
+        assert_eq!(row.cache_read_input_tokens, 10);
+        assert_eq!(row.cache_creation_input_tokens, 5);
+        assert_eq!(row.estimated_cost_usd, 0.001);
+        assert_eq!(row.task_type, Some("code_generation".into()));
+        assert_eq!(row.virtual_key_hash, Some("hash123".into()));
+        assert_eq!(row.ttft_ms, Some(200));
+    }
+
+    #[test]
+    fn feedback_event_from_maps_fields() {
+        use crate::experiment::feedback::FeedbackEvent;
+        let id = Uuid::new_v4();
+        let inf_id = Uuid::new_v4();
+        let ev = FeedbackEvent {
+            id,
+            timestamp: Utc::now(),
+            inference_id: Some(inf_id),
+            episode_id: None,
+            metric_name: "quality".into(),
+            metric_value: 0.95,
+            metadata: "{}".into(),
+        };
+        let row = ClickHouseFeedbackEvent::from(&ev);
+        assert_eq!(row.id, id);
+        assert_eq!(row.inference_id, Some(inf_id));
+        assert_eq!(row.metric_name, "quality");
+        assert!((row.metric_value - 0.95).abs() < 1e-9);
+    }
+
+    #[test]
+    fn benchmark_event_from_maps_fields() {
+        use crate::benchmark::BenchmarkEvent;
+        let id = Uuid::new_v4();
+        let inf_id = Uuid::new_v4();
+        let ev = BenchmarkEvent {
+            id,
+            timestamp: Utc::now(),
+            inference_id: inf_id,
+            task_type: Some(TaskType::Reasoning),
+            original_model: "gpt-4o".into(),
+            benchmark_model: "claude-3-opus".into(),
+            judge_model: "gpt-4o-mini".into(),
+            original_score: 0.8,
+            benchmark_score: 0.9,
+            benchmark_cost: 0.005,
+            benchmark_latency_ms: 1200,
+            judge_cost: 0.001,
+            prompt_hash: "phash".into(),
+            status: "complete".into(),
+        };
+        let row = ClickHouseBenchmarkEvent::from(&ev);
+        assert_eq!(row.id, id);
+        assert_eq!(row.inference_id, inf_id);
+        assert_eq!(row.task_type, Some("reasoning".into()));
+        assert_eq!(row.original_model, "gpt-4o");
+        assert_eq!(row.benchmark_model, "claude-3-opus");
+        assert!((row.original_score - 0.8).abs() < 1e-9);
+        assert!((row.benchmark_score - 0.9).abs() < 1e-9);
+    }
 }
 
 impl From<&InferenceEvent> for ClickHouseEvent {

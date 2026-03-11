@@ -21,18 +21,31 @@ pub struct ModelEntry {
     id: String,
     object: &'static str,
     owned_by: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prism_input_cost_per_1m: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prism_output_cost_per_1m: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prism_tier: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prism_context_window: Option<u32>,
 }
 
 /// GET /v1/models — list available models.
 pub async fn list_models(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let mut models: Vec<ModelEntry> = Vec::new();
 
-    // Add configured model aliases
+    // Add configured model aliases; pricing comes from catalog if the underlying model is known
     for (alias, config) in &state.config.models {
+        let pricing = MODEL_CATALOG.get(config.model.as_str());
         models.push(ModelEntry {
             id: alias.clone(),
             object: "model",
             owned_by: config.provider.clone(),
+            prism_input_cost_per_1m: pricing.map(|p| p.input_cost_per_1m),
+            prism_output_cost_per_1m: pricing.map(|p| p.output_cost_per_1m),
+            prism_tier: pricing.map(|p| p.tier),
+            prism_context_window: pricing.map(|p| p.context_window),
         });
     }
 
@@ -55,6 +68,10 @@ pub async fn list_models(State(state): State<Arc<AppState>>) -> impl IntoRespons
                 id: name.to_string(),
                 object: "model",
                 owned_by: info.provider.to_string(),
+                prism_input_cost_per_1m: Some(info.input_cost_per_1m),
+                prism_output_cost_per_1m: Some(info.output_cost_per_1m),
+                prism_tier: Some(info.tier),
+                prism_context_window: Some(info.context_window),
             });
         }
     }

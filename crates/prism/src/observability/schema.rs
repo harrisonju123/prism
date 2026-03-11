@@ -225,3 +225,38 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
     ("009_daily_spend_by_key", DAILY_SPEND_BY_KEY_SCHEMA),
     ("010_hourly_error_rate", HOURLY_ERROR_RATE_SCHEMA),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn migrations_are_ordered_ascending() {
+        let versions: Vec<&str> = MIGRATIONS.iter().map(|(v, _)| *v).collect();
+        for w in versions.windows(2) {
+            assert!(
+                w[0] < w[1],
+                "migrations out of order: '{}' >= '{}'",
+                w[0],
+                w[1]
+            );
+        }
+    }
+
+    #[test]
+    fn migration_ddl_non_empty_and_valid_prefix() {
+        for (version, ddl) in MIGRATIONS {
+            assert!(
+                !ddl.trim().is_empty(),
+                "migration '{}' has empty DDL",
+                version
+            );
+            let upper = ddl.trim().to_uppercase();
+            assert!(
+                upper.starts_with("CREATE") || upper.starts_with("ALTER"),
+                "migration '{}' DDL does not start with CREATE or ALTER",
+                version
+            );
+        }
+    }
+}
