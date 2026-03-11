@@ -577,8 +577,15 @@ pub async fn stream_completion(
     api_key: &str,
     request: Request,
 ) -> Result<BoxStream<'static, Result<ResponseStreamEvent>>, RequestError> {
-    let (_headers, stream) =
-        stream_completion_with_headers(client, provider_name, api_url, api_key, request, Vec::new()).await?;
+    let (_headers, stream) = stream_completion_with_headers(
+        client,
+        provider_name,
+        api_url,
+        api_key,
+        request,
+        Vec::new(),
+    )
+    .await?;
     Ok(stream)
 }
 

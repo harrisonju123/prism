@@ -25,15 +25,17 @@ CREATE INDEX IF NOT EXISTS idx_threads_status ON threads(workspace_id, status);
 
 -- Memories (atomic facts / knowledge units)
 CREATE TABLE IF NOT EXISTS memories (
-    id            TEXT PRIMARY KEY,
-    workspace_id  TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    thread_id     TEXT REFERENCES threads(id) ON DELETE SET NULL,
-    key           TEXT NOT NULL,
-    value         TEXT NOT NULL,
-    source        TEXT NOT NULL DEFAULT '',
-    tags          TEXT NOT NULL DEFAULT '[]',
-    created_at    TEXT NOT NULL,
-    updated_at    TEXT NOT NULL,
+    id               TEXT PRIMARY KEY,
+    workspace_id     TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    thread_id        TEXT REFERENCES threads(id) ON DELETE SET NULL,
+    key              TEXT NOT NULL,
+    value            TEXT NOT NULL,
+    source           TEXT NOT NULL DEFAULT '',
+    tags             TEXT NOT NULL DEFAULT '[]',
+    access_count     INTEGER NOT NULL DEFAULT 0,
+    last_accessed_at TEXT,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
     UNIQUE(workspace_id, key)
 );
 CREATE INDEX IF NOT EXISTS idx_memories_workspace ON memories(workspace_id);

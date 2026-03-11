@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 use uglyhat::store::sqlite::SqliteStore;
@@ -140,4 +141,116 @@ fn discover_uglyhat() -> (Option<std::path::PathBuf>, Option<Uuid>) {
     let db_path = uglyhat::config::resolve_db_path(&config_path, &config);
     let ws_id = config.workspace_id.parse().ok();
     (Some(db_path), ws_id)
+}
+
+/// Keywords indicating error resolution patterns in session content.
+pub const RESOLUTION_KEYWORDS: &[&str] = &["fixed", "resolved", "workaround", "root cause", "solution"];
+
+/// Auto-extract memories from session data on checkout.
+/// Pure heuristics — no LLM involved.
+pub async fn auto_extract_memories(
+    store: &dyn Store,
+    workspace_id: Uuid,
+    agent_name: &str,
+    next_steps: &[String],
+    files_touched: &[String],
+    findings: &[String],
+    thread_name: Option<&str>,
+) -> Vec<String> {
+    let mut saved = Vec::new();
+    let thread_tag = thread_name.unwrap_or("global");
+
+    // 1. Next-steps → memories
+    for step in next_steps {
+        let hash = &format!("{:x}", dedup_hash(step))[..8];
+        let key = format!("next_step:{thread_tag}:{hash}");
+        if store
+            .save_memory(
+                workspace_id,
+                &key,
+                step,
+                None,
+                agent_name,
+                vec!["next_step".to_string(), thread_tag.to_string()],
+            )
+            .await
+            .is_ok()
+        {
+            saved.push(key);
+        }
+    }
+
+    // 2. File co-modification patterns
+    if files_touched.len() >= 3 {
+        let dirs: HashSet<String> = files_touched
+            .iter()
+            .filter_map(|f| {
+                let parts: Vec<&str> = f.rsplitn(2, '/').collect();
+                if parts.len() == 2 {
+                    Some(parts[1].to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if dirs.len() >= 3 {
+            let mut sorted_dirs: Vec<&str> = dirs.iter().map(|s| s.as_str()).collect();
+            sorted_dirs.sort();
+            let hash = &format!("{:x}", dedup_hash(&sorted_dirs.join(",")))[..8];
+            let key = format!("file_pattern:{hash}");
+            let value = format!(
+                "Files spanning {} directories modified together: {}",
+                dirs.len(),
+                files_touched.join(", ")
+            );
+            if store
+                .save_memory(
+                    workspace_id,
+                    &key,
+                    &value,
+                    None,
+                    agent_name,
+                    vec!["file_pattern".to_string()],
+                )
+                .await
+                .is_ok()
+            {
+                saved.push(key);
+            }
+        }
+    }
+
+    // 3. Error resolution patterns
+    let resolution_keywords = RESOLUTION_KEYWORDS;
+    for finding in findings {
+        let lower = finding.to_lowercase();
+        if resolution_keywords.iter().any(|kw| lower.contains(kw)) {
+            let hash = &format!("{:x}", dedup_hash(finding))[..8];
+            let key = format!("resolution:{hash}");
+            if store
+                .save_memory(
+                    workspace_id,
+                    &key,
+                    finding,
+                    None,
+                    agent_name,
+                    vec!["resolution".to_string(), thread_tag.to_string()],
+                )
+                .await
+                .is_ok()
+            {
+                saved.push(key);
+            }
+        }
+    }
+
+    saved
+}
+
+/// Simple hash for dedup keys (SipHash via DefaultHasher, not cryptographic).
+fn dedup_hash(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut hasher);
+    hasher.finish()
 }

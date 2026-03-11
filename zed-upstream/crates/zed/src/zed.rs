@@ -368,19 +368,15 @@ pub struct PrismRoutingIndicator {
 
 impl PrismRoutingIndicator {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let subscription =
-            language_models::provider::prism::prism_state_entity(cx)
-                .map(|state| cx.observe(&state, |_, _, cx| cx.notify()));
+        let subscription = language_models::provider::prism::prism_state_entity(cx)
+            .map(|state| cx.observe(&state, |_, _, cx| cx.notify()));
 
         let poll_task = cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_secs(2))
-                    .await;
+                cx.background_executor().timer(Duration::from_secs(2)).await;
                 let should_notify = this
                     .update(cx, |indicator, cx| {
-                        let history =
-                            language_models::provider::prism::prism_routing_history(cx);
+                        let history = language_models::provider::prism::prism_routing_history(cx);
                         let current = history.first().map(|t| t.info.clone());
                         if current == indicator.cached_info {
                             return false;
@@ -430,7 +426,9 @@ fn format_elapsed(instant: std::time::Instant) -> String {
     }
 }
 
-fn muted_info_row(text: String) -> impl Fn(&mut gpui::Window, &mut gpui::App) -> gpui::AnyElement + 'static {
+fn muted_info_row(
+    text: String,
+) -> impl Fn(&mut gpui::Window, &mut gpui::App) -> gpui::AnyElement + 'static {
     move |_, _| {
         ui::Label::new(text.clone())
             .size(ui::LabelSize::Small)
@@ -440,7 +438,11 @@ fn muted_info_row(text: String) -> impl Fn(&mut gpui::Window, &mut gpui::App) ->
 }
 
 impl Render for PrismRoutingIndicator {
-    fn render(&mut self, _window: &mut gpui::Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(
+        &mut self,
+        _window: &mut gpui::Window,
+        _cx: &mut Context<Self>,
+    ) -> impl gpui::IntoElement {
         let Some(ref info) = self.cached_info else {
             return gpui::div();
         };
@@ -457,7 +459,11 @@ impl Render for PrismRoutingIndicator {
             ui::Color::Muted
         };
 
-        let requested = info.requested_model.as_deref().unwrap_or("unknown").to_string();
+        let requested = info
+            .requested_model
+            .as_deref()
+            .unwrap_or("unknown")
+            .to_string();
         let routed = format!("{} / {}", info.routed_provider, info.routed_model);
         let reason = if info.routing_reason.is_empty() {
             "none".to_string()
@@ -493,25 +499,27 @@ impl Render for PrismRoutingIndicator {
                             }
                         }
 
-                        menu.separator()
-                            .custom_entry(
-                                |_, _| {
-                                    ui::Label::new("Open PrisM Dashboard")
-                                        .size(ui::LabelSize::Small)
-                                        .into_any_element()
-                                },
-                                |window, cx| {
-                                    window.dispatch_action(
-                                        prism_dashboard::ToggleFocus.boxed_clone(),
-                                        cx,
-                                    );
-                                },
-                            )
+                        menu.separator().custom_entry(
+                            |_, _| {
+                                ui::Label::new("Open PrisM Dashboard")
+                                    .size(ui::LabelSize::Small)
+                                    .into_any_element()
+                            },
+                            |window, cx| {
+                                window.dispatch_action(
+                                    prism_dashboard::ToggleFocus.boxed_clone(),
+                                    cx,
+                                );
+                            },
+                        )
                     }))
                 })
                 .trigger(
-                    ButtonLike::new("prism-routing-trigger")
-                        .child(ui::Label::new(label).size(ui::LabelSize::Small).color(color))
+                    ButtonLike::new("prism-routing-trigger").child(
+                        ui::Label::new(label)
+                            .size(ui::LabelSize::Small)
+                            .color(color),
+                    ),
                 )
                 .with_handle(self.popover_menu_handle.clone()),
         )
@@ -536,19 +544,15 @@ pub struct CostGaugeStatusItem {
 
 impl CostGaugeStatusItem {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let subscription =
-            language_models::provider::prism::prism_state_entity(cx)
-                .map(|state| cx.observe(&state, |_, _, cx| cx.notify()));
+        let subscription = language_models::provider::prism::prism_state_entity(cx)
+            .map(|state| cx.observe(&state, |_, _, cx| cx.notify()));
 
         let poll_task = cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor()
-                    .timer(Duration::from_secs(2))
-                    .await;
+                cx.background_executor().timer(Duration::from_secs(2)).await;
                 let should_notify = this
                     .update(cx, |gauge, cx| {
-                        let current =
-                            language_models::provider::prism::prism_session_cost_usd(cx);
+                        let current = language_models::provider::prism::prism_session_cost_usd(cx);
                         if (current - gauge.cached_cost).abs() > 1e-9 {
                             gauge.cached_cost = current;
                             true
@@ -572,7 +576,11 @@ impl CostGaugeStatusItem {
 }
 
 impl Render for CostGaugeStatusItem {
-    fn render(&mut self, _window: &mut gpui::Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(
+        &mut self,
+        _window: &mut gpui::Window,
+        _cx: &mut Context<Self>,
+    ) -> impl gpui::IntoElement {
         let cost = self.cached_cost;
         if cost < 1e-9 {
             return gpui::div();

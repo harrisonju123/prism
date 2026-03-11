@@ -45,6 +45,9 @@ pub struct PrismDashboardPanel {
     live_routing_expanded: bool,
     routing_expanded: bool,
     agents_expanded: bool,
+    quality_expanded: bool,
+    savings_expanded: bool,
+    efficiency_expanded: bool,
     refresh_task: Option<Task<()>>,
     _auto_refresh: Task<()>,
     _prism_subscription: Option<gpui::Subscription>,
@@ -66,6 +69,12 @@ struct SerializedPanel {
     routing_expanded: bool,
     #[serde(default = "default_true")]
     agents_expanded: bool,
+    #[serde(default = "default_true")]
+    quality_expanded: bool,
+    #[serde(default = "default_true")]
+    savings_expanded: bool,
+    #[serde(default = "default_true")]
+    efficiency_expanded: bool,
 }
 
 fn default_true() -> bool {
@@ -107,6 +116,9 @@ impl PrismDashboardPanel {
                 live_routing_expanded: true,
                 routing_expanded: true,
                 agents_expanded: true,
+                quality_expanded: true,
+                savings_expanded: true,
+                efficiency_expanded: true,
                 refresh_task: None,
                 _auto_refresh: Task::ready(()),
                 _prism_subscription: prism_subscription,
@@ -152,6 +164,9 @@ impl PrismDashboardPanel {
                         panel.live_routing_expanded = serialized.live_routing_expanded;
                         panel.routing_expanded = serialized.routing_expanded;
                         panel.agents_expanded = serialized.agents_expanded;
+                        panel.quality_expanded = serialized.quality_expanded;
+                        panel.savings_expanded = serialized.savings_expanded;
+                        panel.efficiency_expanded = serialized.efficiency_expanded;
                         cx.notify();
                     });
                 }
@@ -168,6 +183,9 @@ impl PrismDashboardPanel {
         let live_routing_expanded = self.live_routing_expanded;
         let routing_expanded = self.routing_expanded;
         let agents_expanded = self.agents_expanded;
+        let quality_expanded = self.quality_expanded;
+        let savings_expanded = self.savings_expanded;
+        let efficiency_expanded = self.efficiency_expanded;
         self.pending_serialization = cx.background_spawn(
             async move {
                 KEY_VALUE_STORE
@@ -181,6 +199,9 @@ impl PrismDashboardPanel {
                             live_routing_expanded,
                             routing_expanded,
                             agents_expanded,
+                            quality_expanded,
+                            savings_expanded,
+                            efficiency_expanded,
                         })?,
                     )
                     .await?;
@@ -210,26 +231,32 @@ impl PrismDashboardPanel {
                     if let Some(key) = api_key {
                         client = client.with_api_key(key);
                     }
-                    let (summary, waste, task_types, policy, agents) = futures::join!(
+                    let (summary, waste, task_types, policy, agents, quality, savings, efficiency) = futures::join!(
                         client.stats_summary(7),
                         client.stats_waste_score(7),
                         client.stats_task_types(7),
                         client.routing_policy(),
-                        client.stats_agents(7)
+                        client.stats_agents(7),
+                        client.quality_trends(7),
+                        client.routing_savings(7),
+                        client.session_efficiency(7)
                     );
-                    anyhow::Ok::<(_, _, _, _, _)>((summary, waste, task_types, policy, agents))
+                    anyhow::Ok((summary, waste, task_types, policy, agents, quality, savings, efficiency))
                 })
                 .await;
 
             this.update(cx, |this, cx| {
                 this.is_loading = false;
                 match result {
-                    Ok((summary, waste, task_types, policy, agents)) => {
+                    Ok((summary, waste, task_types, policy, agents, quality, savings, efficiency)) => {
                         this.data.summary = summary.ok();
                         this.data.waste_score = waste.ok();
                         this.data.task_types = task_types.ok();
                         this.data.policy = policy.ok();
                         this.data.agent_metrics = agents.ok();
+                        this.data.quality_trends = quality.ok();
+                        this.data.routing_savings = savings.ok();
+                        this.data.session_efficiency = efficiency.ok();
                         this.error = None;
                     }
                     Err(e) => {
@@ -683,6 +710,218 @@ impl PrismDashboardPanel {
             })
     }
 
+    fn render_quality_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let quality_expanded = self.quality_expanded;
+        v_flex()
+            .w_full()
+            .child(Self::render_section_header(
+                "section-quality",
+                "Quality Trends",
+                quality_expanded,
+                cx.listener(|this, _, _, cx| {
+                    this.quality_expanded = !this.quality_expanded;
+                    this.serialize(cx);
+                    cx.notify();
+                }),
+                cx,
+            ))
+            .when(quality_expanded, |this| {
+                if let Some(trends) = &self.data.quality_trends {
+                    if trends.data.is_empty() {
+                        return this.child(
+                            div().px_3().pb_1().child(
+                                Label::new("No feedback data yet")
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            ),
+                        );
+                    }
+                    let mut children = v_flex().w_full().px_3().pb_1().gap_0p5();
+                    for point in trends.data.iter().take(10) {
+                        children = children.child(
+                            h_flex()
+                                .w_full()
+                                .gap_1()
+                                .child(
+                                    Label::new(shorten_model_name(&point.model))
+                                        .size(LabelSize::Small)
+                                        .truncate(),
+                                )
+                                .child(
+                                    Label::new(format!("{:.0}%", point.avg_quality * 100.0))
+                                        .size(LabelSize::Small)
+                                        .color(Color::Accent),
+                                )
+                                .child(
+                                    Label::new(format!("n={}", point.sample_count))
+                                        .size(LabelSize::Small)
+                                        .color(Color::Muted),
+                                ),
+                        );
+                    }
+                    this.child(children)
+                } else {
+                    this.child(
+                        div().px_3().pb_1().child(
+                            Label::new("No data")
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        ),
+                    )
+                }
+            })
+    }
+
+    fn render_savings_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let savings_expanded = self.savings_expanded;
+        v_flex()
+            .w_full()
+            .child(Self::render_section_header(
+                "section-savings",
+                "Routing Savings",
+                savings_expanded,
+                cx.listener(|this, _, _, cx| {
+                    this.savings_expanded = !this.savings_expanded;
+                    this.serialize(cx);
+                    cx.notify();
+                }),
+                cx,
+            ))
+            .when(savings_expanded, |this| {
+                if let Some(savings) = &self.data.routing_savings {
+                    this.child(
+                        v_flex()
+                            .w_full()
+                            .px_3()
+                            .pb_1()
+                            .gap_0p5()
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .justify_between()
+                                    .child(
+                                        Label::new("Saved")
+                                            .size(LabelSize::Small)
+                                            .color(Color::Muted),
+                                    )
+                                    .child(
+                                        Label::new(format!("${:.2}", savings.savings))
+                                            .size(LabelSize::Small)
+                                            .color(if savings.savings > 0.0 {
+                                                Color::Success
+                                            } else {
+                                                Color::Default
+                                            }),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .justify_between()
+                                    .child(
+                                        Label::new("Routed")
+                                            .size(LabelSize::Small)
+                                            .color(Color::Muted),
+                                    )
+                                    .child(
+                                        Label::new(format_number(savings.routed_requests))
+                                            .size(LabelSize::Small),
+                                    ),
+                            )
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .justify_between()
+                                    .child(
+                                        Label::new("Actual")
+                                            .size(LabelSize::Small)
+                                            .color(Color::Muted),
+                                    )
+                                    .child(
+                                        Label::new(format!("${:.2}", savings.actual_cost))
+                                            .size(LabelSize::Small),
+                                    ),
+                            ),
+                    )
+                } else {
+                    this.child(
+                        div().px_3().pb_1().child(
+                            Label::new("No data")
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        ),
+                    )
+                }
+            })
+    }
+
+    fn render_efficiency_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let efficiency_expanded = self.efficiency_expanded;
+        v_flex()
+            .w_full()
+            .child(Self::render_section_header(
+                "section-efficiency",
+                "Session Efficiency",
+                efficiency_expanded,
+                cx.listener(|this, _, _, cx| {
+                    this.efficiency_expanded = !this.efficiency_expanded;
+                    this.serialize(cx);
+                    cx.notify();
+                }),
+                cx,
+            ))
+            .when(efficiency_expanded, |this| {
+                if let Some(eff) = &self.data.session_efficiency {
+                    if eff.data.is_empty() {
+                        return this.child(
+                            div().px_3().pb_1().child(
+                                Label::new("No session data yet")
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            ),
+                        );
+                    }
+                    let mut children = v_flex().w_full().px_3().pb_1().gap_0p5();
+                    for stat in eff.data.iter().take(8) {
+                        children = children.child(
+                            h_flex()
+                                .w_full()
+                                .gap_1()
+                                .child(
+                                    Label::new(stat.task_type.clone())
+                                        .size(LabelSize::Small)
+                                        .truncate(),
+                                )
+                                .child(
+                                    Label::new(format!("{:.1}t", stat.avg_turns))
+                                        .size(LabelSize::Small)
+                                        .color(Color::Muted),
+                                )
+                                .child(
+                                    Label::new(format!("${:.3}", stat.avg_cost))
+                                        .size(LabelSize::Small)
+                                        .color(Color::Muted),
+                                )
+                                .child(
+                                    Label::new(format!("n={}", stat.session_count))
+                                        .size(LabelSize::Small)
+                                        .color(Color::Muted),
+                                ),
+                        );
+                    }
+                    this.child(children)
+                } else {
+                    this.child(
+                        div().px_3().pb_1().child(
+                            Label::new("No data")
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        ),
+                    )
+                }
+            })
+    }
+
     fn render_agents_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let agents_expanded = self.agents_expanded;
         v_flex()
@@ -886,6 +1125,9 @@ impl Render for PrismDashboardPanel {
                     .child(self.render_waste_section(cx))
                     .child(self.render_live_routing_section(cx))
                     .child(self.render_routing_section(cx))
+                    .child(self.render_quality_section(cx))
+                    .child(self.render_savings_section(cx))
+                    .child(self.render_efficiency_section(cx))
                     .child(self.render_agents_section(cx))
                     .child(
                         div()

@@ -2670,7 +2670,10 @@ impl Thread {
         log::debug!("Request will include {} messages", messages.len());
 
         let request = LanguageModelRequest {
-            thread_id: self.uglyhat_thread_id.clone().or_else(|| Some(self.id.to_string())),
+            thread_id: self
+                .uglyhat_thread_id
+                .clone()
+                .or_else(|| Some(self.id.to_string())),
             prompt_id: Some(self.prompt_id.to_string()),
             intent: Some(completion_intent),
             messages,

@@ -411,6 +411,45 @@ pub struct FitnessEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Analytics types (shared between server, client, and dashboard)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QualityTrendsResponse {
+    pub data: Vec<QualityTrendPoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QualityTrendPoint {
+    pub day: String,
+    pub model: String,
+    pub task_type: Option<String>,
+    pub avg_quality: f64,
+    pub sample_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutingSavingsResponse {
+    pub actual_cost: f64,
+    pub counterfactual_cost: f64,
+    pub savings: f64,
+    pub routed_requests: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionEfficiencyResponse {
+    pub data: Vec<SessionEfficiencyStat>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionEfficiencyStat {
+    pub task_type: String,
+    pub avg_turns: f64,
+    pub avg_cost: f64,
+    pub session_count: u64,
+}
+
+// ---------------------------------------------------------------------------
 // Internal event types
 // ---------------------------------------------------------------------------
 

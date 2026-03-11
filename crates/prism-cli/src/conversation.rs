@@ -158,6 +158,11 @@ impl ConversationTree {
         }
     }
 
+    /// Returns true if any node has more than one child (indicating the user retried/branched).
+    pub fn has_branches(&self) -> bool {
+        !self.branch_points().is_empty()
+    }
+
     /// All branch point node IDs (nodes with more than one child).
     pub fn branch_points(&self) -> Vec<(u32, Vec<BranchSummary>)> {
         use std::collections::HashMap;
@@ -429,6 +434,32 @@ mod tests {
         assert_eq!(points.len(), 1);
         assert_eq!(points[0].0, 1); // user node is the branch point
         assert_eq!(points[0].1.len(), 2); // two children
+    }
+
+    #[test]
+    fn has_branches_detects_forks() {
+        let mut tree = ConversationTree::from_messages(vec![
+            msg(MessageRole::System),
+            msg(MessageRole::User),
+            msg(MessageRole::Assistant),
+        ]);
+        assert!(!tree.has_branches());
+
+        tree.undo();
+        tree.push(msg(MessageRole::Assistant));
+        assert!(tree.has_branches());
+    }
+
+    #[test]
+    fn has_branches_linear_is_false() {
+        let tree = ConversationTree::from_messages(vec![
+            msg(MessageRole::System),
+            msg(MessageRole::User),
+            msg(MessageRole::Assistant),
+            msg(MessageRole::User),
+            msg(MessageRole::Assistant),
+        ]);
+        assert!(!tree.has_branches());
     }
 
     #[test]
