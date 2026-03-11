@@ -499,18 +499,9 @@ impl Render for PrismRoutingIndicator {
                             }
                         }
 
-                        menu.separator().custom_entry(
-                            |_, _| {
-                                ui::Label::new("Open PrisM Dashboard")
-                                    .size(ui::LabelSize::Small)
-                                    .into_any_element()
-                            },
-                            |window, cx| {
-                                window.dispatch_action(
-                                    prism_dashboard::ToggleFocus.boxed_clone(),
-                                    cx,
-                                );
-                            },
+                        menu.separator().action(
+                            "Open PrisM Dashboard",
+                            prism_dashboard::ToggleFocus.boxed_clone(),
                         )
                     }))
                 })
@@ -782,7 +773,7 @@ fn initialize_file_watcher(window: &mut Window, cx: &mut Context<Workspace>) {
             db::indoc! {r#"
             inotify_init returned {}
 
-            This may be due to system-wide limits on inotify instances. For troubleshooting see: https://zed.dev/docs/linux
+            This may be due to system-wide limits on inotify instances. For troubleshooting see: https://prism.dev/docs/linux
             "#},
             e
         );
@@ -796,7 +787,7 @@ fn initialize_file_watcher(window: &mut Window, cx: &mut Context<Workspace>) {
         cx.spawn(async move |_, cx| {
             if prompt.await == Ok(0) {
                 cx.update(|cx| {
-                    cx.open_url("https://zed.dev/docs/linux#could-not-start-inotify");
+                    cx.open_url("https://prism.dev/docs/linux#could-not-start-inotify");
                     cx.quit();
                 });
             }
@@ -813,7 +804,7 @@ fn initialize_file_watcher(window: &mut Window, cx: &mut Context<Workspace>) {
             db::indoc! {r#"
             ReadDirectoryChangesW initialization failed: {}
 
-            This may occur on network filesystems and WSL paths. For troubleshooting see: https://zed.dev/docs/windows
+            This may occur on network filesystems and WSL paths. For troubleshooting see: https://prism.dev/docs/windows
             "#},
             e
         );
@@ -827,7 +818,7 @@ fn initialize_file_watcher(window: &mut Window, cx: &mut Context<Workspace>) {
         cx.spawn(async move |_, cx| {
             if prompt.await == Ok(0) {
                 cx.update(|cx| {
-                    cx.open_url("https://zed.dev/docs/windows");
+                    cx.open_url("https://prism.dev/docs/windows");
                     cx.quit()
                 });
             }
