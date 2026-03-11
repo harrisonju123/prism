@@ -530,10 +530,11 @@ impl Agent {
             // A) Decision checkpoint: fire once after enough exploration calls
             if self.decision_checkpoint_armed
                 && !self.decision_checkpoint_fired
-                && self.exploration_count >= decision_checkpoint_threshold()
+                && self.exploration_count >= decision_threshold
             {
                 self.decision_checkpoint_fired = true;
-                let nudge = "[Decision Checkpoint] You have explored enough context. \
+                self.session.push_message(common::user_message(
+                    "[Decision Checkpoint] You have explored enough context. \
 The user asked you to decide between approaches before implementing. \
 STOP exploring and present your findings now:\n\
 1. List the options you've identified (Option A, Option B, etc.)\n\
@@ -541,9 +542,9 @@ STOP exploring and present your findings now:\n\
 3. Give your recommendation with rationale\n\
 4. Ask the user any clarifying questions that would affect the choice\n\
 5. Use `record_decision` to persist your recommendation once confirmed\n\
-6. Wait for user confirmation before implementing";
-                self.session
-                    .push_message(common::user_message(nudge.to_string()));
+6. Wait for user confirmation before implementing"
+                        .to_string(),
+                ));
                 tracing::info!(
                     exploration_count = self.exploration_count,
                     "decision checkpoint fired"
@@ -551,21 +552,21 @@ STOP exploring and present your findings now:\n\
             }
 
             // B) Question checkpoint: every N turns, remind agent to surface unknowns
-            let q_interval = question_checkpoint_interval();
             if q_interval > 0
                 && current_turn > 0
                 && current_turn % q_interval == 0
                 && current_turn != self.last_question_checkpoint_turn
             {
                 self.last_question_checkpoint_turn = current_turn;
-                let nudge = "[Question Checkpoint] You've been working for several turns. \
+                self.session.push_message(common::user_message(
+                    "[Question Checkpoint] You've been working for several turns. \
 Before continuing, consider:\n\
 - Are there ambiguities in the requirements you should ask about?\n\
 - Are you making assumptions the user should confirm?\n\
 - Is this heading in the direction the user expects?\n\
-If you have questions, ask them now. If you're confident, continue.";
-                self.session
-                    .push_message(common::user_message(nudge.to_string()));
+If you have questions, ask them now. If you're confident, continue."
+                        .to_string(),
+                ));
                 tracing::info!(turn = current_turn, "question checkpoint fired");
             }
 
