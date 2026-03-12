@@ -92,10 +92,10 @@ Cargo is at `~/.cargo/bin/cargo` — may not be in shell PATH. Use `export PATH=
 
 ## Architecture
 
-Cargo workspace with 6 crates:
+Cargo workspace — 6 PrisM service crates + 225 IDE editor crates:
 
 ```
-crates/
+crates/                  # PrisM service crates
 ├── prism-types/         # Shared types (leaf, no workspace deps)
 ├── prism-context/       # Context management library for AI agents
 │   ├── Cargo.toml
@@ -133,6 +133,13 @@ crates/
 │       ├── main.rs              # Commands: run, personas, models, health, sessions, context, ...
 │       └── context.rs           # prism context subcommands (ported from prism-context bin)
 └── prism-hq/            # All Zed IDE panels (agent roster, task board, dashboard, etc.)
+
+ide/                     # Editor crates (forked from Zed, 225 crates)
+├── zed/                 # Main IDE binary
+├── agent/               # AI agent integration
+├── editor/              # Core editor
+├── gpui/                # GPU-accelerated UI framework
+└── ...                  # 221 more crates
 ```
 
 Workspace root: `Cargo.toml` with `[workspace] resolver = "2"`.
@@ -255,36 +262,6 @@ prism context snapshot [--label]                             # capture point-in-
 | **Decision** | Why a choice was made. Optionally attached to a thread. |
 | **Agent + Session** | Agent identity + session records (summary, findings, files_touched, next_steps). |
 | **Activity** | Event log. Mutations auto-log activity. |
-
-## Syncing Zed Upstream
-
-`zed-upstream/` tracks `harrisonju123/zed` (our Zed fork). It was imported as a flat directory snapshot at baseline `5c481c6` — **not** a git submodule or subtree. PrisM patches are stored in `patches/zed/` and documented in `patches/zed/PATCHES.md`.
-
-To pull in new Zed upstream changes:
-
-```bash
-# 1. Preview what changed (no write)
-./scripts/sync-zed-upstream.sh --dry-run
-
-# 2. Apply upstream delta + list patches to re-verify
-./scripts/sync-zed-upstream.sh
-
-# 3. Resolve any conflict markers in zed-upstream/
-# 4. Verify compilation
-cargo check -p zed
-
-# 5. Update baseline
-echo '<new-sha>' > patches/zed/BASELINE
-
-# 6. Regenerate patch files
-git format-patch <old-baseline>..HEAD \
-  --output-directory patches/zed/ -- zed-upstream/
-
-# 7. Commit
-git add zed-upstream/ patches/zed/ && git commit -m "chore(zed): sync upstream to <sha>"
-```
-
-See `patches/zed/PATCHES.md` for per-file risk notes and what to watch for during conflict resolution.
 
 ## Rust Memory & Stack Safety
 

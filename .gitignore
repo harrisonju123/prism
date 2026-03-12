@@ -19,6 +19,5 @@ credentials.json
 dashboard/node_modules/
 dashboard/dist/
 dashboard/.pnpm-store/
-patches/zed/.sync-in-progress
 config/prism.toml
 ~/

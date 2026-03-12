@@ -127,7 +127,7 @@ PrisM/
 ├── config/
 │   ├── prism.min.toml      # Minimal dogfood config (no Docker)
 │   └── prism.dev.toml      # Full dev config template
-├── zed-upstream/           # Zed editor fork (shallow clone)
+├── ide/                    # Editor crates (225 crates, fully integrated)
 ├── Cargo.toml              # Workspace root
 ├── docker-compose.yml      # Postgres, ClickHouse, Grafana, Loki, Jaeger
 └── CLAUDE.md               # Development guide
@@ -485,7 +485,7 @@ uh --version
 
 - **PrisM Architecture:** see `CLAUDE.md` for full design details
 - **uglyhat Go original:** `/Users/harrisonju/Documents/Projects/uglyhat/`
-- **Zed fork:** `zed-upstream/` (shallow clone of harrisonju123/zed)
+- **IDE crates:** `ide/` (fully forked Zed editor, integrated into PrisM)
 
 ## License
 

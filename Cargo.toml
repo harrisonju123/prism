@@ -8,241 +8,241 @@ members = [
     "crates/prism-client",
     "crates/prism-cli",
     "crates/prism-hq",
-    # Zed crates
-    "zed-upstream/crates/acp_thread",
-    "zed-upstream/crates/acp_tools",
-    "zed-upstream/crates/action_log",
-    "zed-upstream/crates/activity_indicator",
-    "zed-upstream/crates/agent",
-    "zed-upstream/crates/agent_servers",
-    "zed-upstream/crates/agent_settings",
-    "zed-upstream/crates/agent_ui",
-    "zed-upstream/crates/ai_onboarding",
-    "zed-upstream/crates/anthropic",
-    "zed-upstream/crates/askpass",
-    "zed-upstream/crates/assets",
-    "zed-upstream/crates/assistant_slash_command",
-    "zed-upstream/crates/assistant_slash_commands",
-    "zed-upstream/crates/assistant_text_thread",
-    "zed-upstream/crates/audio",
-    "zed-upstream/crates/auto_update",
-    "zed-upstream/crates/auto_update_helper",
-    "zed-upstream/crates/auto_update_ui",
-    "zed-upstream/crates/aws_http_client",
-    "zed-upstream/crates/bedrock",
-    "zed-upstream/crates/breadcrumbs",
-    "zed-upstream/crates/buffer_diff",
-    "zed-upstream/crates/call",
-    "zed-upstream/crates/channel",
-    "zed-upstream/crates/cli",
-    "zed-upstream/crates/client",
-    "zed-upstream/crates/clock",
-    "zed-upstream/crates/cloud_api_client",
-    "zed-upstream/crates/cloud_api_types",
-    "zed-upstream/crates/cloud_llm_client",
-    "zed-upstream/crates/codestral",
-    "zed-upstream/crates/collab",
-    "zed-upstream/crates/collab_ui",
-    "zed-upstream/crates/collections",
-    "zed-upstream/crates/command_palette",
-    "zed-upstream/crates/command_palette_hooks",
-    "zed-upstream/crates/component",
-    "zed-upstream/crates/component_preview",
-    "zed-upstream/crates/context_server",
-    "zed-upstream/crates/copilot",
-    "zed-upstream/crates/copilot_chat",
-    "zed-upstream/crates/crashes",
-    "zed-upstream/crates/credentials_provider",
-    "zed-upstream/crates/csv_preview",
-    "zed-upstream/crates/dap",
-    "zed-upstream/crates/dap_adapters",
-    "zed-upstream/crates/db",
-    "zed-upstream/crates/debug_adapter_extension",
-    "zed-upstream/crates/debugger_tools",
-    "zed-upstream/crates/debugger_ui",
-    "zed-upstream/crates/deepseek",
-    "zed-upstream/crates/denoise",
-    "zed-upstream/crates/dev_container",
-    "zed-upstream/crates/diagnostics",
-    "zed-upstream/crates/docs_preprocessor",
-    "zed-upstream/crates/edit_prediction",
-    "zed-upstream/crates/edit_prediction_cli",
-    "zed-upstream/crates/edit_prediction_context",
-    "zed-upstream/crates/edit_prediction_types",
-    "zed-upstream/crates/edit_prediction_ui",
-    "zed-upstream/crates/editor",
-    "zed-upstream/crates/encoding_selector",
-    "zed-upstream/crates/etw_tracing",
-    "zed-upstream/crates/eval",
-    "zed-upstream/crates/eval_cli",
-    "zed-upstream/crates/eval_utils",
-    "zed-upstream/crates/explorer_command_injector",
-    "zed-upstream/crates/extension",
-    "zed-upstream/crates/extension_api",
-    "zed-upstream/crates/extension_cli",
-    "zed-upstream/crates/extension_host",
-    "zed-upstream/crates/extensions_ui",
-    "zed-upstream/crates/feature_flags",
-    "zed-upstream/crates/feedback",
-    "zed-upstream/crates/file_finder",
-    "zed-upstream/crates/file_icons",
-    "zed-upstream/crates/fs",
-    "zed-upstream/crates/fs_benchmarks",
-    "zed-upstream/crates/fuzzy",
-    "zed-upstream/crates/git",
-    "zed-upstream/crates/git_graph",
-    "zed-upstream/crates/git_hosting_providers",
-    "zed-upstream/crates/git_ui",
-    "zed-upstream/crates/go_to_line",
-    "zed-upstream/crates/google_ai",
-    "zed-upstream/crates/gpui",
-    "zed-upstream/crates/gpui_linux",
-    "zed-upstream/crates/gpui_macos",
-    "zed-upstream/crates/gpui_macros",
-    "zed-upstream/crates/gpui_platform",
-    "zed-upstream/crates/gpui_tokio",
-    "zed-upstream/crates/gpui_util",
-    "zed-upstream/crates/gpui_web",
-    "zed-upstream/crates/gpui_wgpu",
-    "zed-upstream/crates/gpui_windows",
-    "zed-upstream/crates/html_to_markdown",
-    "zed-upstream/crates/http_client",
-    "zed-upstream/crates/http_client_tls",
-    "zed-upstream/crates/icons",
-    "zed-upstream/crates/image_viewer",
-    "zed-upstream/crates/inspector_ui",
-    "zed-upstream/crates/install_cli",
-    "zed-upstream/crates/journal",
-    "zed-upstream/crates/json_schema_store",
-    "zed-upstream/crates/keymap_editor",
-    "zed-upstream/crates/language",
-    "zed-upstream/crates/language_extension",
-    "zed-upstream/crates/language_model",
-    "zed-upstream/crates/language_models",
-    "zed-upstream/crates/language_onboarding",
-    "zed-upstream/crates/language_selector",
-    "zed-upstream/crates/language_tools",
-    "zed-upstream/crates/languages",
-    "zed-upstream/crates/line_ending_selector",
-    "zed-upstream/crates/livekit_api",
-    "zed-upstream/crates/livekit_client",
-    "zed-upstream/crates/lmstudio",
-    "zed-upstream/crates/lsp",
-    "zed-upstream/crates/markdown",
-    "zed-upstream/crates/markdown_preview",
-    "zed-upstream/crates/media",
-    "zed-upstream/crates/menu",
-    "zed-upstream/crates/migrator",
-    "zed-upstream/crates/miniprofiler_ui",
-    "zed-upstream/crates/mistral",
-    "zed-upstream/crates/multi_buffer",
-    "zed-upstream/crates/nc",
-    "zed-upstream/crates/net",
-    "zed-upstream/crates/node_runtime",
-    "zed-upstream/crates/notifications",
-    "zed-upstream/crates/ollama",
-    "zed-upstream/crates/onboarding",
-    "zed-upstream/crates/open_ai",
-    "zed-upstream/crates/open_path_prompt",
-    "zed-upstream/crates/open_router",
-    "zed-upstream/crates/outline",
-    "zed-upstream/crates/outline_panel",
-    "zed-upstream/crates/panel",
-    "zed-upstream/crates/paths",
-    "zed-upstream/crates/picker",
-    "zed-upstream/crates/platform_title_bar",
-    "zed-upstream/crates/prettier",
-    "zed-upstream/crates/project",
-    "zed-upstream/crates/project_benchmarks",
-    "zed-upstream/crates/project_panel",
-    "zed-upstream/crates/project_symbols",
-    "zed-upstream/crates/prompt_store",
-    "zed-upstream/crates/proto",
-    "zed-upstream/crates/recent_projects",
-    "zed-upstream/crates/refineable",
-    "zed-upstream/crates/refineable/derive_refineable",
-    "zed-upstream/crates/release_channel",
-    "zed-upstream/crates/remote",
-    "zed-upstream/crates/remote_connection",
-    "zed-upstream/crates/remote_server",
-    "zed-upstream/crates/repl",
-    "zed-upstream/crates/reqwest_client",
-    "zed-upstream/crates/rich_text",
-    "zed-upstream/crates/rope",
-    "zed-upstream/crates/rpc",
-    "zed-upstream/crates/rules_library",
-    "zed-upstream/crates/scheduler",
-    "zed-upstream/crates/schema_generator",
-    "zed-upstream/crates/search",
-    "zed-upstream/crates/session",
-    "zed-upstream/crates/settings",
-    "zed-upstream/crates/settings_content",
-    "zed-upstream/crates/settings_json",
-    "zed-upstream/crates/settings_macros",
-    "zed-upstream/crates/settings_profile_selector",
-    "zed-upstream/crates/settings_ui",
-    "zed-upstream/crates/shell_command_parser",
-    "zed-upstream/crates/sidebar",
-    "zed-upstream/crates/snippet",
-    "zed-upstream/crates/snippet_provider",
-    "zed-upstream/crates/snippets_ui",
-    "zed-upstream/crates/sqlez",
-    "zed-upstream/crates/sqlez_macros",
-    "zed-upstream/crates/story",
-    "zed-upstream/crates/storybook",
-    "zed-upstream/crates/streaming_diff",
-    "zed-upstream/crates/sum_tree",
-    "zed-upstream/crates/svg_preview",
-    "zed-upstream/crates/system_specs",
-    "zed-upstream/crates/tab_switcher",
-    "zed-upstream/crates/task",
-    "zed-upstream/crates/tasks_ui",
-    "zed-upstream/crates/telemetry",
-    "zed-upstream/crates/telemetry_events",
-    "zed-upstream/crates/terminal",
-    "zed-upstream/crates/terminal_view",
-    "zed-upstream/crates/text",
-    "zed-upstream/crates/theme",
-    "zed-upstream/crates/theme_extension",
-    "zed-upstream/crates/theme_importer",
-    "zed-upstream/crates/theme_selector",
-    "zed-upstream/crates/time_format",
-    "zed-upstream/crates/title_bar",
-    "zed-upstream/crates/toolchain_selector",
-    "zed-upstream/crates/ui",
-    "zed-upstream/crates/ui_input",
-    "zed-upstream/crates/ui_macros",
-    "zed-upstream/crates/ui_prompt",
-    "zed-upstream/crates/util",
-    "zed-upstream/crates/util_macros",
-    "zed-upstream/crates/vercel",
-    "zed-upstream/crates/vim",
-    "zed-upstream/crates/vim_mode_setting",
-    "zed-upstream/crates/watch",
-    "zed-upstream/crates/web_search",
-    "zed-upstream/crates/web_search_providers",
-    "zed-upstream/crates/which_key",
-    "zed-upstream/crates/workspace",
-    "zed-upstream/crates/worktree",
-    "zed-upstream/crates/worktree_benchmarks",
-    "zed-upstream/crates/x_ai",
-    "zed-upstream/crates/zed",
-    "zed-upstream/crates/zed_actions",
-    "zed-upstream/crates/zed_env_vars",
-    "zed-upstream/crates/zeta_prompt",
-    "zed-upstream/crates/zlog",
-    "zed-upstream/crates/zlog_settings",
-    "zed-upstream/crates/ztracing",
-    "zed-upstream/crates/ztracing_macro",
+    # IDE crates
+    "ide/acp_thread",
+    "ide/acp_tools",
+    "ide/action_log",
+    "ide/activity_indicator",
+    "ide/agent",
+    "ide/agent_servers",
+    "ide/agent_settings",
+    "ide/agent_ui",
+    "ide/ai_onboarding",
+    "ide/anthropic",
+    "ide/askpass",
+    "ide/assets",
+    "ide/assistant_slash_command",
+    "ide/assistant_slash_commands",
+    "ide/assistant_text_thread",
+    "ide/audio",
+    "ide/auto_update",
+    "ide/auto_update_helper",
+    "ide/auto_update_ui",
+    "ide/aws_http_client",
+    "ide/bedrock",
+    "ide/breadcrumbs",
+    "ide/buffer_diff",
+    "ide/call",
+    "ide/channel",
+    "ide/cli",
+    "ide/client",
+    "ide/clock",
+    "ide/cloud_api_client",
+    "ide/cloud_api_types",
+    "ide/cloud_llm_client",
+    "ide/codestral",
+    "ide/collab",
+    "ide/collab_ui",
+    "ide/collections",
+    "ide/command_palette",
+    "ide/command_palette_hooks",
+    "ide/component",
+    "ide/component_preview",
+    "ide/context_server",
+    "ide/copilot",
+    "ide/copilot_chat",
+    "ide/crashes",
+    "ide/credentials_provider",
+    "ide/csv_preview",
+    "ide/dap",
+    "ide/dap_adapters",
+    "ide/db",
+    "ide/debug_adapter_extension",
+    "ide/debugger_tools",
+    "ide/debugger_ui",
+    "ide/deepseek",
+    "ide/denoise",
+    "ide/dev_container",
+    "ide/diagnostics",
+    "ide/docs_preprocessor",
+    "ide/edit_prediction",
+    "ide/edit_prediction_cli",
+    "ide/edit_prediction_context",
+    "ide/edit_prediction_types",
+    "ide/edit_prediction_ui",
+    "ide/editor",
+    "ide/encoding_selector",
+    "ide/etw_tracing",
+    "ide/eval",
+    "ide/eval_cli",
+    "ide/eval_utils",
+    "ide/explorer_command_injector",
+    "ide/extension",
+    "ide/extension_api",
+    "ide/extension_cli",
+    "ide/extension_host",
+    "ide/extensions_ui",
+    "ide/feature_flags",
+    "ide/feedback",
+    "ide/file_finder",
+    "ide/file_icons",
+    "ide/fs",
+    "ide/fs_benchmarks",
+    "ide/fuzzy",
+    "ide/git",
+    "ide/git_graph",
+    "ide/git_hosting_providers",
+    "ide/git_ui",
+    "ide/go_to_line",
+    "ide/google_ai",
+    "ide/gpui",
+    "ide/gpui_linux",
+    "ide/gpui_macos",
+    "ide/gpui_macros",
+    "ide/gpui_platform",
+    "ide/gpui_tokio",
+    "ide/gpui_util",
+    "ide/gpui_web",
+    "ide/gpui_wgpu",
+    "ide/gpui_windows",
+    "ide/html_to_markdown",
+    "ide/http_client",
+    "ide/http_client_tls",
+    "ide/icons",
+    "ide/image_viewer",
+    "ide/inspector_ui",
+    "ide/install_cli",
+    "ide/journal",
+    "ide/json_schema_store",
+    "ide/keymap_editor",
+    "ide/language",
+    "ide/language_extension",
+    "ide/language_model",
+    "ide/language_models",
+    "ide/language_onboarding",
+    "ide/language_selector",
+    "ide/language_tools",
+    "ide/languages",
+    "ide/line_ending_selector",
+    "ide/livekit_api",
+    "ide/livekit_client",
+    "ide/lmstudio",
+    "ide/lsp",
+    "ide/markdown",
+    "ide/markdown_preview",
+    "ide/media",
+    "ide/menu",
+    "ide/migrator",
+    "ide/miniprofiler_ui",
+    "ide/mistral",
+    "ide/multi_buffer",
+    "ide/nc",
+    "ide/net",
+    "ide/node_runtime",
+    "ide/notifications",
+    "ide/ollama",
+    "ide/onboarding",
+    "ide/open_ai",
+    "ide/open_path_prompt",
+    "ide/open_router",
+    "ide/outline",
+    "ide/outline_panel",
+    "ide/panel",
+    "ide/paths",
+    "ide/picker",
+    "ide/platform_title_bar",
+    "ide/prettier",
+    "ide/project",
+    "ide/project_benchmarks",
+    "ide/project_panel",
+    "ide/project_symbols",
+    "ide/prompt_store",
+    "ide/proto",
+    "ide/recent_projects",
+    "ide/refineable",
+    "ide/refineable/derive_refineable",
+    "ide/release_channel",
+    "ide/remote",
+    "ide/remote_connection",
+    "ide/remote_server",
+    "ide/repl",
+    "ide/reqwest_client",
+    "ide/rich_text",
+    "ide/rope",
+    "ide/rpc",
+    "ide/rules_library",
+    "ide/scheduler",
+    "ide/schema_generator",
+    "ide/search",
+    "ide/session",
+    "ide/settings",
+    "ide/settings_content",
+    "ide/settings_json",
+    "ide/settings_macros",
+    "ide/settings_profile_selector",
+    "ide/settings_ui",
+    "ide/shell_command_parser",
+    "ide/sidebar",
+    "ide/snippet",
+    "ide/snippet_provider",
+    "ide/snippets_ui",
+    "ide/sqlez",
+    "ide/sqlez_macros",
+    "ide/story",
+    "ide/storybook",
+    "ide/streaming_diff",
+    "ide/sum_tree",
+    "ide/svg_preview",
+    "ide/system_specs",
+    "ide/tab_switcher",
+    "ide/task",
+    "ide/tasks_ui",
+    "ide/telemetry",
+    "ide/telemetry_events",
+    "ide/terminal",
+    "ide/terminal_view",
+    "ide/text",
+    "ide/theme",
+    "ide/theme_extension",
+    "ide/theme_importer",
+    "ide/theme_selector",
+    "ide/time_format",
+    "ide/title_bar",
+    "ide/toolchain_selector",
+    "ide/ui",
+    "ide/ui_input",
+    "ide/ui_macros",
+    "ide/ui_prompt",
+    "ide/util",
+    "ide/util_macros",
+    "ide/vercel",
+    "ide/vim",
+    "ide/vim_mode_setting",
+    "ide/watch",
+    "ide/web_search",
+    "ide/web_search_providers",
+    "ide/which_key",
+    "ide/workspace",
+    "ide/worktree",
+    "ide/worktree_benchmarks",
+    "ide/x_ai",
+    "ide/zed",
+    "ide/zed_actions",
+    "ide/zed_env_vars",
+    "ide/zeta_prompt",
+    "ide/zlog",
+    "ide/zlog_settings",
+    "ide/ztracing",
+    "ide/ztracing_macro",
     # Zed extensions
-    "zed-upstream/extensions/glsl",
-    "zed-upstream/extensions/html",
-    "zed-upstream/extensions/proto",
-    "zed-upstream/extensions/slash-commands-example",
-    "zed-upstream/extensions/test-extension",
+    "extensions/glsl",
+    "extensions/html",
+    "extensions/proto",
+    "extensions/slash-commands-example",
+    "extensions/test-extension",
     # Zed tooling
-    "zed-upstream/tooling/perf",
-    "zed-upstream/tooling/xtask",
+    "tooling/perf",
+    "tooling/xtask",
 ]
 default-members = [
     "crates/prism",
@@ -269,221 +269,221 @@ prism-context = { path = "crates/prism-context" }
 prism-hq = { path = "crates/prism-hq" }
 
 #
-# Zed internal crates (paths prefixed with zed-upstream/)
+# IDE crates (under ide/)
 #
-acp_tools = { path = "zed-upstream/crates/acp_tools" }
-acp_thread = { path = "zed-upstream/crates/acp_thread" }
-action_log = { path = "zed-upstream/crates/action_log" }
-agent = { path = "zed-upstream/crates/agent" }
-activity_indicator = { path = "zed-upstream/crates/activity_indicator" }
-agent_ui = { path = "zed-upstream/crates/agent_ui" }
-agent_settings = { path = "zed-upstream/crates/agent_settings" }
-agent_servers = { path = "zed-upstream/crates/agent_servers" }
-ai_onboarding = { path = "zed-upstream/crates/ai_onboarding" }
-anthropic = { path = "zed-upstream/crates/anthropic" }
-askpass = { path = "zed-upstream/crates/askpass" }
-assets = { path = "zed-upstream/crates/assets" }
-assistant_text_thread = { path = "zed-upstream/crates/assistant_text_thread" }
-assistant_slash_command = { path = "zed-upstream/crates/assistant_slash_command" }
-assistant_slash_commands = { path = "zed-upstream/crates/assistant_slash_commands" }
-audio = { path = "zed-upstream/crates/audio" }
-auto_update = { path = "zed-upstream/crates/auto_update" }
-auto_update_ui = { path = "zed-upstream/crates/auto_update_ui" }
-aws_http_client = { path = "zed-upstream/crates/aws_http_client" }
-bedrock = { path = "zed-upstream/crates/bedrock" }
-breadcrumbs = { path = "zed-upstream/crates/breadcrumbs" }
-buffer_diff = { path = "zed-upstream/crates/buffer_diff" }
-call = { path = "zed-upstream/crates/call" }
-channel = { path = "zed-upstream/crates/channel" }
-cli = { path = "zed-upstream/crates/cli" }
-client = { path = "zed-upstream/crates/client" }
-clock = { path = "zed-upstream/crates/clock" }
-cloud_api_client = { path = "zed-upstream/crates/cloud_api_client" }
-cloud_api_types = { path = "zed-upstream/crates/cloud_api_types" }
-cloud_llm_client = { path = "zed-upstream/crates/cloud_llm_client" }
-collab = { path = "zed-upstream/crates/collab" }
-collab_ui = { path = "zed-upstream/crates/collab_ui" }
-collections = { path = "zed-upstream/crates/collections", version = "0.1.0" }
-command_palette = { path = "zed-upstream/crates/command_palette" }
-command_palette_hooks = { path = "zed-upstream/crates/command_palette_hooks" }
-component = { path = "zed-upstream/crates/component" }
-component_preview = { path = "zed-upstream/crates/component_preview" }
-context_server = { path = "zed-upstream/crates/context_server" }
-copilot = { path = "zed-upstream/crates/copilot" }
-copilot_chat = { path = "zed-upstream/crates/copilot_chat" }
-copilot_ui = { path = "zed-upstream/crates/copilot_ui" }
-crashes = { path = "zed-upstream/crates/crashes" }
-credentials_provider = { path = "zed-upstream/crates/credentials_provider" }
-csv_preview = { path = "zed-upstream/crates/csv_preview" }
-dap = { path = "zed-upstream/crates/dap" }
-dap_adapters = { path = "zed-upstream/crates/dap_adapters" }
-db = { path = "zed-upstream/crates/db" }
-debug_adapter_extension = { path = "zed-upstream/crates/debug_adapter_extension" }
-debugger_tools = { path = "zed-upstream/crates/debugger_tools" }
-debugger_ui = { path = "zed-upstream/crates/debugger_ui" }
-deepseek = { path = "zed-upstream/crates/deepseek" }
-derive_refineable = { path = "zed-upstream/crates/refineable/derive_refineable" }
-dev_container = { path = "zed-upstream/crates/dev_container" }
-diagnostics = { path = "zed-upstream/crates/diagnostics" }
-editor = { path = "zed-upstream/crates/editor" }
-encoding_selector = { path = "zed-upstream/crates/encoding_selector" }
-etw_tracing = { path = "zed-upstream/crates/etw_tracing" }
-eval_utils = { path = "zed-upstream/crates/eval_utils" }
-extension = { path = "zed-upstream/crates/extension" }
-extension_host = { path = "zed-upstream/crates/extension_host" }
-extensions_ui = { path = "zed-upstream/crates/extensions_ui" }
-feature_flags = { path = "zed-upstream/crates/feature_flags" }
-feedback = { path = "zed-upstream/crates/feedback" }
-file_finder = { path = "zed-upstream/crates/file_finder" }
-file_icons = { path = "zed-upstream/crates/file_icons" }
-fs = { path = "zed-upstream/crates/fs" }
-fuzzy = { path = "zed-upstream/crates/fuzzy" }
-git = { path = "zed-upstream/crates/git" }
-git_graph = { path = "zed-upstream/crates/git_graph" }
-git_hosting_providers = { path = "zed-upstream/crates/git_hosting_providers" }
-git_ui = { path = "zed-upstream/crates/git_ui" }
-go_to_line = { path = "zed-upstream/crates/go_to_line" }
-google_ai = { path = "zed-upstream/crates/google_ai" }
-gpui = { path = "zed-upstream/crates/gpui", default-features = false }
-gpui_linux = { path = "zed-upstream/crates/gpui_linux", default-features = false }
-gpui_macos = { path = "zed-upstream/crates/gpui_macos", default-features = false }
-gpui_macros = { path = "zed-upstream/crates/gpui_macros" }
-gpui_platform = { path = "zed-upstream/crates/gpui_platform", default-features = false }
-gpui_web = { path = "zed-upstream/crates/gpui_web" }
-gpui_wgpu = { path = "zed-upstream/crates/gpui_wgpu" }
-gpui_windows = { path = "zed-upstream/crates/gpui_windows", default-features = false }
-gpui_tokio = { path = "zed-upstream/crates/gpui_tokio" }
-gpui_util = { path = "zed-upstream/crates/gpui_util" }
-html_to_markdown = { path = "zed-upstream/crates/html_to_markdown" }
-http_client = { path = "zed-upstream/crates/http_client" }
-http_client_tls = { path = "zed-upstream/crates/http_client_tls" }
-icons = { path = "zed-upstream/crates/icons" }
-image_viewer = { path = "zed-upstream/crates/image_viewer" }
-edit_prediction_types = { path = "zed-upstream/crates/edit_prediction_types" }
-edit_prediction_ui = { path = "zed-upstream/crates/edit_prediction_ui" }
-edit_prediction_context = { path = "zed-upstream/crates/edit_prediction_context" }
-inspector_ui = { path = "zed-upstream/crates/inspector_ui" }
-install_cli = { path = "zed-upstream/crates/install_cli" }
-journal = { path = "zed-upstream/crates/journal" }
-json_schema_store = { path = "zed-upstream/crates/json_schema_store" }
-keymap_editor = { path = "zed-upstream/crates/keymap_editor" }
-language = { path = "zed-upstream/crates/language" }
-language_extension = { path = "zed-upstream/crates/language_extension" }
-language_model = { path = "zed-upstream/crates/language_model" }
-language_models = { path = "zed-upstream/crates/language_models" }
-language_onboarding = { path = "zed-upstream/crates/language_onboarding" }
-language_selector = { path = "zed-upstream/crates/language_selector" }
-language_tools = { path = "zed-upstream/crates/language_tools" }
-languages = { path = "zed-upstream/crates/languages" }
-line_ending_selector = { path = "zed-upstream/crates/line_ending_selector" }
-livekit_api = { path = "zed-upstream/crates/livekit_api" }
-livekit_client = { path = "zed-upstream/crates/livekit_client" }
-lmstudio = { path = "zed-upstream/crates/lmstudio" }
-lsp = { path = "zed-upstream/crates/lsp" }
-markdown = { path = "zed-upstream/crates/markdown" }
-markdown_preview = { path = "zed-upstream/crates/markdown_preview" }
-svg_preview = { path = "zed-upstream/crates/svg_preview" }
-media = { path = "zed-upstream/crates/media" }
-menu = { path = "zed-upstream/crates/menu" }
+acp_tools = { path = "ide/acp_tools" }
+acp_thread = { path = "ide/acp_thread" }
+action_log = { path = "ide/action_log" }
+agent = { path = "ide/agent" }
+activity_indicator = { path = "ide/activity_indicator" }
+agent_ui = { path = "ide/agent_ui" }
+agent_settings = { path = "ide/agent_settings" }
+agent_servers = { path = "ide/agent_servers" }
+ai_onboarding = { path = "ide/ai_onboarding" }
+anthropic = { path = "ide/anthropic" }
+askpass = { path = "ide/askpass" }
+assets = { path = "ide/assets" }
+assistant_text_thread = { path = "ide/assistant_text_thread" }
+assistant_slash_command = { path = "ide/assistant_slash_command" }
+assistant_slash_commands = { path = "ide/assistant_slash_commands" }
+audio = { path = "ide/audio" }
+auto_update = { path = "ide/auto_update" }
+auto_update_ui = { path = "ide/auto_update_ui" }
+aws_http_client = { path = "ide/aws_http_client" }
+bedrock = { path = "ide/bedrock" }
+breadcrumbs = { path = "ide/breadcrumbs" }
+buffer_diff = { path = "ide/buffer_diff" }
+call = { path = "ide/call" }
+channel = { path = "ide/channel" }
+cli = { path = "ide/cli" }
+client = { path = "ide/client" }
+clock = { path = "ide/clock" }
+cloud_api_client = { path = "ide/cloud_api_client" }
+cloud_api_types = { path = "ide/cloud_api_types" }
+cloud_llm_client = { path = "ide/cloud_llm_client" }
+collab = { path = "ide/collab" }
+collab_ui = { path = "ide/collab_ui" }
+collections = { path = "ide/collections", version = "0.1.0" }
+command_palette = { path = "ide/command_palette" }
+command_palette_hooks = { path = "ide/command_palette_hooks" }
+component = { path = "ide/component" }
+component_preview = { path = "ide/component_preview" }
+context_server = { path = "ide/context_server" }
+copilot = { path = "ide/copilot" }
+copilot_chat = { path = "ide/copilot_chat" }
+copilot_ui = { path = "ide/copilot_ui" }
+crashes = { path = "ide/crashes" }
+credentials_provider = { path = "ide/credentials_provider" }
+csv_preview = { path = "ide/csv_preview" }
+dap = { path = "ide/dap" }
+dap_adapters = { path = "ide/dap_adapters" }
+db = { path = "ide/db" }
+debug_adapter_extension = { path = "ide/debug_adapter_extension" }
+debugger_tools = { path = "ide/debugger_tools" }
+debugger_ui = { path = "ide/debugger_ui" }
+deepseek = { path = "ide/deepseek" }
+derive_refineable = { path = "ide/refineable/derive_refineable" }
+dev_container = { path = "ide/dev_container" }
+diagnostics = { path = "ide/diagnostics" }
+editor = { path = "ide/editor" }
+encoding_selector = { path = "ide/encoding_selector" }
+etw_tracing = { path = "ide/etw_tracing" }
+eval_utils = { path = "ide/eval_utils" }
+extension = { path = "ide/extension" }
+extension_host = { path = "ide/extension_host" }
+extensions_ui = { path = "ide/extensions_ui" }
+feature_flags = { path = "ide/feature_flags" }
+feedback = { path = "ide/feedback" }
+file_finder = { path = "ide/file_finder" }
+file_icons = { path = "ide/file_icons" }
+fs = { path = "ide/fs" }
+fuzzy = { path = "ide/fuzzy" }
+git = { path = "ide/git" }
+git_graph = { path = "ide/git_graph" }
+git_hosting_providers = { path = "ide/git_hosting_providers" }
+git_ui = { path = "ide/git_ui" }
+go_to_line = { path = "ide/go_to_line" }
+google_ai = { path = "ide/google_ai" }
+gpui = { path = "ide/gpui", default-features = false }
+gpui_linux = { path = "ide/gpui_linux", default-features = false }
+gpui_macos = { path = "ide/gpui_macos", default-features = false }
+gpui_macros = { path = "ide/gpui_macros" }
+gpui_platform = { path = "ide/gpui_platform", default-features = false }
+gpui_web = { path = "ide/gpui_web" }
+gpui_wgpu = { path = "ide/gpui_wgpu" }
+gpui_windows = { path = "ide/gpui_windows", default-features = false }
+gpui_tokio = { path = "ide/gpui_tokio" }
+gpui_util = { path = "ide/gpui_util" }
+html_to_markdown = { path = "ide/html_to_markdown" }
+http_client = { path = "ide/http_client" }
+http_client_tls = { path = "ide/http_client_tls" }
+icons = { path = "ide/icons" }
+image_viewer = { path = "ide/image_viewer" }
+edit_prediction_types = { path = "ide/edit_prediction_types" }
+edit_prediction_ui = { path = "ide/edit_prediction_ui" }
+edit_prediction_context = { path = "ide/edit_prediction_context" }
+inspector_ui = { path = "ide/inspector_ui" }
+install_cli = { path = "ide/install_cli" }
+journal = { path = "ide/journal" }
+json_schema_store = { path = "ide/json_schema_store" }
+keymap_editor = { path = "ide/keymap_editor" }
+language = { path = "ide/language" }
+language_extension = { path = "ide/language_extension" }
+language_model = { path = "ide/language_model" }
+language_models = { path = "ide/language_models" }
+language_onboarding = { path = "ide/language_onboarding" }
+language_selector = { path = "ide/language_selector" }
+language_tools = { path = "ide/language_tools" }
+languages = { path = "ide/languages" }
+line_ending_selector = { path = "ide/line_ending_selector" }
+livekit_api = { path = "ide/livekit_api" }
+livekit_client = { path = "ide/livekit_client" }
+lmstudio = { path = "ide/lmstudio" }
+lsp = { path = "ide/lsp" }
+markdown = { path = "ide/markdown" }
+markdown_preview = { path = "ide/markdown_preview" }
+svg_preview = { path = "ide/svg_preview" }
+media = { path = "ide/media" }
+menu = { path = "ide/menu" }
 mermaid-rs-renderer = { git = "https://github.com/zed-industries/mermaid-rs-renderer", rev = "374db9ead5426697c6c2111151d9f246899bc638", default-features = false }
-migrator = { path = "zed-upstream/crates/migrator" }
-mistral = { path = "zed-upstream/crates/mistral" }
-multi_buffer = { path = "zed-upstream/crates/multi_buffer" }
-miniprofiler_ui = { path = "zed-upstream/crates/miniprofiler_ui" }
-nc = { path = "zed-upstream/crates/nc" }
-net = { path = "zed-upstream/crates/net" }
-node_runtime = { path = "zed-upstream/crates/node_runtime" }
-notifications = { path = "zed-upstream/crates/notifications" }
-ollama = { path = "zed-upstream/crates/ollama" }
-onboarding = { path = "zed-upstream/crates/onboarding" }
-open_ai = { path = "zed-upstream/crates/open_ai" }
-open_path_prompt = { path = "zed-upstream/crates/open_path_prompt" }
-open_router = { path = "zed-upstream/crates/open_router", features = ["schemars"] }
-outline = { path = "zed-upstream/crates/outline" }
-outline_panel = { path = "zed-upstream/crates/outline_panel" }
-panel = { path = "zed-upstream/crates/panel" }
-paths = { path = "zed-upstream/crates/paths" }
-perf = { path = "zed-upstream/tooling/perf" }
-picker = { path = "zed-upstream/crates/picker" }
-prettier = { path = "zed-upstream/crates/prettier" }
-settings_profile_selector = { path = "zed-upstream/crates/settings_profile_selector" }
-project = { path = "zed-upstream/crates/project" }
-project_panel = { path = "zed-upstream/crates/project_panel" }
-project_symbols = { path = "zed-upstream/crates/project_symbols" }
-prompt_store = { path = "zed-upstream/crates/prompt_store" }
-proto = { path = "zed-upstream/crates/proto" }
-recent_projects = { path = "zed-upstream/crates/recent_projects" }
-refineable = { path = "zed-upstream/crates/refineable" }
-release_channel = { path = "zed-upstream/crates/release_channel" }
-remote = { path = "zed-upstream/crates/remote" }
-remote_connection = { path = "zed-upstream/crates/remote_connection" }
-remote_server = { path = "zed-upstream/crates/remote_server" }
-repl = { path = "zed-upstream/crates/repl" }
-reqwest_client = { path = "zed-upstream/crates/reqwest_client" }
+migrator = { path = "ide/migrator" }
+mistral = { path = "ide/mistral" }
+multi_buffer = { path = "ide/multi_buffer" }
+miniprofiler_ui = { path = "ide/miniprofiler_ui" }
+nc = { path = "ide/nc" }
+net = { path = "ide/net" }
+node_runtime = { path = "ide/node_runtime" }
+notifications = { path = "ide/notifications" }
+ollama = { path = "ide/ollama" }
+onboarding = { path = "ide/onboarding" }
+open_ai = { path = "ide/open_ai" }
+open_path_prompt = { path = "ide/open_path_prompt" }
+open_router = { path = "ide/open_router", features = ["schemars"] }
+outline = { path = "ide/outline" }
+outline_panel = { path = "ide/outline_panel" }
+panel = { path = "ide/panel" }
+paths = { path = "ide/paths" }
+perf = { path = "tooling/perf" }
+picker = { path = "ide/picker" }
+prettier = { path = "ide/prettier" }
+settings_profile_selector = { path = "ide/settings_profile_selector" }
+project = { path = "ide/project" }
+project_panel = { path = "ide/project_panel" }
+project_symbols = { path = "ide/project_symbols" }
+prompt_store = { path = "ide/prompt_store" }
+proto = { path = "ide/proto" }
+recent_projects = { path = "ide/recent_projects" }
+refineable = { path = "ide/refineable" }
+release_channel = { path = "ide/release_channel" }
+remote = { path = "ide/remote" }
+remote_connection = { path = "ide/remote_connection" }
+remote_server = { path = "ide/remote_server" }
+repl = { path = "ide/repl" }
+reqwest_client = { path = "ide/reqwest_client" }
 rodio = { git = "https://github.com/RustAudio/rodio", rev = "e50e726ddd0292f6ef9de0dda6b90af4ed1fb66a", features = ["wav", "playback", "wav_output", "recording"] }
-rope = { path = "zed-upstream/crates/rope" }
-rpc = { path = "zed-upstream/crates/rpc" }
-rules_library = { path = "zed-upstream/crates/rules_library" }
-scheduler = { path = "zed-upstream/crates/scheduler" }
-search = { path = "zed-upstream/crates/search" }
-session = { path = "zed-upstream/crates/session" }
-sidebar = { path = "zed-upstream/crates/sidebar" }
-settings = { path = "zed-upstream/crates/settings" }
-settings_content = { path = "zed-upstream/crates/settings_content" }
-settings_json = { path = "zed-upstream/crates/settings_json" }
-settings_macros = { path = "zed-upstream/crates/settings_macros" }
-settings_ui = { path = "zed-upstream/crates/settings_ui" }
-shell_command_parser = { path = "zed-upstream/crates/shell_command_parser" }
-snippet = { path = "zed-upstream/crates/snippet" }
-snippet_provider = { path = "zed-upstream/crates/snippet_provider" }
-snippets_ui = { path = "zed-upstream/crates/snippets_ui" }
-sqlez = { path = "zed-upstream/crates/sqlez" }
-sqlez_macros = { path = "zed-upstream/crates/sqlez_macros" }
-story = { path = "zed-upstream/crates/story" }
-streaming_diff = { path = "zed-upstream/crates/streaming_diff" }
-sum_tree = { path = "zed-upstream/crates/sum_tree" }
-codestral = { path = "zed-upstream/crates/codestral" }
-system_specs = { path = "zed-upstream/crates/system_specs" }
-tab_switcher = { path = "zed-upstream/crates/tab_switcher" }
-task = { path = "zed-upstream/crates/task" }
-tasks_ui = { path = "zed-upstream/crates/tasks_ui" }
-telemetry = { path = "zed-upstream/crates/telemetry" }
-telemetry_events = { path = "zed-upstream/crates/telemetry_events" }
-terminal = { path = "zed-upstream/crates/terminal" }
-terminal_view = { path = "zed-upstream/crates/terminal_view" }
-text = { path = "zed-upstream/crates/text" }
-theme = { path = "zed-upstream/crates/theme" }
-theme_extension = { path = "zed-upstream/crates/theme_extension" }
-theme_selector = { path = "zed-upstream/crates/theme_selector" }
-time_format = { path = "zed-upstream/crates/time_format" }
-platform_title_bar = { path = "zed-upstream/crates/platform_title_bar" }
-title_bar = { path = "zed-upstream/crates/title_bar" }
-toolchain_selector = { path = "zed-upstream/crates/toolchain_selector" }
-ui = { path = "zed-upstream/crates/ui" }
-ui_input = { path = "zed-upstream/crates/ui_input" }
-ui_macros = { path = "zed-upstream/crates/ui_macros" }
-ui_prompt = { path = "zed-upstream/crates/ui_prompt" }
-util = { path = "zed-upstream/crates/util" }
-util_macros = { path = "zed-upstream/crates/util_macros" }
-vercel = { path = "zed-upstream/crates/vercel" }
-vim = { path = "zed-upstream/crates/vim" }
-vim_mode_setting = { path = "zed-upstream/crates/vim_mode_setting" }
-which_key = { path = "zed-upstream/crates/which_key" }
-watch = { path = "zed-upstream/crates/watch" }
-web_search = { path = "zed-upstream/crates/web_search" }
-web_search_providers = { path = "zed-upstream/crates/web_search_providers" }
-workspace = { path = "zed-upstream/crates/workspace" }
-worktree = { path = "zed-upstream/crates/worktree" }
-x_ai = { path = "zed-upstream/crates/x_ai" }
-zed = { path = "zed-upstream/crates/zed" }
-zed_actions = { path = "zed-upstream/crates/zed_actions" }
-zed_env_vars = { path = "zed-upstream/crates/zed_env_vars" }
-edit_prediction = { path = "zed-upstream/crates/edit_prediction" }
-zeta_prompt = { path = "zed-upstream/crates/zeta_prompt" }
-zlog = { path = "zed-upstream/crates/zlog" }
-zlog_settings = { path = "zed-upstream/crates/zlog_settings" }
-ztracing = { path = "zed-upstream/crates/ztracing" }
-ztracing_macro = { path = "zed-upstream/crates/ztracing_macro" }
+rope = { path = "ide/rope" }
+rpc = { path = "ide/rpc" }
+rules_library = { path = "ide/rules_library" }
+scheduler = { path = "ide/scheduler" }
+search = { path = "ide/search" }
+session = { path = "ide/session" }
+sidebar = { path = "ide/sidebar" }
+settings = { path = "ide/settings" }
+settings_content = { path = "ide/settings_content" }
+settings_json = { path = "ide/settings_json" }
+settings_macros = { path = "ide/settings_macros" }
+settings_ui = { path = "ide/settings_ui" }
+shell_command_parser = { path = "ide/shell_command_parser" }
+snippet = { path = "ide/snippet" }
+snippet_provider = { path = "ide/snippet_provider" }
+snippets_ui = { path = "ide/snippets_ui" }
+sqlez = { path = "ide/sqlez" }
+sqlez_macros = { path = "ide/sqlez_macros" }
+story = { path = "ide/story" }
+streaming_diff = { path = "ide/streaming_diff" }
+sum_tree = { path = "ide/sum_tree" }
+codestral = { path = "ide/codestral" }
+system_specs = { path = "ide/system_specs" }
+tab_switcher = { path = "ide/tab_switcher" }
+task = { path = "ide/task" }
+tasks_ui = { path = "ide/tasks_ui" }
+telemetry = { path = "ide/telemetry" }
+telemetry_events = { path = "ide/telemetry_events" }
+terminal = { path = "ide/terminal" }
+terminal_view = { path = "ide/terminal_view" }
+text = { path = "ide/text" }
+theme = { path = "ide/theme" }
+theme_extension = { path = "ide/theme_extension" }
+theme_selector = { path = "ide/theme_selector" }
+time_format = { path = "ide/time_format" }
+platform_title_bar = { path = "ide/platform_title_bar" }
+title_bar = { path = "ide/title_bar" }
+toolchain_selector = { path = "ide/toolchain_selector" }
+ui = { path = "ide/ui" }
+ui_input = { path = "ide/ui_input" }
+ui_macros = { path = "ide/ui_macros" }
+ui_prompt = { path = "ide/ui_prompt" }
+util = { path = "ide/util" }
+util_macros = { path = "ide/util_macros" }
+vercel = { path = "ide/vercel" }
+vim = { path = "ide/vim" }
+vim_mode_setting = { path = "ide/vim_mode_setting" }
+which_key = { path = "ide/which_key" }
+watch = { path = "ide/watch" }
+web_search = { path = "ide/web_search" }
+web_search_providers = { path = "ide/web_search_providers" }
+workspace = { path = "ide/workspace" }
+worktree = { path = "ide/worktree" }
+x_ai = { path = "ide/x_ai" }
+zed = { path = "ide/zed" }
+zed_actions = { path = "ide/zed_actions" }
+zed_env_vars = { path = "ide/zed_env_vars" }
+edit_prediction = { path = "ide/edit_prediction" }
+zeta_prompt = { path = "ide/zeta_prompt" }
+zlog = { path = "ide/zlog" }
+zlog_settings = { path = "ide/zlog_settings" }
+ztracing = { path = "ide/ztracing" }
+ztracing_macro = { path = "ide/ztracing_macro" }
 
 #
 # External crates (merged PrisM + Zed)
