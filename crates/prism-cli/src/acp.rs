@@ -995,6 +995,12 @@ fn tool_title(bt: Option<BuiltinTool>, name: &str, args: &serde_json::Value) -> 
         Some(BuiltinTool::AddDir) => {
             format!("Add dir {}", args["path"].as_str().unwrap_or("(unknown)"))
         }
+        Some(BuiltinTool::AskHuman) => {
+            format!(
+                "Ask human: {}",
+                common::truncate_with_ellipsis(args["question"].as_str().unwrap_or("question"), 60)
+            )
+        }
         None => name.to_string(),
     }
 }

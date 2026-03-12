@@ -13,12 +13,13 @@ impl SqliteStore {
         from_agent: &str,
         to_agent: &str,
         content: &str,
+        conversation_id: Option<Uuid>,
     ) -> Result<Message> {
         let id = Uuid::new_v4();
         let now = now_rfc3339();
         sqlx::query(
-            "INSERT INTO messages (id, workspace_id, from_agent, to_agent, content, read, created_at)
-             VALUES ($1, $2, $3, $4, $5, 0, $6)",
+            "INSERT INTO messages (id, workspace_id, from_agent, to_agent, content, read, created_at, conversation_id)
+             VALUES ($1, $2, $3, $4, $5, 0, $6, $7)",
         )
         .bind(id.to_string())
         .bind(workspace_id.to_string())
@@ -26,6 +27,7 @@ impl SqliteStore {
         .bind(to_agent)
         .bind(content)
         .bind(&now)
+        .bind(conversation_id.map(|u| u.to_string()))
         .execute(&self.pool)
         .await?;
 
@@ -37,6 +39,7 @@ impl SqliteStore {
             content: content.to_string(),
             read: false,
             created_at: parse_time(&now)?,
+            conversation_id,
         })
     }
 
@@ -47,12 +50,12 @@ impl SqliteStore {
         unread_only: bool,
     ) -> Result<Vec<Message>> {
         let sql = if unread_only {
-            "SELECT id, workspace_id, from_agent, to_agent, content, read, created_at
+            "SELECT id, workspace_id, from_agent, to_agent, content, read, created_at, conversation_id
              FROM messages
              WHERE workspace_id = $1 AND to_agent = $2 AND read = 0
              ORDER BY created_at ASC"
         } else {
-            "SELECT id, workspace_id, from_agent, to_agent, content, read, created_at
+            "SELECT id, workspace_id, from_agent, to_agent, content, read, created_at, conversation_id
              FROM messages
              WHERE workspace_id = $1 AND to_agent = $2
              ORDER BY created_at ASC"
@@ -132,6 +135,11 @@ impl SqliteStore {
 }
 
 fn row_to_message(row: &sqlx::sqlite::SqliteRow) -> Result<Message> {
+    let conv_id = row
+        .try_get::<Option<String>, _>("conversation_id")?
+        .as_deref()
+        .map(parse_uuid)
+        .transpose()?;
     Ok(Message {
         id: parse_uuid(&row.try_get::<String, _>("id")?)?,
         workspace_id: parse_uuid(&row.try_get::<String, _>("workspace_id")?)?,
@@ -140,5 +148,6 @@ fn row_to_message(row: &sqlx::sqlite::SqliteRow) -> Result<Message> {
         content: row.try_get("content")?,
         read: row.try_get::<i64, _>("read")? != 0,
         created_at: parse_time(&row.try_get::<String, _>("created_at")?)?,
+        conversation_id: conv_id,
     })
 }

@@ -220,13 +220,20 @@ pub async fn anthropic_messages(
         let msg_id = format!("msg_{}", Uuid::new_v4().simple());
         let anthropic_stream = openai_sse_to_anthropic_sse(relay, msg_id, model_id.clone());
 
-        let sse_stream = anthropic_stream.flat_map(|item| {
-            let events: Vec<std::result::Result<Event, std::convert::Infallible>> = match item {
-                Ok(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes).into_owned();
-                    text.split("\n\n")
-                        .filter(|block| !block.trim().is_empty())
-                        .filter_map(|block| {
+        // Use scan to buffer across chunks so partial SSE frames (chunks that
+        // don't end with \n\n) don't get emitted as incomplete events.
+        let sse_stream = futures::StreamExt::flat_map(
+            futures::StreamExt::scan(anthropic_stream, String::new(), |buf, item| {
+                let events: Vec<std::result::Result<Event, std::convert::Infallible>> = match item {
+                    Ok(bytes) => {
+                        buf.push_str(&String::from_utf8_lossy(&bytes));
+                        let mut events = Vec::new();
+                        while let Some(pos) = buf.find("\n\n") {
+                            let block = buf[..pos].to_string();
+                            buf.drain(..pos + 2);
+                            if block.trim().is_empty() {
+                                continue;
+                            }
                             let mut event_type: Option<String> = None;
                             let mut data_str: Option<String> = None;
                             for line in block.lines() {
@@ -241,19 +248,19 @@ pub async fn anthropic_messages(
                                 if let Some(et) = event_type {
                                     ev = ev.event(et);
                                 }
-                                Some(Ok(ev))
-                            } else {
-                                None
+                                events.push(Ok(ev));
                             }
-                        })
-                        .collect()
-                }
-                Err(e) => {
-                    vec![Ok(crate::proxy::streaming::stream_error_event(&e))]
-                }
-            };
-            futures::stream::iter(events)
-        });
+                        }
+                        events
+                    }
+                    Err(e) => {
+                        vec![Ok(crate::proxy::streaming::stream_error_event(&e))]
+                    }
+                };
+                futures::future::ready(Some(events))
+            }),
+            |events| futures::stream::iter(events),
+        );
 
         // Spawn a background task to capture usage and emit the inference event once
         // the stream finishes.

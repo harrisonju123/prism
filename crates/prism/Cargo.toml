@@ -33,6 +33,7 @@ tracing-loki      = ["dep:tracing-loki"]
 
 [dependencies]
 prism-types = { workspace = true }
+uglyhat = { workspace = true }
 
 # HTTP server
 axum = { workspace = true }

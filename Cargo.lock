@@ -14037,6 +14037,7 @@ dependencies = [
  "tracing",
  "tracing-loki",
  "tracing-subscriber",
+ "uglyhat",
  "utoipa",
  "utoipa-swagger-ui",
  "uuid",

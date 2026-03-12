@@ -182,6 +182,9 @@ enum Commands {
         to: String,
         /// Message content
         message: String,
+        /// Optional conversation UUID to group related messages
+        #[arg(long)]
+        conversation: Option<String>,
     },
 
     /// Plan management (intent-driven work decomposition)
@@ -1006,9 +1009,17 @@ async fn run(cli: Cli) -> Result<(), String> {
                 .map_err(|e| e.to_string())?;
             print_json(&messages);
         }
-        Commands::Send { to, message } => {
+        Commands::Send {
+            to,
+            message,
+            conversation,
+        } => {
+            let conv_id = conversation
+                .as_deref()
+                .map(|s| s.parse::<Uuid>().map_err(|e| format!("invalid conversation id: {e}")))
+                .transpose()?;
             let msg = store
-                .send_message(workspace_id, &agent_name(), &to, &message)
+                .send_message(workspace_id, &agent_name(), &to, &message, conv_id)
                 .await
                 .map_err(|e| e.to_string())?;
             print_json(&msg);

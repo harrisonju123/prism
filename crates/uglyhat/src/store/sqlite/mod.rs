@@ -401,8 +401,9 @@ impl Store for SqliteStore {
         from_agent: &str,
         to_agent: &str,
         content: &str,
+        conversation_id: Option<Uuid>,
     ) -> Result<Message> {
-        self.send_message_impl(workspace_id, from_agent, to_agent, content)
+        self.send_message_impl(workspace_id, from_agent, to_agent, content, conversation_id)
             .await
     }
 

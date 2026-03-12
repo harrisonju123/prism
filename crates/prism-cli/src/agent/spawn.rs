@@ -2,6 +2,7 @@ use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use uuid::Uuid;
 
 use uglyhat::model::{HandoffConstraints, HandoffMode};
 
@@ -21,6 +22,9 @@ pub struct SpawnConfig {
     /// Handoff mode (delegate-and-await vs fire-and-forget)
     #[serde(default)]
     pub handoff_mode: Option<HandoffMode>,
+    /// Handoff ID assigned by the parent — passed to child via PRISM_HANDOFF_ID.
+    #[serde(default, skip)]
+    pub handoff_id: Option<Uuid>,
 }
 
 impl SpawnConfig {
@@ -43,6 +47,7 @@ impl SpawnConfig {
             thread: args["thread"].as_str().map(str::to_string),
             constraints,
             handoff_mode,
+            handoff_id: None,
         }
     }
 }
@@ -83,6 +88,10 @@ pub async fn spawn_agent(
         && let Ok(json) = serde_json::to_string(constraints)
     {
         cmd.env("UH_CONSTRAINTS", json);
+    }
+    // Forward handoff id so the child can accept it on startup
+    if let Some(hid) = config.handoff_id {
+        cmd.env("PRISM_HANDOFF_ID", hid.to_string());
     }
     // Forward plan mode so children don't escape to default/auto
     if let Ok(mode) = std::env::var("PRISM_PERMISSION_MODE") {

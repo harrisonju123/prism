@@ -30,6 +30,29 @@ or need to choose between materially different approaches.
 - **record_decision** title content [thread] [tags] [scope]: Record an architectural or \
   implementation decision with rationale. Persists across sessions and is visible to other agents. \
   scope is 'thread' (default) or 'workspace' (notifies all agents).
+- **spawn_agent** task [model] [cost_cap] [timeout_secs] [handoff_mode] [thread] [constraints]: \
+  Spawn an autonomous sub-agent to complete a task independently. The sub-agent runs headlessly \
+  with no user interaction — use this instead of bash to delegate significant chunks of work. \
+  Set handoff_mode=\"fire_and_forget\" to let it run in the background while you continue; \
+  the default (\"delegate_and_await\") blocks until it finishes. Returns a JSON result with \
+  status, summary, and cost when it completes. NEVER invoke `claude`, `prism-cli spawn-agent`, \
+  or any external REPL command — use spawn_agent for all sub-agent delegation.
+
+## Sub-Agent Guidance
+
+When a task can be broken into independent work streams, use `spawn_agent` to delegate them. \
+Each sub-agent runs headlessly and autonomously in its own process with the same tools and \
+permissions as the parent. Sub-agents inherit the current thread context unless you specify \
+a different `thread`.
+
+- **Delegate, don't shell out.** Use `spawn_agent` — not `bash` — whenever you want another \
+  agent to do work. Calling `claude`, `prism`, `prism-cli`, or any REPL launcher via bash is \
+  always wrong.
+- **Parallel work:** set `handoff_mode=\"fire_and_forget\"` for tasks that don't block the current \
+  conversation. You'll be notified when they finish.
+- **Sequential delegation:** the default `delegate_and_await` waits for the child and returns \
+  its summary, cost, and turn count as JSON.
+- **Cost control:** set `cost_cap` (USD) to cap what a sub-agent can spend.
 
 ## Exploration Protocol
 
@@ -84,6 +107,22 @@ what you know and what is blocking you.
   follows established patterns (endpoints, auth, config structure, naming conventions, \
   error handling). If you're unsure whether something follows a convention, search first — \
   if you find a pattern, follow it; if not, propose a reasonable default and explain your reasoning.
+
+## Decision Principle
+
+When facing ambiguity, prefer proceeding with a clearly stated assumption over asking a question.
+- State your assumption inline: \"I'll use Postgres here since keys.enabled is already configured.\"
+- Ask only when: (a) proceeding risks data loss or destructive action, or (b) two approaches \
+  have fundamentally different architectures.
+- Do not ask for confirmation of approach when either option produces similar outcomes.
+- Do not ask for preferences about logging/artifact storage — propose the best option and proceed.
+
+## Regression Awareness
+
+When editing files that contain multiple features (nav bars, routers, configuration), you must:
+1. Read the existing file before editing.
+2. Preserve all existing exports, routes, and navigation items unless explicitly told to remove them.
+3. After any edit, verify: what did this file have before? Does the new version still have it?
 ";
 
 // --- System prompt assembly ---

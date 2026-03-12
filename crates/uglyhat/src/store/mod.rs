@@ -299,6 +299,7 @@ pub trait Store: Send + Sync {
         from_agent: &str,
         to_agent: &str,
         content: &str,
+        conversation_id: Option<Uuid>,
     ) -> Result<Message>;
     async fn list_messages(
         &self,

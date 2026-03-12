@@ -76,6 +76,12 @@ pub async fn run_interactive(
         }
     };
 
+    // Register "human" as a first-class agent so it appears in uh agents and can receive messages.
+    if let Some((store, ws_id)) = agent.uh_store_context() {
+        use uglyhat::store::Store as _;
+        let _ = store.checkin(ws_id, "human", vec![], None).await;
+    }
+
     // Install a ctrl-c handler that sets the shared flag. In REPL mode we want Ctrl+C at the
     // prompt to exit, and Ctrl+C during a turn to interrupt just that turn.
     let interrupt_flag = agent.interrupted.clone();
@@ -104,6 +110,33 @@ pub async fn run_interactive(
         // Show any background task completions before the prompt (non-consuming)
         for note in agent.poll_background_notifications() {
             eprintln!("{note}");
+        }
+
+        // Surface pending inbox entries (e.g. from subagents via ask_human)
+        // and direct messages addressed to "human" before each prompt.
+        if let Some((store, ws_id)) = agent.uh_store_context() {
+            use uglyhat::store::{InboxFilters, Store};
+            let filters = InboxFilters {
+                unread_only: true,
+                include_dismissed: false,
+                limit: 10,
+                entry_type: None,
+            };
+            if let Ok(entries) = store.list_inbox_entries(ws_id, filters).await {
+                for e in &entries {
+                    let from = e.source_agent.as_deref().unwrap_or("agent");
+                    eprintln!("[inbox/{}/{}] {}", e.severity, from, e.body);
+                    let _ = store.mark_inbox_read(ws_id, e.id).await;
+                }
+            }
+            if let Ok(msgs) = store.list_messages(ws_id, "human", true).await {
+                for m in &msgs {
+                    eprintln!("[message from {}] {}", m.from_agent, m.content);
+                }
+                if !msgs.is_empty() {
+                    let _ = store.mark_messages_read(ws_id, "human").await;
+                }
+            }
         }
 
         eprint!("> ");
@@ -179,6 +212,15 @@ pub async fn run_interactive(
         } else {
             input
         };
+
+        // Record the human's task as a Plan in uglyhat — fire-and-forget.
+        if let Some((store, ws_id)) = agent.uh_store_context() {
+            let intent = task_str.to_string();
+            tokio::spawn(async move {
+                use uglyhat::store::Store;
+                let _ = store.create_plan(ws_id, &intent).await;
+            });
+        }
 
         // Reset interrupt so Ctrl+C during this turn only interrupts the turn
         agent.interrupted.store(false, Ordering::SeqCst);

@@ -10,6 +10,8 @@ import { Benchmarks } from "./pages/Benchmarks";
 import { WasteDetails } from "./pages/WasteDetails";
 import { Routing } from "./pages/Routing";
 import { MCPTracing } from "./pages/MCPTracing";
+import { Inbox } from "./pages/Inbox";
+import { Debugging } from "./pages/Debugging";
 import { PageTransition } from "./components/common/PageTransition";
 import type { TimeRange } from "./hooks/useStats";
 
@@ -36,10 +38,18 @@ function AnimatedRoutes({ timeRange }: { timeRange: TimeRange }) {
           <Route path="/" element={<Dashboard timeRange={timeRange} />} />
           <Route path="/events" element={<Events timeRange={timeRange} />} />
           <Route path="/alerts" element={<Alerts />} />
-          <Route path="/benchmarks" element={<Benchmarks timeRange={timeRange} />} />
-          <Route path="/waste" element={<WasteDetails timeRange={timeRange} />} />
+          <Route
+            path="/benchmarks"
+            element={<Benchmarks timeRange={timeRange} />}
+          />
+          <Route
+            path="/waste"
+            element={<WasteDetails timeRange={timeRange} />}
+          />
           <Route path="/routing" element={<Routing />} />
           <Route path="/mcp" element={<MCPTracing timeRange={timeRange} />} />
+          <Route path="/inbox" element={<Inbox />} />
+          <Route path="/debugging" element={<Debugging />} />
         </Routes>
       </PageTransition>
     </AnimatePresence>

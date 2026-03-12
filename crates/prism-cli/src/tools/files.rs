@@ -1,4 +1,37 @@
+use similar::{ChangeTag, TextDiff};
 use std::path::Path;
+
+fn plain_diff(path: &str, old: &str, new: &str) -> String {
+    let diff = TextDiff::from_lines(old, new);
+    let mut out = format!("--- a/{path}\n+++ b/{path}\n");
+    for group in diff.grouped_ops(3) {
+        let first = group.first().unwrap();
+        let last = group.last().unwrap();
+        let old_start = first.old_range().start + 1;
+        let old_len = last.old_range().end - first.old_range().start;
+        let new_start = first.new_range().start + 1;
+        let new_len = last.new_range().end - first.new_range().start;
+        out.push_str(&format!(
+            "@@ -{old_start},{old_len} +{new_start},{new_len} @@\n"
+        ));
+        for op in &group {
+            for change in diff.iter_changes(op) {
+                let prefix = match change.tag() {
+                    ChangeTag::Delete => "-",
+                    ChangeTag::Insert => "+",
+                    ChangeTag::Equal => " ",
+                };
+                let value = change.as_str().unwrap_or("");
+                out.push_str(prefix);
+                out.push_str(value);
+                if change.missing_newline() {
+                    out.push('\n');
+                }
+            }
+        }
+    }
+    out
+}
 
 pub async fn read_file(path: &str, offset: Option<usize>, limit: Option<usize>) -> String {
     let contents = match tokio::fs::read_to_string(path).await {
@@ -62,7 +95,7 @@ pub async fn edit_file(path: &str, old_string: &str, new_string: &str) -> String
     }
     let new_contents = contents.replacen(old_string, new_string, 1);
     match tokio::fs::write(path, &new_contents).await {
-        Ok(()) => format!("edited {path}"),
+        Ok(()) => plain_diff(path, &contents, &new_contents),
         Err(e) => format!("error writing {path}: {e}"),
     }
 }
@@ -103,7 +136,11 @@ mod tests {
         write!(f, "hello world").unwrap();
         let path = f.path().to_str().unwrap();
         let result = edit_file(path, "world", "rust").await;
-        assert_eq!(result, format!("edited {path}"));
+        assert!(result.contains("+++ b/"), "expected diff, got: {result}");
+        assert!(
+            result.contains("+hello rust"),
+            "expected inserted line, got: {result}"
+        );
         let contents = tokio::fs::read_to_string(path).await.unwrap();
         assert_eq!(contents, "hello rust");
     }

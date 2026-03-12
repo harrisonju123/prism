@@ -6,12 +6,15 @@ import {
   List,
   Bell,
   FlaskConical,
+  Inbox,
   Scale,
   Route,
   Plug,
+  Bug,
 } from "lucide-react";
 import type { TimeRange } from "../../hooks/useStats";
 import { LiveIndicator } from "../common/LiveIndicator";
+import { useUnreadInboxCount } from "../../hooks/useInbox";
 
 interface ShellProps {
   timeRange: TimeRange;
@@ -27,20 +30,27 @@ const RANGES: { label: string; value: TimeRange; shortcut: string }[] = [
 
 const NAV_ITEMS = [
   { to: "/", label: "Overview", icon: BarChart3 },
+  { to: "/inbox", label: "Inbox", icon: Inbox },
   { to: "/events", label: "Events", icon: List },
   { to: "/alerts", label: "Alerts", icon: Bell },
   { to: "/benchmarks", label: "Benchmarks", icon: FlaskConical },
   { to: "/waste", label: "Waste", icon: Scale },
   { to: "/routing", label: "Routing", icon: Route },
   { to: "/mcp", label: "MCP Tracing", icon: Plug },
+  { to: "/debugging", label: "Debugging", icon: Bug },
 ] as const;
 
 export function Shell({ timeRange, onTimeRangeChange, children }: ShellProps) {
   const location = useLocation();
+  const inboxUnread = useUnreadInboxCount();
 
   useEffect(() => {
     function handleKey(e: KeyboardEvent) {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      )
+        return;
       const match = RANGES.find((r) => r.shortcut === e.key);
       if (match) onTimeRangeChange(match.value);
     }
@@ -50,7 +60,9 @@ export function Shell({ timeRange, onTimeRangeChange, children }: ShellProps) {
 
   useEffect(() => {
     const current = NAV_ITEMS.find((item) =>
-      item.to === "/" ? location.pathname === "/" : location.pathname.startsWith(item.to)
+      item.to === "/"
+        ? location.pathname === "/"
+        : location.pathname.startsWith(item.to),
     );
     const page = current?.label ?? "PrisM";
     document.title = `${page} [${timeRange}] — PrisM`;
@@ -59,7 +71,15 @@ export function Shell({ timeRange, onTimeRangeChange, children }: ShellProps) {
   return (
     <div className="min-h-screen bg-[#020409] text-[var(--text-primary)] flex">
       {/* Sidebar */}
-      <aside className="w-52 shrink-0 rounded-none flex flex-col relative" style={{ background: 'var(--glass-bg)', backdropFilter: 'blur(var(--glass-blur))', WebkitBackdropFilter: 'blur(var(--glass-blur))', borderRight: '1px solid var(--glass-border)' }}>
+      <aside
+        className="w-52 shrink-0 rounded-none flex flex-col relative"
+        style={{
+          background: "var(--glass-bg)",
+          backdropFilter: "blur(var(--glass-blur))",
+          WebkitBackdropFilter: "blur(var(--glass-blur))",
+          borderRight: "1px solid var(--glass-border)",
+        }}
+      >
         {/* Gradient accent on right edge */}
         <div className="absolute right-0 top-0 bottom-0 w-px bg-gradient-to-b from-transparent via-violet-500/30 to-transparent pointer-events-none" />
 
@@ -95,9 +115,10 @@ export function Shell({ timeRange, onTimeRangeChange, children }: ShellProps) {
         {/* Navigation */}
         <nav className="relative flex-1 px-2 py-3 flex flex-col gap-0.5">
           {NAV_ITEMS.map(({ to, label, icon: Icon }) => {
-            const isActive = to === "/"
-              ? location.pathname === "/"
-              : location.pathname.startsWith(to);
+            const isActive =
+              to === "/"
+                ? location.pathname === "/"
+                : location.pathname.startsWith(to);
 
             return (
               <NavLink
@@ -115,7 +136,8 @@ export function Shell({ timeRange, onTimeRangeChange, children }: ShellProps) {
                     className="absolute inset-0 rounded-md"
                     style={{
                       background: "rgba(139, 92, 246, 0.12)",
-                      boxShadow: "0 0 12px rgba(139, 92, 246, 0.15), inset 0 0 0 1px rgba(139, 92, 246, 0.2)",
+                      boxShadow:
+                        "0 0 12px rgba(139, 92, 246, 0.15), inset 0 0 0 1px rgba(139, 92, 246, 0.2)",
                     }}
                     transition={{
                       type: "spring",
@@ -126,6 +148,11 @@ export function Shell({ timeRange, onTimeRangeChange, children }: ShellProps) {
                 )}
                 <Icon className="w-4 h-4 shrink-0 relative z-10" />
                 <span className="relative z-10">{label}</span>
+                {to === "/inbox" && inboxUnread > 0 && (
+                  <span className="relative z-10 ml-auto text-[10px] bg-violet-600/40 text-violet-300 px-1.5 py-0.5 rounded-full font-medium leading-none">
+                    {inboxUnread}
+                  </span>
+                )}
               </NavLink>
             );
           })}
@@ -161,7 +188,8 @@ export function Shell({ timeRange, onTimeRangeChange, children }: ShellProps) {
                       className="absolute inset-0 rounded"
                       style={{
                         background: "rgba(139, 92, 246, 0.15)",
-                        boxShadow: "0 0 10px rgba(139, 92, 246, 0.12), inset 0 0 0 1px rgba(139, 92, 246, 0.25)",
+                        boxShadow:
+                          "0 0 10px rgba(139, 92, 246, 0.12), inset 0 0 0 1px rgba(139, 92, 246, 0.25)",
                       }}
                       transition={{
                         type: "spring",

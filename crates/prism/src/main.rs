@@ -767,6 +767,35 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Open uglyhat SQLite store for agent inbox/handoff APIs (best-effort).
+    // Discovers .uglyhat.json by walking up from the current working directory.
+    let (uh_store_arc, uh_workspace_id) = {
+        use uglyhat::config as uh_config;
+        use uglyhat::store::sqlite::SqliteStore;
+
+        let result: (Option<Arc<SqliteStore>>, Option<uuid::Uuid>) = async {
+            let cwd = std::env::current_dir().ok()?;
+            let cfg_path = uh_config::find_config(&cwd)?;
+            let cfg = uh_config::load_config(&cfg_path).ok()?;
+            let ws_id = cfg.workspace_id.parse::<uuid::Uuid>().ok()?;
+            let db_path = uh_config::resolve_db_path(&cfg_path, &cfg);
+            match SqliteStore::open(&db_path.to_string_lossy()).await {
+                Ok(store) => {
+                    tracing::info!(path = %db_path.display(), "uglyhat store opened");
+                    Some((Arc::new(store), ws_id))
+                }
+                Err(e) => {
+                    tracing::debug!(error = %e, "uglyhat store open failed");
+                    None
+                }
+            }
+        }
+        .await
+        .map(|(s, w)| (Some(s), Some(w)))
+        .unwrap_or((None, None));
+        result
+    };
+
     // Build app state
     let state = Arc::new(
         crate::proxy::AppStateBuilder::new(config.clone())
@@ -796,6 +825,7 @@ async fn main() -> anyhow::Result<()> {
             .with_audit_service_opt(audit_service)
             .with_alias_cache_opt(alias_cache)
             .with_alias_repo_opt(alias_repo)
+            .with_uh_store(uh_store_arc, uh_workspace_id)
             .build()
             .expect("AppState construction is infallible after main.rs init"),
     );

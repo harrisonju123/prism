@@ -30,6 +30,8 @@ pub mod prompts;
 #[cfg(feature = "full")]
 pub mod routing;
 #[cfg(feature = "full")]
+pub mod agents;
+#[cfg(feature = "full")]
 pub mod sessions;
 #[cfg(feature = "full")]
 pub mod stats;

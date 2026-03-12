@@ -406,6 +406,7 @@ async fn run(cli: Cli) -> Result<()> {
                 thread: None,
                 constraints: None,
                 handoff_mode: None,
+                handoff_id: None,
             };
             let result = prism_cli::agent::spawn::spawn_agent(
                 spawn_config,

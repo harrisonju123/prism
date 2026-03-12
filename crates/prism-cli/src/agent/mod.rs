@@ -6,10 +6,11 @@ use chrono::Utc;
 use futures::StreamExt;
 use prism_client::PrismClient;
 use prism_types::{ChatCompletionRequest, Message, MessageRole};
+use regex::Regex;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use tokio::task::JoinSet;
 use uuid::Uuid;
@@ -60,6 +61,95 @@ fn has_decision_signals(text: &str) -> bool {
         "which approach",
         "pros and cons",
         "evaluate alternatives",
+    ];
+    SIGNALS.iter().any(|s| lower.contains(s))
+}
+
+/// Extract "named anchors" from file content: exports, routes, nav links, and top-level Rust fns.
+/// Used by Guard C to detect when a write would silently remove existing named items.
+fn extract_named_anchors(content: &str) -> HashSet<String> {
+    static EXPORT_RE: OnceLock<Regex> = OnceLock::new();
+    static ROUTE_RE: OnceLock<Regex> = OnceLock::new();
+    static NAV_RE: OnceLock<Regex> = OnceLock::new();
+    static FN_RE: OnceLock<Regex> = OnceLock::new();
+
+    let export_re = EXPORT_RE.get_or_init(|| {
+        Regex::new(r#"export\s+(?:function|class|const|type|interface)\s+(\w+)"#).unwrap()
+    });
+    let route_re =
+        ROUTE_RE.get_or_init(|| Regex::new(r#"path=["']([^"']+)["']"#).unwrap());
+    let nav_re = NAV_RE.get_or_init(|| Regex::new(r#"\bto=["']([^"']+)["']"#).unwrap());
+    let fn_re = FN_RE.get_or_init(|| {
+        Regex::new(r#"(?m)^(?:pub\s+)?(?:async\s+)?fn\s+(\w+)"#).unwrap()
+    });
+
+    let mut anchors = HashSet::new();
+    for cap in export_re.captures_iter(content) {
+        if let Some(m) = cap.get(1) {
+            anchors.insert(m.as_str().to_string());
+        }
+    }
+    for cap in route_re.captures_iter(content) {
+        if let Some(m) = cap.get(1) {
+            anchors.insert(format!("route:{}", m.as_str()));
+        }
+    }
+    for cap in nav_re.captures_iter(content) {
+        if let Some(m) = cap.get(1) {
+            anchors.insert(format!("nav:{}", m.as_str()));
+        }
+    }
+    for cap in fn_re.captures_iter(content) {
+        if let Some(m) = cap.get(1) {
+            anchors.insert(format!("fn:{}", m.as_str()));
+        }
+    }
+    anchors
+}
+
+/// Classify TypeScript/compiler error output to detect environment-level issues
+/// (missing @types, tsconfig misconfiguration) vs real code bugs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ErrorClass {
+    /// Missing @types, jsx-runtime, tsconfig — cannot be fixed by editing source files.
+    Environment,
+    /// Type mismatches, undefined vars, wrong props — fixable via code edits.
+    Code,
+    Unknown,
+}
+
+fn classify_ts_errors(output: &str) -> ErrorClass {
+    const ENV_PATTERNS: &[&str] = &[
+        "Cannot find module",
+        "could not find declaration file",
+        "JSX element implicitly has type 'any' because no interface 'JSX.IntrinsicElements'",
+        "requires the module path 'react/jsx-runtime' to exist",
+        "Cannot find name 'React'",
+    ];
+    const CODE_PATTERNS: &[&str] = &[
+        "is not assignable to type",
+        "does not exist on type",
+        "Property '",
+        "Argument of type",
+        "Type '",
+    ];
+
+    let is_env = ENV_PATTERNS.iter().any(|p| output.contains(p));
+    let is_code = CODE_PATTERNS.iter().any(|p| output.contains(p));
+
+    match (is_env, is_code) {
+        (true, false) => ErrorClass::Environment,
+        (_, true) => ErrorClass::Code,
+        _ => ErrorClass::Unknown,
+    }
+}
+
+/// Returns true if the assistant text contains common completion signals.
+fn has_completion_signals(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    const SIGNALS: &[&str] = &[
+        "done", "implemented", "added", "wired", "here's what", "here is what",
+        "complete", "finished", "all set",
     ];
     SIGNALS.iter().any(|s| lower.contains(s))
 }
@@ -280,8 +370,14 @@ pub struct Agent {
     files_full_written: HashSet<String>,
     /// New file paths already prompted for design confirmation — prevents the gate from re-firing.
     new_file_design_prompted: HashSet<String>,
+    /// True once plan mode has been auto-activated due to 3+ new files in a session.
+    new_feature_plan_triggered: bool,
     /// mtime of files when last read this session — for staleness detection.
     files_read_mtime: HashMap<String, std::time::SystemTime>,
+    /// Paths already warned by Guard C — second attempt on same path is allowed (acknowledged).
+    guard_c_warned: HashSet<String>,
+    /// When Some, inject a self-review prompt at the start of the next turn.
+    pending_self_review: Option<Vec<String>>,
 }
 
 const UH_AGENT_NAME_ENV: &str = "UH_AGENT_NAME";
@@ -331,6 +427,9 @@ impl Agent {
             files_full_written: HashSet::new(),
             new_file_design_prompted: HashSet::new(),
             files_read_mtime: HashMap::new(),
+            new_feature_plan_triggered: false,
+            guard_c_warned: HashSet::new(),
+            pending_self_review: None,
         }
     }
 
@@ -374,6 +473,9 @@ impl Agent {
             files_full_written: HashSet::new(),
             new_file_design_prompted: HashSet::new(),
             files_read_mtime: HashMap::new(),
+            new_feature_plan_triggered: false,
+            guard_c_warned: HashSet::new(),
+            pending_self_review: None,
         }
     }
 
@@ -463,6 +565,20 @@ impl Agent {
     pub async fn run(&mut self, task: &str) -> Result<()> {
         tracing::info!(episode_id = %self.session.episode_id, model = %self.config.model.model, "starting agent session");
 
+        // If spawned as a child agent, accept the handoff so the parent can track progress.
+        if let Ok(hid_str) = std::env::var("PRISM_HANDOFF_ID") {
+            if let Ok(hid) = hid_str.parse::<uuid::Uuid>() {
+                use uglyhat::store::Store;
+                let agent_name = std::env::var(UH_AGENT_NAME_ENV)
+                    .unwrap_or_else(|_| UH_AGENT_NAME_DEFAULT.to_string());
+                if let (Some(store), Some(ws_id)) =
+                    (self.memory.store().cloned(), self.memory.workspace_id())
+                {
+                    let _ = store.accept_handoff(ws_id, hid, &agent_name).await;
+                }
+            }
+        }
+
         // Activate structural plan mode if a plan file is configured
         if self.permission_gate.mode() == PermissionMode::Plan && self.plan_file.is_some() {
             let activated = self.setup_plan_mode_guardrails().await;
@@ -512,7 +628,8 @@ impl Agent {
     async fn inner_run(&mut self) -> Result<()> {
         let result = self.inner_run_impl().await;
         // Always tear down plan mode guardrails, even on early return or error.
-        if self.permission_gate.mode() == PermissionMode::Plan && self.plan_file.is_some() {
+        // Covers both explicit --plan-file and auto-activated plan mode.
+        if self.plan_file.is_some() {
             self.teardown_plan_mode_guardrails().await;
         }
         result
@@ -569,6 +686,8 @@ impl Agent {
         let mut write_coalesce = WriteCoalesceTracker::new(write_coalesce_window);
         let decision_threshold = decision_checkpoint_threshold();
         let q_interval = question_checkpoint_interval();
+        // Exponential moving average of per-turn cost — used for CostSpike detection.
+        let mut rolling_avg_turn_cost: f64 = 0.0;
 
         for _turn in 0..self.config.model.max_turns {
             if self.interrupted.load(Ordering::Relaxed) {
@@ -585,6 +704,9 @@ impl Agent {
 
             // Poll inbox for messages sent to this agent from the IDE or other agents
             self.poll_and_inject_messages().await;
+
+            // Poll supervisory inbox entries (approvals, cost spikes, risks from other agents)
+            self.poll_and_inject_inbox().await;
 
             // --- Exploration checkpoints ---
             let current_turn = turns;
@@ -630,6 +752,19 @@ If you have questions, ask them now. If you're confident, continue."
                         .to_string(),
                 ));
                 tracing::info!(turn = current_turn, "question checkpoint fired");
+            }
+
+            // Self-review nudge: inject once after a turn where files were written and
+            // the agent signalled completion. Fires at the start of the following turn.
+            if let Some(files) = self.pending_self_review.take() {
+                let file_list = files.join(", ");
+                self.session.push_message(common::user_message(format!(
+                    "[Self-review] Before declaring complete, verify:\n\
+                     1. No existing exports, routes, or nav items were removed from: {file_list}\n\
+                     2. The implementation matches the original request\n\
+                     3. If you removed anything intentionally, state it explicitly."
+                )));
+                tracing::info!(files = %file_list, "self-review nudge injected");
             }
 
             // Inject completed background tasks as user messages
@@ -738,6 +873,54 @@ If you have questions, ask them now. If you're confident, continue."
                         / 1_000_000.0;
                     total_cost_usd += turn_cost;
                 }
+            }
+
+            // Detect cost spikes — only after the first real turn (rolling_avg > 0)
+            if turn_cost > 0.0 && rolling_avg_turn_cost > 0.0 {
+                let is_spike = turn_cost > 1.5 * rolling_avg_turn_cost;
+                let is_near_cap = self
+                    .config
+                    .model
+                    .max_cost_usd
+                    .is_some_and(|cap| total_cost_usd >= 0.8 * cap);
+                if is_spike || is_near_cap {
+                    let severity = if is_near_cap {
+                        uglyhat::model::InboxSeverity::Critical
+                    } else {
+                        uglyhat::model::InboxSeverity::Warning
+                    };
+                    let title = if is_near_cap {
+                        format!(
+                            "Cost at {:.0}% of cap (${:.4} / ${:.4})",
+                            100.0 * total_cost_usd / self.config.model.max_cost_usd.unwrap(),
+                            total_cost_usd,
+                            self.config.model.max_cost_usd.unwrap(),
+                        )
+                    } else {
+                        format!(
+                            "Turn cost spike: ${:.4} vs avg ${:.4}",
+                            turn_cost, rolling_avg_turn_cost,
+                        )
+                    };
+                    let thread_ref_id = self.current_thread_id().await;
+                    self.create_inbox_event(
+                        uglyhat::model::InboxEntryType::CostSpike,
+                        &title,
+                        "",
+                        severity,
+                        "thread",
+                        thread_ref_id,
+                    )
+                    .await;
+                }
+            }
+            // Update rolling average (EMA with α=0.3) after spike check
+            if turn_cost > 0.0 {
+                rolling_avg_turn_cost = if rolling_avg_turn_cost == 0.0 {
+                    turn_cost
+                } else {
+                    0.7 * rolling_avg_turn_cost + 0.3 * turn_cost
+                };
             }
 
             // Print per-turn cost summary
@@ -872,6 +1055,23 @@ If you have questions, ask them now. If you're confident, continue."
                                 self.plan_mode_violations += 1;
                             }
                             self.permission_gate.renderer().tool_denied(&name);
+                            // Surface denied write/execute tools as Approval entries so the
+                            // dashboard operator can decide whether to unblock the agent.
+                            if !is_read_only(&name) {
+                                let thread_ref = self.current_thread_id().await;
+                                self.create_inbox_event(
+                                    uglyhat::model::InboxEntryType::Approval,
+                                    &format!("Tool denied: {name}"),
+                                    &format!(
+                                        "Agent requested `{name}` but was denied. \
+                                         Review and approve if the action is safe.",
+                                    ),
+                                    uglyhat::model::InboxSeverity::Warning,
+                                    "thread",
+                                    thread_ref,
+                                )
+                                .await;
+                            }
                             outcomes.push(ToolOutcome::Denied {
                                 index,
                                 id,
@@ -901,6 +1101,46 @@ If you have questions, ask them now. If you're confident, continue."
                                     continue;
                                 }
 
+                                // Guard 0: Auto-activate plan mode when the agent is building a new
+                                // feature (3+ distinct new files attempted in one session, plan mode
+                                // not yet active). Fires before Guard B so the 3rd file never gets
+                                // added to new_file_design_prompted — cleanly redirected to planning.
+                                if !std::path::Path::new(path).exists()
+                                    && self.new_file_design_prompted.len() >= 2
+                                    && self.plan_file.is_none()
+                                    && !self.new_feature_plan_triggered
+                                {
+                                    self.new_feature_plan_triggered = true;
+                                    let home =
+                                        std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                                    let plan_path = format!(
+                                        "{}/.claude/plans/auto-{}.md",
+                                        home,
+                                        &Uuid::new_v4().to_string()[..8]
+                                    );
+                                    let _ =
+                                        std::fs::create_dir_all(format!("{}/.claude/plans", home));
+                                    self.plan_file = Some(plan_path.clone());
+                                    let activated = self.setup_plan_mode_guardrails().await;
+                                    self.permission_gate.set_plan_file_enforcement(activated);
+                                    self.permission_gate.renderer().tool_denied(&name);
+                                    outcomes.push(ToolOutcome::Denied {
+                                        index,
+                                        id,
+                                        message: format!(
+                                            "[Plan Mode Auto-Activated] You are creating {} new files — this looks like a new feature.\n\
+                                             Plan mode is now active. Before writing any more code:\n\
+                                             1. Design your interfaces, types, and module structure\n\
+                                             2. Write your plan to: {}\n\
+                                             3. Only after ExitPlanMode is approved will writes be unblocked.\n\
+                                             Use the Write tool to create the plan file, then call ExitPlanMode.",
+                                            self.new_file_design_prompted.len() + 1,
+                                            plan_path
+                                        ),
+                                    });
+                                    continue;
+                                }
+
                                 // Guard B: New file without design confirmation — fires unconditionally
                                 if !self.new_file_design_prompted.contains(&normed)
                                     && !std::path::Path::new(path).exists()
@@ -920,6 +1160,46 @@ If you have questions, ask them now. If you're confident, continue."
                                         ),
                                     });
                                     continue;
+                                }
+
+                                // Guard C: Deletion detection — warn when a write would remove
+                                // named anchors (exports, routes, nav items, Rust fns) that exist
+                                // in the current file. Fires once per path; second attempt is allowed.
+                                if std::path::Path::new(path).exists()
+                                    && !self.guard_c_warned.contains(&normed)
+                                {
+                                    if let Ok(old_content) = std::fs::read_to_string(path) {
+                                        let new_content = args["content"]
+                                            .as_str()
+                                            .unwrap_or_default();
+                                        let old_anchors = extract_named_anchors(&old_content);
+                                        let new_anchors = extract_named_anchors(new_content);
+                                        let removed: Vec<&String> = old_anchors
+                                            .iter()
+                                            .filter(|a| !new_anchors.contains(*a))
+                                            .collect();
+                                        if !removed.is_empty() {
+                                            let mut list = removed
+                                                .iter()
+                                                .map(|s| s.as_str())
+                                                .collect::<Vec<_>>();
+                                            list.sort_unstable();
+                                            let list_str = list.join(", ");
+                                            self.guard_c_warned.insert(normed.clone());
+                                            self.permission_gate.renderer().tool_denied(&name);
+                                            outcomes.push(ToolOutcome::Denied {
+                                                index,
+                                                id,
+                                                message: format!(
+                                                    "[Guard C] You are about to remove these named items \
+                                                     that existed in {normed}: {list_str}.\n\
+                                                     If this is intentional, re-read the file and explicitly \
+                                                     confirm the removal in your response before writing."
+                                                ),
+                                            });
+                                            continue;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1069,6 +1349,18 @@ If you have questions, ask them now. If you're confident, continue."
                                     elapsed_ms: t0.elapsed().as_millis(),
                                 });
                             }
+                            Some(BuiltinTool::AskHuman) => {
+                                let t0 = std::time::Instant::now();
+                                let result = self.handle_ask_human(&ptc.args).await;
+                                outcomes.push(ToolOutcome::Result {
+                                    index: ptc.index,
+                                    id: ptc.id,
+                                    name: ptc.name,
+                                    args: ptc.args,
+                                    result,
+                                    elapsed_ms: t0.elapsed().as_millis(),
+                                });
+                            }
                             Some(BuiltinTool::AddDir) => {
                                 let t0 = std::time::Instant::now();
                                 let path_str = ptc.args["path"].as_str().unwrap_or("").to_string();
@@ -1157,19 +1449,28 @@ If you have questions, ask them now. If you're confident, continue."
                                     ptc.args["run_in_background"].as_bool().unwrap_or(false);
                                 let task_str = ptc.args["task"].as_str().unwrap_or("").to_string();
 
+                                // Create a uglyhat handoff record before spawning so the
+                                // delegation graph is visible to the dashboard.
+                                let handoff_id = self
+                                    .create_handoff_for_spawn(&task_str, &ptc.args)
+                                    .await;
+                                let spawn_store = self.memory.store().cloned();
+                                let spawn_ws_id = self.memory.workspace_id();
+
                                 if run_in_background {
                                     let task_id =
                                         format!("bg_{}", &Uuid::new_v4().to_string()[..8]);
                                     let url = gateway_url.clone();
                                     let key = gateway_key.clone();
-                                    let spawn_cfg =
+                                    let mut spawn_cfg =
                                         spawn::SpawnConfig::from_args(&ptc.args, task_str.clone());
+                                    spawn_cfg.handoff_id = handoff_id;
 
                                     match self.background.spawn_task(
                                         task_id.clone(),
                                         task_str.clone(),
                                         async move {
-                                            match spawn::spawn_agent(spawn_cfg, &url, &key).await {
+                                            let result = match spawn::spawn_agent(spawn_cfg, &url, &key).await {
                                                 Ok(r) => r,
                                                 Err(e) => spawn::AgentResult {
                                                     status: "error".to_string(),
@@ -1177,7 +1478,22 @@ If you have questions, ask them now. If you're confident, continue."
                                                     cost: 0.0,
                                                     turns: 0,
                                                 },
+                                            };
+                                            // Complete the handoff in uglyhat
+                                            if let (Some(store), Some(ws_id), Some(hid)) =
+                                                (spawn_store, spawn_ws_id, handoff_id)
+                                            {
+                                                use uglyhat::store::Store;
+                                                let _ = store
+                                                    .complete_handoff(
+                                                        ws_id,
+                                                        hid,
+                                                        serde_json::to_value(&result)
+                                                            .unwrap_or_default(),
+                                                    )
+                                                    .await;
                                             }
+                                            result
                                         },
                                     ) {
                                         Ok(()) => {
@@ -1192,6 +1508,7 @@ If you have questions, ask them now. If you're confident, continue."
                                                 result: json!({
                                                     "status": "spawned_in_background",
                                                     "task_id": task_id,
+                                                    "handoff_id": handoff_id.map(|h| h.to_string()),
                                                     "description": task_str,
                                                     "message": "Task is running in the background. You will be notified when it completes. Use check_background_tasks to query status."
                                                 }).to_string(),
@@ -1217,26 +1534,48 @@ If you have questions, ask them now. If you're confident, continue."
                                     let name = ptc.name;
                                     let url = gateway_url.clone();
                                     let key = gateway_key.clone();
-                                    let spawn_cfg = spawn::SpawnConfig::from_args(&args, task_str);
+                                    let mut spawn_cfg = spawn::SpawnConfig::from_args(&args, task_str);
+                                    spawn_cfg.handoff_id = handoff_id;
                                     joinset_pending.push((index, id.clone()));
                                     joinset.spawn(async move {
                                         let t0 = std::time::Instant::now();
-                                        let result =
+                                        let (result_str, agent_result) =
                                             match spawn::spawn_agent(spawn_cfg, &url, &key).await {
-                                                Ok(r) => serde_json::to_string(&r)
-                                                    .unwrap_or_else(|_| r.summary.clone()),
-                                                Err(e) => serde_json::json!({
-                                                    "status": "error",
-                                                    "summary": e.to_string()
-                                                })
-                                                .to_string(),
+                                                Ok(r) => {
+                                                    let s = serde_json::to_string(&r)
+                                                        .unwrap_or_else(|_| r.summary.clone());
+                                                    (s, Some(r))
+                                                }
+                                                Err(e) => (
+                                                    serde_json::json!({
+                                                        "status": "error",
+                                                        "summary": e.to_string()
+                                                    })
+                                                    .to_string(),
+                                                    None,
+                                                ),
                                             };
+                                        // Complete the handoff in uglyhat
+                                        if let (Some(store), Some(ws_id), Some(hid)) =
+                                            (spawn_store, spawn_ws_id, handoff_id)
+                                        {
+                                            use uglyhat::store::Store;
+                                            let result_val = agent_result
+                                                .as_ref()
+                                                .and_then(|r| serde_json::to_value(r).ok())
+                                                .unwrap_or_else(|| {
+                                                    serde_json::json!({"status": "error"})
+                                                });
+                                            let _ = store
+                                                .complete_handoff(ws_id, hid, result_val)
+                                                .await;
+                                        }
                                         ToolOutcome::Result {
                                             index,
                                             id,
                                             name,
                                             args,
-                                            result,
+                                            result: result_str,
                                             elapsed_ms: t0.elapsed().as_millis(),
                                         }
                                     });
@@ -1314,6 +1653,8 @@ If you have questions, ask them now. If you're confident, continue."
                     });
 
                     let mut turn_files: Vec<String> = Vec::new();
+                    // Collect bash/run_command outputs for environment error classification.
+                    let mut bash_results: Vec<String> = Vec::new();
 
                     for outcome in outcomes {
                         match outcome {
@@ -1355,8 +1696,16 @@ If you have questions, ask them now. If you're confident, continue."
                                     extra: Default::default(),
                                 });
 
-                                // Track files mutated by write/edit tools
+                                // Collect bash/run_command outputs for env error classification.
                                 let builtin = BuiltinTool::from_str(&name);
+                                if matches!(
+                                    builtin,
+                                    Some(BuiltinTool::Bash | BuiltinTool::RunCommand)
+                                ) {
+                                    bash_results.push(result.clone());
+                                }
+
+                                // Track files mutated by write/edit tools
                                 if matches!(
                                     builtin,
                                     Some(BuiltinTool::WriteFile | BuiltinTool::EditFile)
@@ -1407,6 +1756,30 @@ If you have questions, ask them now. If you're confident, continue."
                     for skill_content in pending_skill_messages {
                         self.session
                             .push_message(common::user_message(skill_content));
+                    }
+
+                    // Environment error classifier: when bash/run_command output contains
+                    // environment-level TS errors (missing @types etc.), inject a note so the
+                    // agent doesn't spin trying to fix them via source edits.
+                    let env_error_detected = bash_results
+                        .iter()
+                        .any(|r| classify_ts_errors(r) == ErrorClass::Environment);
+                    if env_error_detected {
+                        tracing::info!("environment TS errors detected; injecting classifier note");
+                        self.session.push_message(common::user_message(
+                            "[Note: The above TypeScript errors are environment/configuration issues \
+                             (missing @types packages or tsconfig settings). They cannot be fixed by \
+                             editing source files. They do not indicate bugs in your implementation. \
+                             Continue with the task — do not attempt to fix these errors.]"
+                                .to_string(),
+                        ));
+                    }
+
+                    // Self-review trigger: if files were written this turn and the assistant text
+                    // contains completion signals, schedule a self-review prompt for the next turn.
+                    if !turn_files.is_empty() && has_completion_signals(content_buf.trim()) {
+                        self.pending_self_review = Some(turn_files.clone());
+                        tracing::info!(files = ?turn_files, "scheduling self-review nudge");
                     }
 
                     // Post-turn compile validation
@@ -1529,6 +1902,53 @@ If you have questions, ask them now. If you're confident, continue."
             }
         }
 
+        // Emit session-end inbox entries
+        let thread_ref_id = self.current_thread_id().await;
+        if stop_reason == Some(AgentStopReason::Stop) {
+            self.create_inbox_event(
+                uglyhat::model::InboxEntryType::Completed,
+                &format!(
+                    "Session completed: {} turn{}, ${:.4}",
+                    turns,
+                    if turns == 1 { "" } else { "s" },
+                    total_cost_usd,
+                ),
+                &self
+                    .session
+                    .active_messages()
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == prism_types::MessageRole::Assistant)
+                    .and_then(|m| m.content.as_ref().and_then(|c| c.as_str()))
+                    .map(|s| {
+                        // Truncate to a reasonable summary length
+                        if s.len() > 300 {
+                            format!("{}…", &s[..300])
+                        } else {
+                            s.to_string()
+                        }
+                    })
+                    .unwrap_or_default(),
+                uglyhat::model::InboxSeverity::Info,
+                "thread",
+                thread_ref_id,
+            )
+            .await;
+
+            // Suggest refactor review if many files were touched
+            if files_vec.len() >= 3 {
+                self.create_inbox_event(
+                    uglyhat::model::InboxEntryType::Suggestion,
+                    &format!("{} files modified — consider review", files_vec.len()),
+                    &format!("Files: {}", files_vec.join(", ")),
+                    uglyhat::model::InboxSeverity::Info,
+                    "thread",
+                    thread_ref_id,
+                )
+                .await;
+            }
+        }
+
         if stop_reason.is_none() {
             self.session.stop_reason = Some(AgentStopReason::MaxTurns.to_session_str().to_string());
             if let Err(e) = self.session.save(&self.config.session.sessions_dir) {
@@ -1541,6 +1961,15 @@ If you have questions, ask them now. If you're confident, continue."
 
     pub fn files_touched(&self) -> Vec<String> {
         self.files_touched.iter().cloned().collect()
+    }
+
+    /// Returns cloned (store, workspace_id) for use by callers outside the agent loop (e.g. REPL).
+    pub fn uh_store_context(
+        &self,
+    ) -> Option<(std::sync::Arc<uglyhat::store::sqlite::SqliteStore>, uuid::Uuid)> {
+        let store = self.memory.store()?.clone();
+        let ws_id = self.memory.workspace_id()?;
+        Some((store, ws_id))
     }
 
     /// Returns (store, workspace_id, agent_name) if uglyhat is configured.
@@ -1627,6 +2056,167 @@ If you have questions, ask them now. If you're confident, continue."
         self.session.push_message(common::user_message(msg));
 
         let _ = store.mark_messages_read(ws_id, &agent_name).await;
+    }
+
+    /// Create a handoff record in uglyhat before forking a child agent.
+    /// Returns the handoff UUID if uglyhat is available, else None.
+    async fn create_handoff_for_spawn(
+        &self,
+        task: &str,
+        args: &serde_json::Value,
+    ) -> Option<uuid::Uuid> {
+        use uglyhat::store::Store;
+
+        let store = self.memory.store()?.clone();
+        let ws_id = self.memory.workspace_id()?;
+        let agent_name =
+            std::env::var(UH_AGENT_NAME_ENV).unwrap_or_else(|_| UH_AGENT_NAME_DEFAULT.to_string());
+
+        let thread_id = self.current_thread_id().await;
+        let constraints = args["constraints"]
+            .as_object()
+            .and_then(|_| serde_json::from_value(args["constraints"].clone()).ok())
+            .unwrap_or_default();
+        let mode = args["handoff_mode"]
+            .as_str()
+            .and_then(uglyhat::model::HandoffMode::from_str)
+            .unwrap_or(uglyhat::model::HandoffMode::DelegateAndAwait);
+
+        match store
+            .create_handoff(ws_id, &agent_name, task, thread_id, constraints, mode)
+            .await
+        {
+            Ok(h) => {
+                tracing::debug!(handoff_id = %h.id, "created handoff for spawn");
+                Some(h.id)
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "failed to create handoff (non-fatal)");
+                None
+            }
+        }
+    }
+
+    /// Returns the UUID of the current thread, if any.
+    async fn current_thread_id(&self) -> Option<uuid::Uuid> {
+        use uglyhat::store::Store;
+
+        let thread_name = self.current_thread.as_deref()?;
+        let store = self.memory.store()?;
+        let ws_id = self.memory.workspace_id()?;
+        store
+            .get_thread(ws_id, thread_name)
+            .await
+            .ok()
+            .map(|t| t.id)
+    }
+
+    /// Create an inbox entry in the uglyhat store. Silently no-ops if uglyhat is unavailable.
+    async fn create_inbox_event(
+        &self,
+        entry_type: uglyhat::model::InboxEntryType,
+        title: &str,
+        body: &str,
+        severity: uglyhat::model::InboxSeverity,
+        ref_type: &str,
+        ref_id: Option<uuid::Uuid>,
+    ) {
+        use uglyhat::store::Store;
+
+        let Some(store) = self.memory.store().cloned() else {
+            return;
+        };
+        let Some(ws_id) = self.memory.workspace_id() else {
+            return;
+        };
+        let agent_name =
+            std::env::var(UH_AGENT_NAME_ENV).unwrap_or_else(|_| UH_AGENT_NAME_DEFAULT.to_string());
+
+        let ref_type_opt = if ref_type.is_empty() {
+            None
+        } else {
+            Some(ref_type)
+        };
+
+        if let Err(e) = store
+            .create_inbox_entry(
+                ws_id,
+                entry_type,
+                title,
+                body,
+                severity,
+                Some(&agent_name),
+                ref_type_opt,
+                ref_id,
+            )
+            .await
+        {
+            tracing::debug!(error = %e, "failed to create inbox entry");
+        }
+    }
+
+    /// Poll unread inbox entries addressed to this agent and inject as context.
+    /// Approval entries in non-interactive mode are surfaced so the agent knows to pause.
+    async fn poll_and_inject_inbox(&mut self) {
+        use uglyhat::store::{InboxFilters, Store};
+
+        let Some(store) = self.memory.store().cloned() else {
+            return;
+        };
+        let Some(ws_id) = self.memory.workspace_id() else {
+            return;
+        };
+        let agent_name =
+            std::env::var(UH_AGENT_NAME_ENV).unwrap_or_else(|_| UH_AGENT_NAME_DEFAULT.to_string());
+
+        let entries = match store
+            .list_inbox_entries(
+                ws_id,
+                InboxFilters {
+                    unread_only: true,
+                    ..Default::default()
+                },
+            )
+            .await
+        {
+            Ok(e) if !e.is_empty() => e,
+            _ => return,
+        };
+
+        // Only inject entries from other agents or without a source (operator-created)
+        let relevant: Vec<_> = entries
+            .iter()
+            .filter(|e| e.source_agent.as_deref().map_or(true, |a| a != agent_name))
+            .collect();
+        if relevant.is_empty() {
+            return;
+        }
+
+        let mut msg = String::from("INBOX NOTIFICATIONS (review and act appropriately):\n");
+        for entry in &relevant {
+            let from = entry
+                .source_agent
+                .as_deref()
+                .unwrap_or("operator");
+            msg.push_str(&format!(
+                "- [{type}:{severity}] {title}{body}\n",
+                r#type = entry.entry_type,
+                severity = entry.severity,
+                title = entry.title,
+                body = if entry.body.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {}", entry.body)
+                },
+            ));
+            tracing::debug!(from, entry_type = %entry.entry_type, title = %entry.title, "injecting inbox entry");
+        }
+        self.session.push_message(common::user_message(msg));
+
+        // Mark all as read
+        for entry in &relevant {
+            let _ = store.mark_inbox_read(ws_id, entry.id).await;
+        }
     }
 
     /// Emit an implicit quality feedback event based on session outcome signals.
@@ -1790,6 +2380,44 @@ If you have questions, ask them now. If you're confident, continue."
         let _ = store
             .set_agent_state(ws_id, &agent_name, AgentState::Idle)
             .await;
+    }
+
+    /// Handle the `ask_human` tool — posts a question to the human's inbox in uglyhat.
+    /// The REPL surfaces pending inbox entries before each prompt so the human sees it immediately.
+    async fn handle_ask_human(&self, args: &serde_json::Value) -> String {
+        use uglyhat::model::{InboxEntryType, InboxSeverity};
+
+        let Some((store, ws_id, agent_name)) = self.uh_context() else {
+            return json!({"error": "no uglyhat context store available"}).to_string();
+        };
+
+        let question = args["question"].as_str().unwrap_or("").to_string();
+        if question.is_empty() {
+            return json!({"error": "question is required"}).to_string();
+        }
+
+        let severity = match args["severity"].as_str() {
+            Some("critical") => InboxSeverity::Critical,
+            Some("warning") => InboxSeverity::Warning,
+            _ => InboxSeverity::Info,
+        };
+
+        match store
+            .create_inbox_entry(
+                ws_id,
+                InboxEntryType::Approval,
+                "Agent needs input",
+                &question,
+                severity,
+                Some(&agent_name),
+                None,
+                None,
+            )
+            .await
+        {
+            Ok(e) => json!({ "sent": true, "inbox_id": e.id.to_string() }).to_string(),
+            Err(e) => json!({ "error": e.to_string() }).to_string(),
+        }
     }
 
     /// Handle the `record_decision` tool — persists a decision with rationale to uglyhat.

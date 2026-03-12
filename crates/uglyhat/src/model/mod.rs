@@ -434,6 +434,9 @@ pub struct Message {
     pub content: String,
     pub read: bool,
     pub created_at: DateTime<Utc>,
+    /// Groups all messages belonging to a single task conversation (initial request + Q&A).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<Uuid>,
 }
 
 // ---------------------------------------------------------------------------

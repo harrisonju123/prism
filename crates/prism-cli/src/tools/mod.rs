@@ -48,6 +48,7 @@ pub enum BuiltinTool {
     Skill,
     CheckBackgroundTasks,
     AddDir,
+    AskHuman,
 }
 
 impl BuiltinTool {
@@ -70,6 +71,7 @@ impl BuiltinTool {
             "skill" => Some(Self::Skill),
             "check_background_tasks" => Some(Self::CheckBackgroundTasks),
             "add_dir" => Some(Self::AddDir),
+            "ask_human" => Some(Self::AskHuman),
             _ => None,
         }
     }
@@ -92,6 +94,7 @@ impl BuiltinTool {
             Self::Skill => "skill",
             Self::CheckBackgroundTasks => "check_background_tasks",
             Self::AddDir => "add_dir",
+            Self::AskHuman => "ask_human",
         }
     }
 
@@ -266,6 +269,14 @@ pub fn tool_definitions() -> Vec<Tool> {
             json!({ "type": "object", "properties": {
                 "path": { "type": "string", "description": "Absolute path to the directory to add" }
             }, "required": ["path"] }),
+        ),
+        make_tool(
+            "ask_human",
+            "Post a question or request to the human operator's inbox. Use when you need clarification, approval, or input that only a human can provide. The human will see it at their next REPL prompt.",
+            json!({ "type": "object", "properties": {
+                "question": { "type": "string", "description": "The question or request to send to the human" },
+                "severity": { "type": "string", "enum": ["critical", "warning", "info"], "description": "Urgency level (default: info)" }
+            }, "required": ["question"] }),
         ),
     ]
 }
@@ -601,7 +612,8 @@ async fn dispatch_inner(
             | BuiltinTool::RecordDecision
             | BuiltinTool::Skill
             | BuiltinTool::CheckBackgroundTasks
-            | BuiltinTool::AddDir,
+            | BuiltinTool::AddDir
+            | BuiltinTool::AskHuman,
         ) => {
             // Intercepted before dispatch() in the agent loop; reaching here means
             // the caller invoked dispatch() directly without agent context.

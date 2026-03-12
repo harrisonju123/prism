@@ -206,6 +206,21 @@ fn build_management_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
             "/api/v1/sessions/{episode_id}",
             get(api::sessions::get_session),
         )
+        // Agent inbox + orchestration graph
+        .route("/api/v1/inbox", get(api::agents::list_inbox))
+        .route(
+            "/api/v1/inbox/{id}/read",
+            patch(api::agents::mark_inbox_read),
+        )
+        .route(
+            "/api/v1/inbox/{id}/dismiss",
+            patch(api::agents::dismiss_inbox),
+        )
+        .route("/api/v1/handoffs", get(api::agents::list_handoffs))
+        .route(
+            "/api/v1/work-packages",
+            get(api::agents::list_work_packages),
+        )
         // Analytics
         .route(
             "/api/v1/analytics/quality-trends",

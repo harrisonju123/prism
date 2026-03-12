@@ -68,6 +68,8 @@ pub struct AppStateBuilder {
     alias_repo: Option<Arc<AliasRepository>>,
     circuit_breakers: Option<CircuitBreakerMap>,
     session_spend: Option<Arc<dashmap::DashMap<uuid::Uuid, f64>>>,
+    uh_store: Option<Arc<uglyhat::store::sqlite::SqliteStore>>,
+    uh_workspace_id: Option<uuid::Uuid>,
 }
 
 impl AppStateBuilder {
@@ -101,6 +103,8 @@ impl AppStateBuilder {
             alias_repo: None,
             circuit_breakers: None,
             session_spend: None,
+            uh_store: None,
+            uh_workspace_id: None,
         }
     }
 
@@ -330,6 +334,16 @@ impl AppStateBuilder {
         self
     }
 
+    pub fn with_uh_store(
+        mut self,
+        store: Option<Arc<uglyhat::store::sqlite::SqliteStore>>,
+        workspace_id: Option<uuid::Uuid>,
+    ) -> Self {
+        self.uh_store = store;
+        self.uh_workspace_id = workspace_id;
+        self
+    }
+
     // --- build() ---
 
     pub fn build(self) -> Result<AppState, AppStateBuildError> {
@@ -391,6 +405,8 @@ impl AppStateBuilder {
             session_spend: self
                 .session_spend
                 .unwrap_or_else(|| Arc::new(dashmap::DashMap::new())),
+            uh_store: self.uh_store,
+            uh_workspace_id: self.uh_workspace_id,
         })
     }
 }

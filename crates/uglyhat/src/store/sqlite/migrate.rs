@@ -130,6 +130,8 @@ const MIGRATIONS: &[&str] = &[
          UNIQUE(workspace_id, file_path)
      );
      CREATE INDEX IF NOT EXISTS idx_file_claims_workspace ON file_claims(workspace_id, agent_name);",
+    // Migration 10: conversation_id on messages — groups initial task + follow-up Q&A
+    "ALTER TABLE messages ADD COLUMN conversation_id TEXT;",
 ];
 
 pub fn latest_version() -> i64 {

@@ -335,7 +335,7 @@ impl UglyhatHandle {
     ) -> Result<uglyhat::model::Message> {
         self.run(
             self.store
-                .send_message(self.workspace_id, from_agent, to_agent, content),
+                .send_message(self.workspace_id, from_agent, to_agent, content, None),
         )
     }
 

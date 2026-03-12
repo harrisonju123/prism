@@ -1118,27 +1118,36 @@ pub async fn chat_completions(
             // Providers emit pre-framed SSE bytes ("data: {json}\n\n"). Strip the
             // "data: " prefix before passing to axum's Event::data(), which re-adds
             // it — otherwise clients receive "data: data: {...}".
-            let sse_stream = futures::StreamExt::flat_map(relay, |item| {
-                let events: Vec<std::result::Result<Event, std::convert::Infallible>> = match item {
-                    Ok(bytes) => {
-                        let text = String::from_utf8_lossy(&bytes).into_owned();
-                        text.split("\n\n")
-                            .filter_map(|block| {
-                                block
-                                    .lines()
-                                    .find_map(|line| {
-                                        line.strip_prefix("data: ").map(str::to_string)
-                                    })
-                                    .map(|payload| Ok(Event::default().data(payload)))
-                            })
-                            .collect()
-                    }
-                    Err(e) => {
-                        vec![Ok(crate::proxy::streaming::stream_error_event(&e))]
-                    }
-                };
-                futures::stream::iter(events)
-            });
+            // Use scan to buffer across chunks so partial SSE frames (chunks that
+            // don't end with \n\n) don't get emitted as incomplete events.
+            let sse_stream = futures::StreamExt::flat_map(
+                futures::StreamExt::scan(relay, String::new(), |buf, item| {
+                    let events: Vec<std::result::Result<Event, std::convert::Infallible>> =
+                        match item {
+                            Ok(bytes) => {
+                                buf.push_str(&String::from_utf8_lossy(&bytes));
+                                let mut events = Vec::new();
+                                while let Some(pos) = buf.find("\n\n") {
+                                    let block = buf[..pos].to_string();
+                                    buf.drain(..pos + 2);
+                                    if let Some(payload) =
+                                        block.lines().find_map(|line: &str| {
+                                            line.strip_prefix("data: ").map(str::to_string)
+                                        })
+                                    {
+                                        events.push(Ok(Event::default().data(payload)));
+                                    }
+                                }
+                                events
+                            }
+                            Err(e) => {
+                                vec![Ok(crate::proxy::streaming::stream_error_event(&e))]
+                            }
+                        };
+                    futures::future::ready(Some(events))
+                }),
+                |events| futures::stream::iter(events),
+            );
 
             let mut sse_resp = Sse::new(sse_stream)
                 .keep_alive(KeepAlive::default())
@@ -1772,6 +1781,11 @@ pub struct AppState {
     pub circuit_breakers: CircuitBreakerMap,
     /// Per-key session spend accumulator (key ID → USD spent this session).
     pub session_spend: Arc<dashmap::DashMap<Uuid, f64>>,
+    /// uglyhat SQLite store — opened from the project's .uglyhat.db on startup.
+    /// None when no .uglyhat.db is discovered in CWD or its parents.
+    pub uh_store: Option<Arc<uglyhat::store::sqlite::SqliteStore>>,
+    /// Workspace UUID corresponding to uh_store.
+    pub uh_workspace_id: Option<uuid::Uuid>,
 }
 
 /// Accumulate spend and evict low-value entries when the map gets too large.

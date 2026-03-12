@@ -2,11 +2,12 @@
 //!
 //! Usage:
 //!   prism-cli spawn-agent --task-id <id> --worktree <path> --agent-name <name> [--model <model>]
+//!                         [--task-description <desc>]
 //!
 //! The `spawn-agent` subcommand:
 //!   1. Creates the git worktree at <path> if it does not exist.
 //!   2. Claims the uglyhat task <task-id> under agent name <name>.
-//!   3. Launches `claude --dangerously-skip-permissions` in the worktree,
+//!   3. Launches `prism run <task>` headlessly in the worktree,
 //!      streaming its stdout/stderr to this process's stdout.
 
 use std::path::PathBuf;
@@ -44,9 +45,14 @@ struct SpawnAgentArgs {
     #[arg(long)]
     agent_name: String,
 
-    /// Language model identifier to pass to Claude Code (informational).
+    /// Language model identifier forwarded to `prism run --model`.
     #[arg(long, default_value = "claude-sonnet-4-6")]
     model: String,
+
+    /// Explicit task description. When absent, the agent is told to run `uh checkin`
+    /// to load its assignment for task <task_id>.
+    #[arg(long)]
+    task_description: Option<String>,
 }
 
 #[tokio::main]
@@ -103,22 +109,34 @@ async fn spawn_agent(args: SpawnAgentArgs) -> Result<()> {
         );
     }
 
-    // Step 3: launch claude --dangerously-skip-permissions and stream output.
+    // Step 3: launch `prism run <task>` headlessly and stream output.
+    let task = args.task_description.unwrap_or_else(|| {
+        format!(
+            "You have been assigned uglyhat task {}. Run `uh checkin` to load your assignments and complete the task.",
+            args.task_id
+        )
+    });
+
+    let prism_bin = home_dir().join(".cargo/bin/prism");
     eprintln!(
-        "Launching claude agent (model: {}) in {}",
+        "Launching prism agent (model: {}) in {}",
         args.model,
         worktree.display()
     );
 
-    let mut child = Command::new("claude")
-        .arg("--dangerously-skip-permissions")
+    let mut child = Command::new(&prism_bin)
+        .arg("run")
+        .arg(&task)
+        .arg("--model")
+        .arg(&args.model)
         .current_dir(worktree)
         .env("UH_AGENT_NAME", &args.agent_name)
+        .env("PRISM_MODEL", &args.model)
         .env("PATH", augmented_path())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .context("Failed to spawn `claude` process — is Claude Code installed?")?;
+        .context("Failed to spawn `prism` — is it installed at ~/.cargo/bin/prism?")?;
 
     // Stream stdout and stderr concurrently.
     let stdout = child.stdout.take().expect("stdout piped");
@@ -141,12 +159,12 @@ async fn spawn_agent(args: SpawnAgentArgs) -> Result<()> {
     let status = child
         .wait()
         .await
-        .context("Failed to wait for claude process")?;
+        .context("Failed to wait for prism process")?;
     stdout_task.await.ok();
     stderr_task.await.ok();
 
     if !status.success() {
-        bail!("claude process exited with status {}", status);
+        bail!("prism process exited with status {}", status);
     }
     Ok(())
 }
