@@ -1786,6 +1786,9 @@ pub struct AppState {
     pub uh_store: Option<Arc<uglyhat::store::sqlite::SqliteStore>>,
     /// Workspace UUID corresponding to uh_store.
     pub uh_workspace_id: Option<uuid::Uuid>,
+    /// Direct Postgres pool — populated when postgres is configured, regardless of keys.enabled.
+    /// Use this instead of going through key_service for features that only need DB access.
+    pub pg_pool: Option<sqlx::PgPool>,
 }
 
 /// Accumulate spend and evict low-value entries when the map gets too large.

@@ -33,11 +33,11 @@ const NAV_ITEMS = [
   { to: "/inbox", label: "Inbox", icon: Inbox },
   { to: "/events", label: "Events", icon: List },
   { to: "/alerts", label: "Alerts", icon: Bell },
+  { to: "/debugging", label: "Debugging", icon: Bug },
   { to: "/benchmarks", label: "Benchmarks", icon: FlaskConical },
   { to: "/waste", label: "Waste", icon: Scale },
   { to: "/routing", label: "Routing", icon: Route },
   { to: "/mcp", label: "MCP Tracing", icon: Plug },
-  { to: "/debugging", label: "Debugging", icon: Bug },
 ] as const;
 
 export function Shell({ timeRange, onTimeRangeChange, children }: ShellProps) {

@@ -9,6 +9,7 @@ import { Alerts } from "./pages/Alerts";
 import { Benchmarks } from "./pages/Benchmarks";
 import { WasteDetails } from "./pages/WasteDetails";
 import { Routing } from "./pages/Routing";
+import { Debugging } from "./pages/Debugging";
 import { MCPTracing } from "./pages/MCPTracing";
 import { Inbox } from "./pages/Inbox";
 import { Debugging } from "./pages/Debugging";
@@ -47,6 +48,7 @@ function AnimatedRoutes({ timeRange }: { timeRange: TimeRange }) {
             element={<WasteDetails timeRange={timeRange} />}
           />
           <Route path="/routing" element={<Routing />} />
+          <Route path="/debugging" element={<Debugging />} />
           <Route path="/mcp" element={<MCPTracing timeRange={timeRange} />} />
           <Route path="/inbox" element={<Inbox />} />
           <Route path="/debugging" element={<Debugging />} />

@@ -89,7 +89,11 @@ export interface LLMEvent {
 
 // -- Alert types --------------------------------------------------------------
 
-export type RuleType = "spend_threshold" | "anomaly_zscore" | "error_rate" | "latency_p95";
+export type RuleType =
+  | "spend_threshold"
+  | "anomaly_zscore"
+  | "error_rate"
+  | "latency_p95";
 export type AlertChannel = "slack" | "email" | "both";
 export type AlertSeverity = "info" | "warning" | "critical";
 export type BudgetPeriod = "daily" | "weekly" | "monthly";
@@ -260,6 +264,94 @@ export interface DecisionsResponse {
   total_count: number;
 }
 
+export interface DebugSessionSummary {
+  id: string;
+  title: string;
+  status: string;
+  symptom: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DebugHypothesis {
+  id: string;
+  session_id: string;
+  rank: number;
+  statement: string;
+  confidence: number;
+  evidence: unknown;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DebugExperiment {
+  id: string;
+  session_id: string;
+  hypothesis_id: string | null;
+  title: string;
+  description: string | null;
+  cost_level: string;
+  impact_level: string;
+  status: string;
+  params: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DebugRun {
+  id: string;
+  experiment_id: string;
+  status: string;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number | null;
+  output: string | null;
+  artifacts: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface DebugSessionDetail {
+  session: DebugSessionSummary;
+  hypotheses: DebugHypothesis[];
+  experiments: DebugExperiment[];
+  runs: DebugRun[];
+}
+
+export interface CreateDebugSessionRequest {
+  title: string;
+  symptom?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CreateHypothesisRequest {
+  rank?: number;
+  statement: string;
+  confidence?: number;
+  evidence?: unknown;
+  status?: string;
+}
+
+export interface CreateExperimentRequest {
+  hypothesis_id?: string | null;
+  title: string;
+  description?: string | null;
+  cost_level?: string;
+  impact_level?: string;
+  status?: string;
+  params?: Record<string, unknown>;
+}
+
+export interface CreateRunRequest {
+  status?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  duration_ms?: number | null;
+  output?: string | null;
+  artifacts?: Record<string, unknown>;
+}
+
 export type DryRunReport = Record<string, unknown>;
 
 // -- MCP types ----------------------------------------------------------------
@@ -330,4 +422,3 @@ export interface MCPWasteItem {
 export interface MCPWasteResponse {
   waste: MCPWasteItem[];
 }
-

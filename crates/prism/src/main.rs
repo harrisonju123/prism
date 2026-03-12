@@ -217,6 +217,10 @@ async fn main() -> anyhow::Result<()> {
         if let Err(e) = sqlx::raw_sql(ip_cors_sql).execute(pool).await {
             tracing::warn!(error = %e, "009_key_ip_cors migration failed (may already exist)");
         }
+        let debug_sql = include_str!("../migrations/postgres/010_debug_sessions.sql");
+        if let Err(e) = sqlx::raw_sql(debug_sql).execute(pool).await {
+            tracing::warn!(error = %e, "010_debug_sessions migration failed (may already exist)");
+        }
         tracing::info!("additional postgres migrations applied");
     }
 
@@ -796,6 +800,10 @@ async fn main() -> anyhow::Result<()> {
         result
     };
 
+    // Expose the pool directly on AppState so features like debug sessions don't have
+    // to route through key_service, which isn't present in all deployments.
+    let pg_pool = key_service.as_ref().map(|ks| ks.repo().pool().clone());
+
     // Build app state
     let state = Arc::new(
         crate::proxy::AppStateBuilder::new(config.clone())
@@ -826,6 +834,7 @@ async fn main() -> anyhow::Result<()> {
             .with_alias_cache_opt(alias_cache)
             .with_alias_repo_opt(alias_repo)
             .with_uh_store(uh_store_arc, uh_workspace_id)
+            .with_pg_pool_opt(pg_pool)
             .build()
             .expect("AppState construction is infallible after main.rs init"),
     );
