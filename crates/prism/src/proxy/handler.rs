@@ -1772,6 +1772,9 @@ pub struct AppState {
     pub circuit_breakers: CircuitBreakerMap,
     /// Per-key session spend accumulator (key ID → USD spent this session).
     pub session_spend: Arc<dashmap::DashMap<Uuid, f64>>,
+    /// Direct Postgres pool — populated when postgres is configured, regardless of keys.enabled.
+    /// Use this instead of going through key_service for features that only need DB access.
+    pub pg_pool: Option<sqlx::PgPool>,
 }
 
 /// Accumulate spend and evict low-value entries when the map gets too large.

@@ -13,6 +13,9 @@ pub enum PrismError {
     #[error("model not found: {0}")]
     ModelNotFound(String),
 
+    #[error("not found: {0}")]
+    NotFound(String),
+
     #[error("provider not configured: {0}")]
     ProviderNotConfigured(String),
 
@@ -79,6 +82,7 @@ impl IntoResponse for PrismError {
                 "model_not_found",
                 format!("model not found: {m}"),
             ),
+            PrismError::NotFound(m) => (StatusCode::NOT_FOUND, "not_found", m.clone()),
             PrismError::ProviderNotConfigured(p) => (
                 StatusCode::BAD_REQUEST,
                 "provider_not_configured",
@@ -204,6 +208,7 @@ impl PrismError {
             PrismError::Reqwest(e) => e.is_connect() || e.is_timeout(),
             PrismError::Internal(_) => false,
             PrismError::ModelNotFound(_)
+            | PrismError::NotFound(_)
             | PrismError::ProviderNotConfigured(_)
             | PrismError::BadRequest(_)
             | PrismError::RateLimited { .. }

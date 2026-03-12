@@ -114,9 +114,8 @@ pub struct DebugSessionDetail {
 
 fn get_pool(state: &AppState) -> Result<&sqlx::PgPool> {
     state
-        .key_service
+        .pg_pool
         .as_ref()
-        .map(|ks| ks.repo().pool())
         .ok_or_else(|| PrismError::Internal("postgres not available".into()))
 }
 
@@ -175,42 +174,43 @@ pub async fn get_session(
     .await
     .map_err(|e| PrismError::Internal(format!("debug session query failed: {e}")))?;
 
-    let session = session.ok_or_else(|| {
-        PrismError::ModelNotFound(format!("debug session {session_id} not found"))
-    })?;
+    let session = session
+        .ok_or_else(|| PrismError::NotFound(format!("debug session {session_id} not found")))?;
 
-    let hypotheses = sqlx::query_as::<_, DebugHypothesis>(
-        r#"SELECT id, session_id, rank, statement, confidence, evidence, status, created_at, updated_at
-           FROM debug_hypotheses
-           WHERE session_id = $1
-           ORDER BY rank ASC, created_at ASC"#,
-    )
-    .bind(session_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| PrismError::Internal(format!("debug hypothesis query failed: {e}")))?;
+    // Fetch hypotheses, experiments, and runs in parallel — they're independent queries.
+    let (hypotheses_res, experiments_res, runs_res) = tokio::join!(
+        sqlx::query_as::<_, DebugHypothesis>(
+            r#"SELECT id, session_id, rank, statement, confidence, evidence, status, created_at, updated_at
+               FROM debug_hypotheses
+               WHERE session_id = $1
+               ORDER BY rank ASC, created_at ASC"#,
+        )
+        .bind(session_id)
+        .fetch_all(pool),
+        sqlx::query_as::<_, DebugExperiment>(
+            r#"SELECT id, session_id, hypothesis_id, title, description, cost_level, impact_level, status, params, created_at, updated_at
+               FROM debug_experiments
+               WHERE session_id = $1
+               ORDER BY created_at ASC"#,
+        )
+        .bind(session_id)
+        .fetch_all(pool),
+        sqlx::query_as::<_, DebugRun>(
+            r#"SELECT id, experiment_id, status, started_at, finished_at, duration_ms, output, artifacts, created_at
+               FROM debug_runs
+               WHERE experiment_id IN (SELECT id FROM debug_experiments WHERE session_id = $1)
+               ORDER BY created_at ASC"#,
+        )
+        .bind(session_id)
+        .fetch_all(pool),
+    );
 
-    let experiments = sqlx::query_as::<_, DebugExperiment>(
-        r#"SELECT id, session_id, hypothesis_id, title, description, cost_level, impact_level, status, params, created_at, updated_at
-           FROM debug_experiments
-           WHERE session_id = $1
-           ORDER BY created_at ASC"#,
-    )
-    .bind(session_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| PrismError::Internal(format!("debug experiment query failed: {e}")))?;
-
-    let runs = sqlx::query_as::<_, DebugRun>(
-        r#"SELECT id, experiment_id, status, started_at, finished_at, duration_ms, output, artifacts, created_at
-           FROM debug_runs
-           WHERE experiment_id IN (SELECT id FROM debug_experiments WHERE session_id = $1)
-           ORDER BY created_at ASC"#,
-    )
-    .bind(session_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| PrismError::Internal(format!("debug run query failed: {e}")))?;
+    let hypotheses =
+        hypotheses_res.map_err(|e| PrismError::Internal(format!("debug hypothesis query failed: {e}")))?;
+    let experiments =
+        experiments_res.map_err(|e| PrismError::Internal(format!("debug experiment query failed: {e}")))?;
+    let runs =
+        runs_res.map_err(|e| PrismError::Internal(format!("debug run query failed: {e}")))?;
 
     Ok(Json(DebugSessionDetail {
         session,
@@ -229,7 +229,17 @@ pub async fn create_hypothesis(
 
     let rank = body.rank.unwrap_or(0);
     let confidence = body.confidence.unwrap_or(0.0);
+
+    if !(0.0..=1.0).contains(&confidence) {
+        return Err(PrismError::BadRequest(
+            "confidence must be between 0.0 and 1.0".into(),
+        ));
+    }
+
     let status = body.status.unwrap_or_else(|| "active".to_string());
+    if !["active", "confirmed", "rejected"].contains(&status.as_str()) {
+        return Err(PrismError::BadRequest(format!("invalid hypothesis status: {status}")));
+    }
 
     let row = sqlx::query_as::<_, DebugHypothesis>(
         r#"INSERT INTO debug_hypotheses (session_id, rank, statement, confidence, evidence, status)
@@ -257,8 +267,19 @@ pub async fn create_experiment(
     let pool = get_pool(&state)?;
 
     let cost_level = body.cost_level.unwrap_or_else(|| "medium".to_string());
+    if !["low", "medium", "high"].contains(&cost_level.as_str()) {
+        return Err(PrismError::BadRequest(format!("invalid cost_level: {cost_level}")));
+    }
+
     let impact_level = body.impact_level.unwrap_or_else(|| "medium".to_string());
+    if !["low", "medium", "high"].contains(&impact_level.as_str()) {
+        return Err(PrismError::BadRequest(format!("invalid impact_level: {impact_level}")));
+    }
+
     let status = body.status.unwrap_or_else(|| "proposed".to_string());
+    if !["proposed", "running", "completed", "cancelled"].contains(&status.as_str()) {
+        return Err(PrismError::BadRequest(format!("invalid experiment status: {status}")));
+    }
 
     let row = sqlx::query_as::<_, DebugExperiment>(
         r#"INSERT INTO debug_experiments (session_id, hypothesis_id, title, description, cost_level, impact_level, status, params)
@@ -288,6 +309,9 @@ pub async fn create_run(
     let pool = get_pool(&state)?;
 
     let status = body.status.unwrap_or_else(|| "queued".to_string());
+    if !["queued", "running", "completed", "failed"].contains(&status.as_str()) {
+        return Err(PrismError::BadRequest(format!("invalid run status: {status}")));
+    }
 
     let row = sqlx::query_as::<_, DebugRun>(
         r#"INSERT INTO debug_runs (experiment_id, status, started_at, finished_at, duration_ms, output, artifacts)

@@ -771,6 +771,10 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Expose the pool directly on AppState so features like debug sessions don't have
+    // to route through key_service, which isn't present in all deployments.
+    let pg_pool = key_service.as_ref().map(|ks| ks.repo().pool().clone());
+
     // Build app state
     let state = Arc::new(
         crate::proxy::AppStateBuilder::new(config.clone())
@@ -800,6 +804,7 @@ async fn main() -> anyhow::Result<()> {
             .with_audit_service_opt(audit_service)
             .with_alias_cache_opt(alias_cache)
             .with_alias_repo_opt(alias_repo)
+            .with_pg_pool_opt(pg_pool)
             .build()
             .expect("AppState construction is infallible after main.rs init"),
     );

@@ -22,6 +22,9 @@ import type {
   MCPWasteResponse,
   DebugSessionSummary,
   DebugSessionDetail,
+  DebugHypothesis,
+  DebugExperiment,
+  DebugRun,
   CreateDebugSessionRequest,
   CreateHypothesisRequest,
   CreateExperimentRequest,
@@ -281,8 +284,8 @@ export async function createDebugSession(
 export async function createDebugHypothesis(
   sessionId: string,
   body: CreateHypothesisRequest,
-): Promise<void> {
-  await mutateJson(`${API_BASE}/debug/sessions/${sessionId}/hypotheses`, {
+): Promise<DebugHypothesis> {
+  return mutateJson(`${API_BASE}/debug/sessions/${sessionId}/hypotheses`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -291,8 +294,8 @@ export async function createDebugHypothesis(
 export async function createDebugExperiment(
   sessionId: string,
   body: CreateExperimentRequest,
-): Promise<void> {
-  await mutateJson(`${API_BASE}/debug/sessions/${sessionId}/experiments`, {
+): Promise<DebugExperiment> {
+  return mutateJson(`${API_BASE}/debug/sessions/${sessionId}/experiments`, {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -301,8 +304,8 @@ export async function createDebugExperiment(
 export async function createDebugRun(
   experimentId: string,
   body: CreateRunRequest,
-): Promise<void> {
-  await mutateJson(`${API_BASE}/debug/experiments/${experimentId}/runs`, {
+): Promise<DebugRun> {
+  return mutateJson(`${API_BASE}/debug/experiments/${experimentId}/runs`, {
     method: "POST",
     body: JSON.stringify(body),
   });

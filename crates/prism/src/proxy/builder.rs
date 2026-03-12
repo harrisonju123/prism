@@ -68,6 +68,7 @@ pub struct AppStateBuilder {
     alias_repo: Option<Arc<AliasRepository>>,
     circuit_breakers: Option<CircuitBreakerMap>,
     session_spend: Option<Arc<dashmap::DashMap<uuid::Uuid, f64>>>,
+    pg_pool: Option<sqlx::PgPool>,
 }
 
 impl AppStateBuilder {
@@ -101,6 +102,7 @@ impl AppStateBuilder {
             alias_repo: None,
             circuit_breakers: None,
             session_spend: None,
+            pg_pool: None,
         }
     }
 
@@ -330,6 +332,16 @@ impl AppStateBuilder {
         self
     }
 
+    pub fn with_pg_pool(mut self, pool: sqlx::PgPool) -> Self {
+        self.pg_pool = Some(pool);
+        self
+    }
+
+    pub fn with_pg_pool_opt(mut self, pool: Option<sqlx::PgPool>) -> Self {
+        self.pg_pool = pool;
+        self
+    }
+
     // --- build() ---
 
     pub fn build(self) -> Result<AppState, AppStateBuildError> {
@@ -391,6 +403,7 @@ impl AppStateBuilder {
             session_spend: self
                 .session_spend
                 .unwrap_or_else(|| Arc::new(dashmap::DashMap::new())),
+            pg_pool: self.pg_pool,
         })
     }
 }

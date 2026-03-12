@@ -64,6 +64,28 @@ pub fn build(state: Arc<AppState>) -> Router {
     // --- Management routes (master key auth) ---
     let management_routes = build_management_routes(&state);
 
+    // --- Debug routes (no auth — Phase 1: internal tool, auth added in future) ---
+    #[cfg(feature = "full")]
+    let debug_routes = Router::new()
+        .route("/api/v1/debug/sessions", get(api::debug::list_sessions))
+        .route("/api/v1/debug/sessions", post(api::debug::create_session))
+        .route(
+            "/api/v1/debug/sessions/{session_id}",
+            get(api::debug::get_session),
+        )
+        .route(
+            "/api/v1/debug/sessions/{session_id}/hypotheses",
+            post(api::debug::create_hypothesis),
+        )
+        .route(
+            "/api/v1/debug/sessions/{session_id}/experiments",
+            post(api::debug::create_experiment),
+        )
+        .route(
+            "/api/v1/debug/experiments/{experiment_id}/runs",
+            post(api::debug::create_run),
+        );
+
     // --- Health routes (no auth) ---
     let health_routes = Router::new()
         .route("/health", get(api::health::health))
@@ -82,6 +104,11 @@ pub fn build(state: Arc<AppState>) -> Router {
         .merge(management_routes)
         .merge(health_routes)
         .merge(swagger_routes);
+
+    #[cfg(feature = "full")]
+    {
+        app = app.merge(debug_routes);
+    }
 
     if state.config.dashboard.enabled {
         let dist_path = &state.config.dashboard.dist_path;
@@ -205,25 +232,6 @@ fn build_management_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .route(
             "/api/v1/sessions/{episode_id}",
             get(api::sessions::get_session),
-        )
-        // Debugging loop
-        .route("/api/v1/debug/sessions", get(api::debug::list_sessions))
-        .route("/api/v1/debug/sessions", post(api::debug::create_session))
-        .route(
-            "/api/v1/debug/sessions/{session_id}",
-            get(api::debug::get_session),
-        )
-        .route(
-            "/api/v1/debug/sessions/{session_id}/hypotheses",
-            post(api::debug::create_hypothesis),
-        )
-        .route(
-            "/api/v1/debug/sessions/{session_id}/experiments",
-            post(api::debug::create_experiment),
-        )
-        .route(
-            "/api/v1/debug/experiments/{experiment_id}/runs",
-            post(api::debug::create_run),
         )
         // Analytics
         .route(

@@ -110,18 +110,11 @@ export function Debugging() {
         </div>
         <button
           className="px-3 py-1.5 text-xs bg-violet-600/20 text-violet-200 rounded hover:bg-violet-600/30 transition-colors"
-          onClick={() =>
-            createSession.mutate({
-              title: "New debug session",
-              symptom: {
-                summary: "Replay failure",
-                source: "tests/replay.spec.ts",
-              },
-              metadata: {
-                owner: "routing",
-              },
-            })
-          }
+          onClick={() => {
+            const title = window.prompt("Session title");
+            if (!title?.trim()) return;
+            createSession.mutate({ title: title.trim() });
+          }}
           disabled={createSession.isPending}
         >
           New session
@@ -254,14 +247,12 @@ export function Debugging() {
               ))}
               <button
                 className="self-start px-3 py-1 text-xs bg-violet-600/20 text-violet-200 rounded hover:bg-violet-600/30 transition-colors"
-                disabled={!selectedSessionId}
-                onClick={() =>
-                  createHypothesis.mutate({
-                    statement: "Hypothesis placeholder",
-                    confidence: 0.5,
-                    evidence: ["Add evidence here"],
-                  })
-                }
+                disabled={!selectedSessionId || createHypothesis.isPending}
+                onClick={() => {
+                  const statement = window.prompt("Hypothesis statement");
+                  if (!statement?.trim()) return;
+                  createHypothesis.mutate({ statement: statement.trim(), confidence: 0.5 });
+                }}
               >
                 Add hypothesis
               </button>
@@ -302,16 +293,12 @@ export function Debugging() {
               ))}
               <button
                 className="self-start px-3 py-1 text-xs bg-violet-600/20 text-violet-200 rounded hover:bg-violet-600/30 transition-colors"
-                disabled={!selectedSessionId}
-                onClick={() =>
-                  createExperiment.mutate({
-                    title: "Experiment placeholder",
-                    description: "Define experiment steps",
-                    cost_level: "medium",
-                    impact_level: "high",
-                    params: { command: "make replay" },
-                  })
-                }
+                disabled={!selectedSessionId || createExperiment.isPending}
+                onClick={() => {
+                  const title = window.prompt("Experiment title");
+                  if (!title?.trim()) return;
+                  createExperiment.mutate({ title: title.trim() });
+                }}
               >
                 Add experiment
               </button>
@@ -335,13 +322,11 @@ export function Debugging() {
               </div>
               <button
                 className="self-start px-3 py-1 text-xs bg-emerald-600/20 text-emerald-200 rounded hover:bg-emerald-600/30 transition-colors"
-                onClick={() =>
-                  createRun.mutate({
-                    status: "completed",
-                    output: "Experiment output placeholder",
-                    artifacts: { stdout: "Run captured" },
-                  })
-                }
+                onClick={() => {
+                  const output = window.prompt("Run output (paste stdout/result)");
+                  if (output === null) return;
+                  createRun.mutate({ status: "completed", output: output || undefined });
+                }}
                 disabled={createRun.isPending}
               >
                 Capture run output
