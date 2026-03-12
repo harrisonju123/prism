@@ -68,8 +68,9 @@ pub struct AppStateBuilder {
     alias_repo: Option<Arc<AliasRepository>>,
     circuit_breakers: Option<CircuitBreakerMap>,
     session_spend: Option<Arc<dashmap::DashMap<uuid::Uuid, f64>>>,
-    uh_store: Option<Arc<uglyhat::store::sqlite::SqliteStore>>,
+    uh_store: Option<Arc<prism_context::store::sqlite::SqliteStore>>,
     uh_workspace_id: Option<uuid::Uuid>,
+    #[cfg(feature = "postgres")]
     pg_pool: Option<sqlx::PgPool>,
 }
 
@@ -106,6 +107,7 @@ impl AppStateBuilder {
             session_spend: None,
             uh_store: None,
             uh_workspace_id: None,
+            #[cfg(feature = "postgres")]
             pg_pool: None,
         }
     }
@@ -338,7 +340,7 @@ impl AppStateBuilder {
 
     pub fn with_uh_store(
         mut self,
-        store: Option<Arc<uglyhat::store::sqlite::SqliteStore>>,
+        store: Option<Arc<prism_context::store::sqlite::SqliteStore>>,
         workspace_id: Option<uuid::Uuid>,
     ) -> Self {
         self.uh_store = store;
@@ -346,11 +348,13 @@ impl AppStateBuilder {
         self
     }
 
+    #[cfg(feature = "postgres")]
     pub fn with_pg_pool(mut self, pool: sqlx::PgPool) -> Self {
         self.pg_pool = Some(pool);
         self
     }
 
+    #[cfg(feature = "postgres")]
     pub fn with_pg_pool_opt(mut self, pool: Option<sqlx::PgPool>) -> Self {
         self.pg_pool = pool;
         self
@@ -419,6 +423,7 @@ impl AppStateBuilder {
                 .unwrap_or_else(|| Arc::new(dashmap::DashMap::new())),
             uh_store: self.uh_store,
             uh_workspace_id: self.uh_workspace_id,
+            #[cfg(feature = "postgres")]
             pg_pool: self.pg_pool,
         })
     }

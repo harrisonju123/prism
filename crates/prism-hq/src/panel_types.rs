@@ -42,8 +42,8 @@ pub struct AgentStatus {
     pub last_checkin: Option<String>,
 }
 
-impl From<uglyhat::model::AgentStatus> for AgentStatus {
-    fn from(a: uglyhat::model::AgentStatus) -> Self {
+impl From<prism_context::model::AgentStatus> for AgentStatus {
+    fn from(a: prism_context::model::AgentStatus) -> Self {
         Self {
             name: a.name,
             session_open: a.session_open,

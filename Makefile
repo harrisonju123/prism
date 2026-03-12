@@ -2,9 +2,9 @@ CARGO := $(HOME)/.cargo/bin/cargo
 export CARGO_TARGET_DIR ?= $(HOME)/.cache/prism-build
 
 .PHONY: build run check test lint dev fmt ci clean \
-        run-prism run-uh run-acp install-uh install-prism-cli dev-all \
+        run-prism run-acp install-prism-cli dev-all \
         docker-up docker-down docker-build docker-logs docker-deps \
-        health models uh-health \
+        health models ctx-health \
         dev-setup dev dev-min \
         dashboard-install dashboard-build dashboard-dev \
         sync-zed sync-zed-dry check-prism check-zed check-all reconcile-cargo verify-patches regenerate-patches check-upstream-drift \
@@ -40,20 +40,13 @@ clean:
 
 # Run individual crates
 run-prism:
-	$(CARGO) run -p prism
-
-run-uh:
-	$(CARGO) run -p uglyhat --bin uh
+	$(CARGO) run -p prism --bin prism-server
 
 # Run prism-cli in ACP agent server mode (stdio JSON-RPC for Zed)
 run-acp:
-	cargo run -p prism-cli -- acp
+	$(CARGO) run -p prism-cli -- acp
 
-# Install the uh CLI
-install-uh:
-	$(CARGO) install --path crates/uglyhat --bin uh
-
-# Install prism-cli to ~/.cargo/bin
+# Install prism CLI to ~/.cargo/bin (installs `prism` binary with `prism context` subcommands)
 install-prism-cli:
 	$(CARGO) install --path crates/prism-cli
 
@@ -80,7 +73,7 @@ dev-setup:
 
 # Daily driver: start deps then run prism locally
 dev: docker-deps
-	$(CARGO) run -p prism
+	$(CARGO) run -p prism --bin prism-server
 
 # Minimal local dev: no Docker, no virtual keys — routes to a LiteLLM proxy.
 # Requires:
@@ -90,7 +83,7 @@ dev-min:
 	@[ -n "$$LITELLM_BASE_URL" ] || (echo "Error: LITELLM_BASE_URL is not set"; exit 1)
 	@[ -n "$$LITELLM_API_KEY" ] || (echo "Error: LITELLM_API_KEY is not set"; exit 1)
 	@[ -f config/prism.toml ] || cp config/prism.min.toml config/prism.toml
-	$(CARGO) run -p prism
+	$(CARGO) run -p prism --bin prism-server
 
 # Quick health check against running server
 health:
@@ -105,8 +98,8 @@ request-replay:
 request-replay-openapi:
 	$(CARGO) run -p prism-cli -- request-replay openapi --output-dir request-replay
 
-uh-health:
-	~/.cargo/bin/uh context
+ctx-health:
+	~/.cargo/bin/prism context context
 
 # Dashboard
 dashboard-install:
@@ -177,7 +170,7 @@ prune-build-cache:
 # Run Prism in background + Zed in foreground; kills Prism on exit
 dev-all:
 	@echo "Starting Prism in background..."
-	$(CARGO) run -p prism &
+	$(CARGO) run -p prism --bin prism-server &
 	@PRISM_PID=$$!; \
 	trap "kill $$PRISM_PID 2>/dev/null" EXIT INT TERM; \
 	$(CARGO) run -p zed

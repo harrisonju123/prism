@@ -2,7 +2,7 @@ use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
     ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity, Window, actions,
 };
-use uglyhat::model::{
+use prism_context::model::{
     AgentSession, Decision, Handoff, HandoffStatus, Memory, Thread, ThreadContext, ThreadStatus,
     WorkPackage, WorkPackageStatus,
 };
@@ -15,7 +15,7 @@ use workspace::item::{Item, ItemEvent};
 
 use crate::hq_state::HqState;
 use crate::thread_view::open_thread_view;
-use uglyhat_panel::UglyhatService;
+use crate::context_service::ContextService;
 
 actions!(prism_hq, [OpenTaskBoard]);
 
@@ -130,7 +130,7 @@ impl TaskBoardItem {
         self.detail_task = Some(cx.spawn(async move |this, cx| {
             let handle = this
                 .update(cx, |_, cx| {
-                    cx.try_global::<UglyhatService>()
+                    cx.try_global::<ContextService>()
                         .and_then(|svc| svc.handle())
                 })
                 .ok()

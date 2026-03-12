@@ -2,14 +2,14 @@ use gpui::{
     App, Context, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render,
     SharedString, Styled, Task, WeakEntity, Window, actions,
 };
-use uglyhat::model::{AgentSession, AgentState, AgentStatus};
+use prism_context::model::{AgentSession, AgentState, AgentStatus};
 use ui::{
     Button, ButtonStyle, Color, Icon, IconName, Label, LabelSize, TintColor, h_flex, prelude::*,
     v_flex,
 };
 use workspace::item::{Item, ItemEvent};
 
-use uglyhat_panel::UglyhatService;
+use crate::context_service::ContextService;
 
 use crate::running_agents::RunningAgents;
 
@@ -76,7 +76,7 @@ impl AgentViewItem {
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
             let handle = this
                 .update(cx, |_, cx| {
-                    cx.try_global::<UglyhatService>()
+                    cx.try_global::<ContextService>()
                         .and_then(|svc| svc.handle())
                 })
                 .ok()
@@ -116,7 +116,7 @@ impl AgentViewItem {
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
             let handle = this
                 .update(cx, |_, cx| {
-                    cx.try_global::<UglyhatService>()
+                    cx.try_global::<ContextService>()
                         .and_then(|svc| svc.handle())
                 })
                 .ok()
@@ -144,7 +144,7 @@ impl AgentViewItem {
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
             let handle = this
                 .update(cx, |_, cx| {
-                    cx.try_global::<UglyhatService>()
+                    cx.try_global::<ContextService>()
                         .and_then(|svc| svc.handle())
                 })
                 .ok()

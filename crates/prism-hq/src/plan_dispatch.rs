@@ -9,7 +9,7 @@ use workspace::{ModalView, Workspace};
 use crate::agent_spawner::spawn_agent_in_worktree;
 use crate::agent_view::open_agent_view;
 use crate::dispatch::slugify;
-use uglyhat_panel::UglyhatService;
+use crate::context_service::ContextService;
 
 actions!(prism_hq, [DispatchPlan]);
 
@@ -131,7 +131,7 @@ impl PlanDispatchModal {
             let (handle, repo_root) = this
                 .update(cx, |this, cx| {
                     let handle = cx
-                        .try_global::<UglyhatService>()
+                        .try_global::<ContextService>()
                         .and_then(|svc| svc.handle());
                     let repo_root = this.workspace.upgrade().and_then(|ws| {
                         ws.read(cx)
@@ -184,8 +184,8 @@ impl PlanDispatchModal {
                     }
 
                     // 3. Approve + activate the plan
-                    handle.update_plan_status(plan.id, uglyhat::model::PlanStatus::Approved)?;
-                    handle.update_plan_status(plan.id, uglyhat::model::PlanStatus::Active)?;
+                    handle.update_plan_status(plan.id, prism_context::model::PlanStatus::Approved)?;
+                    handle.update_plan_status(plan.id, prism_context::model::PlanStatus::Active)?;
 
                     // 4. Refresh readiness — dep-free WPs flip to Ready
                     let ready_wps = handle.refresh_work_package_readiness(plan.id)?;

@@ -904,7 +904,7 @@ pub struct Thread {
     /// Weak references to running subagent threads for cancellation propagation
     running_subagents: Vec<WeakEntity<Thread>>,
     /// Linked uglyhat thread ID for cost attribution and context tracking
-    uglyhat_thread_id: Option<String>,
+    context_thread_id: Option<String>,
 }
 
 impl Thread {
@@ -1021,7 +1021,7 @@ impl Thread {
             draft_prompt: None,
             ui_scroll_position: None,
             running_subagents: Vec::new(),
-            uglyhat_thread_id: None,
+            context_thread_id: None,
         }
     }
 
@@ -1029,12 +1029,12 @@ impl Thread {
         &self.id
     }
 
-    pub fn uglyhat_thread_id(&self) -> Option<&str> {
-        self.uglyhat_thread_id.as_deref()
+    pub fn context_thread_id(&self) -> Option<&str> {
+        self.context_thread_id.as_deref()
     }
 
-    pub fn set_uglyhat_thread_id(&mut self, id: String) {
-        self.uglyhat_thread_id = Some(id);
+    pub fn set_context_thread_id(&mut self, id: String) {
+        self.context_thread_id = Some(id);
     }
 
     /// Returns true if this thread was imported from a shared thread.
@@ -1250,7 +1250,7 @@ impl Thread {
                 offset_in_item: gpui::px(sp.offset_in_item),
             }),
             running_subagents: Vec::new(),
-            uglyhat_thread_id: db_thread.uglyhat_thread_id,
+            context_thread_id: db_thread.context_thread_id,
         }
     }
 
@@ -1281,7 +1281,7 @@ impl Thread {
                     offset_in_item: lo.offset_in_item.as_f32(),
                 }
             }),
-            uglyhat_thread_id: self.uglyhat_thread_id.clone(),
+            context_thread_id: self.context_thread_id.clone(),
         };
 
         cx.background_spawn(async move {
@@ -2671,7 +2671,7 @@ impl Thread {
 
         let request = LanguageModelRequest {
             thread_id: self
-                .uglyhat_thread_id
+                .context_thread_id
                 .clone()
                 .or_else(|| Some(self.id.to_string())),
             prompt_id: Some(self.prompt_id.to_string()),

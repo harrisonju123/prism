@@ -14014,6 +14014,7 @@ dependencies = [
  "opentelemetry_sdk",
  "petgraph 0.7.1",
  "pin-project-lite",
+ "prism-context",
  "prism-types",
  "rand 0.9.2",
  "redis",
@@ -14037,7 +14038,6 @@ dependencies = [
  "tracing",
  "tracing-loki",
  "tracing-subscriber",
- "uglyhat",
  "utoipa",
  "utoipa-swagger-ui",
  "uuid",
@@ -14060,6 +14060,7 @@ dependencies = [
  "globset",
  "hex",
  "prism-client",
+ "prism-context",
  "prism-types",
  "regex",
  "reqwest 0.12.28",
@@ -14075,7 +14076,6 @@ dependencies = [
  "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
- "uglyhat",
  "uuid",
  "walkdir",
 ]
@@ -14099,24 +14099,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "prism-dashboard"
-version = "0.1.0"
+name = "prism-context"
+version = "0.2.0"
 dependencies = [
  "anyhow",
- "db",
- "futures 0.3.32",
- "gpui",
- "language_models",
- "prism-client",
- "prism-hq",
- "prism-types",
+ "async-trait",
+ "chrono",
  "serde",
  "serde_json",
- "settings",
- "uglyhat",
- "ui",
- "util",
- "workspace",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "wiremock",
 ]
 
 [[package]]
@@ -14129,15 +14126,18 @@ dependencies = [
  "futures 0.3.32",
  "gpui",
  "gpui_tokio",
+ "http_client",
+ "language_models",
  "log",
  "menu",
+ "prism-client",
+ "prism-context",
+ "prism-types",
  "serde",
  "serde_json",
  "settings",
  "time_format",
  "tokio",
- "uglyhat",
- "uglyhat-panel",
  "ui",
  "util",
  "uuid",
@@ -20053,59 +20053,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "uglyhat"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "clap",
- "serde",
- "serde_json",
- "sqlx",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "wiremock",
-]
-
-[[package]]
-name = "uglyhat-panel"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "db",
- "futures 0.3.32",
- "gpui",
- "gpui_tokio",
- "http_client",
- "log",
- "prism-types",
- "serde",
- "serde_json",
- "settings",
- "tokio",
- "uglyhat",
- "ui",
- "util",
- "uuid",
- "workspace",
-]
-
-[[package]]
-name = "uglyhat-types"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
- "uglyhat",
- "uuid",
-]
-
-[[package]]
 name = "ui"
 version = "0.1.0"
 dependencies = [
@@ -23754,7 +23701,6 @@ dependencies = [
  "picker",
  "pkg-config",
  "pretty_assertions",
- "prism-dashboard",
  "prism-hq",
  "profiling",
  "project",
@@ -23802,7 +23748,6 @@ dependencies = [
  "tracing",
  "tree-sitter-md",
  "tree-sitter-rust",
- "uglyhat-panel",
  "ui",
  "ui_prompt",
  "url",

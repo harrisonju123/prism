@@ -1,5 +1,5 @@
-use crate::service::get_uglyhat_handle;
-use crate::types::{
+use crate::context_service::get_context_handle;
+use crate::panel_types::{
     uh_binary, AgentStatus, DependencyInfo, StatusCount, TaskContext, TaskSummary, WorkspaceContext,
 };
 use anyhow::Result;
@@ -25,7 +25,7 @@ const TASK_BOARD_PANEL_KEY: &str = "TaskBoardPanel";
 const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
 actions!(
-    uglyhat_panel,
+    task_board_panel,
     [
         /// Toggles the task board panel.
         Toggle,
@@ -108,7 +108,7 @@ impl TaskBoardPanel {
                 _auto_refresh: Task::ready(()),
                 view_state: ViewState::Board,
                 detail_task: None,
-                agent_name: std::env::var("UH_AGENT_NAME").ok(),
+                agent_name: std::env::var("PRISM_AGENT_NAME").or_else(|_| std::env::var("UH_AGENT_NAME")).ok(),
                 checkin_task: None,
                 cost_expanded: false,
                 prism_api_key: std::env::var("PRISM_API_KEY").ok(),
@@ -180,7 +180,7 @@ impl TaskBoardPanel {
         cx.notify();
 
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
-            let handle = get_uglyhat_handle(&this, cx);
+            let handle = get_context_handle(&this, cx);
 
             let context_result = cx
                 .background_spawn({
@@ -191,7 +191,7 @@ impl TaskBoardPanel {
                         };
                         let overview = handle.get_workspace_overview()?;
                         let ctx = WorkspaceContext {
-                            workspace: crate::types::WorkspaceInfo {
+                            workspace: crate::panel_types::WorkspaceInfo {
                                 name: overview.workspace.name.clone(),
                             },
                             active_tasks: Vec::new(),
@@ -285,7 +285,7 @@ impl TaskBoardPanel {
             return;
         };
         self.checkin_task = Some(cx.spawn(async move |this, cx| {
-            let handle = get_uglyhat_handle(&this, cx);
+            let handle = get_context_handle(&this, cx);
             let result = cx
                 .background_spawn(async move {
                     let Some(handle) = handle else {
@@ -313,7 +313,7 @@ impl TaskBoardPanel {
             return;
         };
         self.checkin_task = Some(cx.spawn(async move |this, cx| {
-            let handle = get_uglyhat_handle(&this, cx);
+            let handle = get_context_handle(&this, cx);
             let result = cx
                 .background_spawn(async move {
                     let Some(handle) = handle else {
@@ -780,7 +780,7 @@ impl TaskBoardPanel {
                     })
                 } else {
                     this.child(
-                        Label::new("Set UH_AGENT_NAME to check in")
+                        Label::new("Set PRISM_AGENT_NAME to check in")
                             .size(LabelSize::Small)
                             .color(Color::Muted),
                     )
@@ -888,7 +888,7 @@ impl Render for TaskBoardPanel {
                         let error_text = if error_msg.contains("uglyhat.json")
                             || error_msg.contains("not found")
                         {
-                            "No .uglyhat.json found. Run `uh init` to set up.".to_owned()
+                            "No .prism/context.json found. Run `prism context init` to set up.".to_owned()
                         } else {
                             format!("Error: {error_msg}")
                         };

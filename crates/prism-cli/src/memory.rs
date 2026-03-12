@@ -2,8 +2,8 @@ use anyhow::Result;
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
-use uglyhat::store::sqlite::SqliteStore;
-use uglyhat::store::{MemoryFilters, Store};
+use prism_context::store::sqlite::SqliteStore;
+use prism_context::store::{MemoryFilters, Store};
 use uuid::Uuid;
 
 /// Context-store backed memory manager using uglyhat's SqliteStore.
@@ -19,7 +19,7 @@ impl MemoryManager {
     /// Create a new MemoryManager backed by an uglyhat store.
     /// If `store` is None, memories are buffered in-memory and lost on exit.
     pub fn new(store: Option<Arc<SqliteStore>>, workspace_id: Option<Uuid>) -> Self {
-        let agent_name = std::env::var("UH_AGENT_NAME").unwrap_or_else(|_| "prism".to_string());
+        let agent_name = crate::config::agent_name_from_env();
         Self {
             store,
             workspace_id,
@@ -137,14 +137,14 @@ fn discover_uglyhat() -> (Option<std::path::PathBuf>, Option<Uuid>) {
         Ok(d) => d,
         Err(_) => return (None, None),
     };
-    let Some(config_path) = uglyhat::config::find_config(&cwd) else {
+    let Some(config_path) = prism_context::config::find_config(&cwd) else {
         return (None, None);
     };
-    let config = match uglyhat::config::load_config(&config_path) {
+    let config = match prism_context::config::load_config(&config_path) {
         Ok(c) => c,
         Err(_) => return (None, None),
     };
-    let db_path = uglyhat::config::resolve_db_path(&config_path, &config);
+    let db_path = prism_context::config::resolve_db_path(&config_path, &config);
     let ws_id = config.workspace_id.parse().ok();
     (Some(db_path), ws_id)
 }

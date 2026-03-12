@@ -100,7 +100,7 @@ pub async fn spawn_agent_in_worktree_with_criteria(
             let mut child = Command::new(prism_binary())
                 .args(["run", "--model", "claude-sonnet-4-6", &prompt])
                 .current_dir(&wt_path)
-                .env("UH_AGENT_NAME", &agent_name)
+                .env("PRISM_AGENT_NAME", &agent_name)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .spawn()?;

@@ -196,7 +196,7 @@ impl Render for NavigatorPanel {
                         (t.name.clone(), assigned)
                     })
                     .collect();
-                let agents: Vec<(String, uglyhat::model::AgentState, Option<String>)> = state
+                let agents: Vec<(String, prism_context::model::AgentState, Option<String>)> = state
                     .overview
                     .as_ref()
                     .map(|o| {
@@ -212,8 +212,8 @@ impl Render for NavigatorPanel {
                     .filter(|h| {
                         matches!(
                             h.status,
-                            uglyhat::model::HandoffStatus::Pending
-                                | uglyhat::model::HandoffStatus::Running
+                            prism_context::model::HandoffStatus::Pending
+                                | prism_context::model::HandoffStatus::Running
                         )
                     })
                     .map(|h| {
@@ -231,7 +231,7 @@ impl Render for NavigatorPanel {
                     if let Some(pid) = wp.plan_id {
                         let entry = wp_stats.entry(pid).or_default();
                         entry.0 += 1;
-                        if wp.status == uglyhat::model::WorkPackageStatus::Done {
+                        if wp.status == prism_context::model::WorkPackageStatus::Done {
                             entry.1 += 1;
                         }
                     }
@@ -330,8 +330,8 @@ impl Render for NavigatorPanel {
                             .filter(|h| {
                                 matches!(
                                     h.status,
-                                    uglyhat::model::HandoffStatus::Pending
-                                        | uglyhat::model::HandoffStatus::Running
+                                    prism_context::model::HandoffStatus::Pending
+                                        | prism_context::model::HandoffStatus::Running
                                 )
                             })
                             .count();
@@ -550,15 +550,15 @@ impl Render for NavigatorPanel {
                 agents.into_iter().enumerate().map(
                     |(ix, (name, state, current_thread)): (
                         usize,
-                        (String, uglyhat::model::AgentState, Option<String>),
+                        (String, prism_context::model::AgentState, Option<String>),
                     )| {
                         let ws = workspace.clone();
                         let agent_name = name.clone();
                         let state_color = match state {
-                            uglyhat::model::AgentState::Working => Color::Accent,
-                            uglyhat::model::AgentState::Idle => Color::Success,
-                            uglyhat::model::AgentState::Blocked => Color::Warning,
-                            uglyhat::model::AgentState::Dead => Color::Muted,
+                            prism_context::model::AgentState::Working => Color::Accent,
+                            prism_context::model::AgentState::Idle => Color::Success,
+                            prism_context::model::AgentState::Blocked => Color::Warning,
+                            prism_context::model::AgentState::Dead => Color::Muted,
                         };
                         let is_spawned = RunningAgents::global(cx)
                             .map(|ra| ra.read(cx).is_running(&name))

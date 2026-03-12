@@ -1,5 +1,5 @@
-use crate::service::get_uglyhat_handle;
-use crate::types::{prism_binary, uh_binary, AgentStatus};
+use crate::context_service::get_context_handle;
+use crate::panel_types::{prism_binary, uh_binary, AgentStatus};
 use anyhow::Result;
 use db::kvp::KEY_VALUE_STORE;
 use gpui::{
@@ -100,7 +100,7 @@ impl AgentRosterPanel {
         cx: &mut Context<Workspace>,
     ) -> Entity<Self> {
         cx.new(|cx| {
-            let agent_name = std::env::var("UH_AGENT_NAME").ok();
+            let agent_name = std::env::var("PRISM_AGENT_NAME").or_else(|_| std::env::var("UH_AGENT_NAME")).ok();
             let mut panel = Self {
                 focus_handle: cx.focus_handle(),
                 width: None,
@@ -157,7 +157,8 @@ impl AgentRosterPanel {
                         panel.width = serialized.width.map(|w| w.round());
                         if let Some(name) = serialized.agent_name {
                             // Restore env var from persisted name
-                            std::env::set_var("UH_AGENT_NAME", &name);
+                            // SAFETY: single-threaded GUI context; set_var is safe here.
+                            unsafe { std::env::set_var("PRISM_AGENT_NAME", &name) };
                             panel.agent_name = Some(name);
                         }
                         cx.notify();
@@ -186,7 +187,8 @@ impl AgentRosterPanel {
     }
 
     fn set_agent_name(&mut self, name: String, cx: &mut Context<Self>) {
-        std::env::set_var("UH_AGENT_NAME", &name);
+        // SAFETY: single-threaded GUI context; set_var is safe here.
+        unsafe { std::env::set_var("PRISM_AGENT_NAME", &name) };
         self.agent_name = Some(name);
         self.editing_agent_name = false;
         self.serialize(cx);
@@ -204,7 +206,7 @@ impl AgentRosterPanel {
         cx.notify();
 
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
-            let handle = get_uglyhat_handle(&this, cx);
+            let handle = get_context_handle(&this, cx);
 
             let result = cx
                 .background_spawn(async move {
@@ -277,7 +279,7 @@ impl AgentRosterPanel {
         let content = compose_text.trim().to_string();
 
         self.send_task = Some(cx.spawn(async move |this, cx| {
-            let handle = get_uglyhat_handle(&this, cx);
+            let handle = get_context_handle(&this, cx);
             let result = cx
                 .background_spawn(async move {
                     let Some(handle) = handle else {
@@ -691,6 +693,7 @@ impl Render for AgentRosterPanel {
 
         let agents = self.agents.clone();
         let active_count = agents.iter().filter(|a| a.session_open).count();
+        let agent_rows: Vec<gpui::AnyElement> = agents.iter().map(|agent| self.render_agent_row(agent, cx).into_any_element()).collect();
 
         let agent_name_label = self
             .agent_name
@@ -842,10 +845,10 @@ impl Render for AgentRosterPanel {
                                 IconButton::new("set-agent-name", IconName::Pencil)
                                     .icon_size(ui::IconSize::XSmall)
                                     .icon_color(Color::Muted)
-                                    .tooltip(Tooltip::text("Set agent name (reads UH_AGENT_NAME)"))
+                                    .tooltip(Tooltip::text("Set agent name (reads PRISM_AGENT_NAME)"))
                                     .on_click(cx.listener(|this, _, _, cx| {
-                                        // Re-read UH_AGENT_NAME from env (user may have set it externally)
-                                        if let Ok(name) = std::env::var("UH_AGENT_NAME") {
+                                        // Re-read PRISM_AGENT_NAME from env (user may have set it externally)
+                                        if let Ok(name) = std::env::var("PRISM_AGENT_NAME").or_else(|_| std::env::var("UH_AGENT_NAME")) {
                                             this.set_agent_name(name, cx);
                                         } else {
                                             this.toggle_agent_name_input(cx);
@@ -856,7 +859,7 @@ impl Render for AgentRosterPanel {
                     .when(self.editing_agent_name, |this| {
                         this.child(
                             div().px_2().pb_1().child(
-                                Label::new("Set UH_AGENT_NAME env var, then click ✎ to refresh.")
+                                Label::new("Set PRISM_AGENT_NAME env var, then click ✎ to refresh.")
                                     .size(LabelSize::Small)
                                     .color(Color::Muted),
                             ),
@@ -907,14 +910,14 @@ impl Render for AgentRosterPanel {
                         this.child(
                             div().px_2().py_1().child(
                                 Label::new(
-                                    "No agents registered. Run `uh checkin` to appear here.",
+                                    "No agents registered. Run `prism context checkin` to appear here.",
                                 )
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                             ),
                         )
                     })
-                    .children(agents.iter().map(|agent| self.render_agent_row(agent, cx))),
+                    .children(agent_rows),
             )
             .into_any_element()
     }

@@ -86,7 +86,7 @@ pub async fn chat_completions(
 
     // uglyhat thread attribution
     let thread_id = headers
-        .get("x-uglyhat-thread-id")
+        .get("x-prism-thread-id")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
@@ -1783,11 +1783,12 @@ pub struct AppState {
     pub session_spend: Arc<dashmap::DashMap<Uuid, f64>>,
     /// uglyhat SQLite store — opened from the project's .uglyhat.db on startup.
     /// None when no .uglyhat.db is discovered in CWD or its parents.
-    pub uh_store: Option<Arc<uglyhat::store::sqlite::SqliteStore>>,
+    pub uh_store: Option<Arc<prism_context::store::sqlite::SqliteStore>>,
     /// Workspace UUID corresponding to uh_store.
     pub uh_workspace_id: Option<uuid::Uuid>,
     /// Direct Postgres pool — populated when postgres is configured, regardless of keys.enabled.
     /// Use this instead of going through key_service for features that only need DB access.
+    #[cfg(feature = "postgres")]
     pub pg_pool: Option<sqlx::PgPool>,
 }
 

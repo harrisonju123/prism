@@ -2,7 +2,7 @@ use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
     ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity, Window, actions,
 };
-use uglyhat::model::{InboxEntry, InboxEntryType, InboxSeverity};
+use prism_context::model::{InboxEntry, InboxEntryType, InboxSeverity};
 use ui::{
     Button, ButtonStyle, Color, Icon, IconName, Label, LabelSize, TintColor, h_flex, prelude::*,
     v_flex,
@@ -12,7 +12,7 @@ use workspace::item::{Item, ItemEvent};
 
 use crate::hq_state::HqState;
 use crate::thread_view::open_thread_view;
-use uglyhat_panel::UglyhatService;
+use crate::context_service::ContextService;
 
 actions!(prism_hq, [OpenInbox]);
 
@@ -89,7 +89,7 @@ impl InboxItem {
         self.pending_op = Some(cx.spawn(async move |this, cx| {
             let handle = this
                 .update(cx, |_, cx| {
-                    cx.try_global::<UglyhatService>()
+                    cx.try_global::<ContextService>()
                         .and_then(|svc| svc.handle())
                 })
                 .ok()
@@ -109,7 +109,7 @@ impl InboxItem {
         self.pending_op = Some(cx.spawn(async move |this, cx| {
             let handle = this
                 .update(cx, |_, cx| {
-                    cx.try_global::<UglyhatService>()
+                    cx.try_global::<ContextService>()
                         .and_then(|svc| svc.handle())
                 })
                 .ok()

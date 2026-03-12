@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use crate::error::{PrismError, Result};
 use crate::proxy::handler::AppState;
-use uglyhat::model::{Handoff, HandoffStatus, InboxEntry, InboxEntryType, WorkPackage};
-use uglyhat::store::{InboxFilters, Store};
+use prism_context::model::{Handoff, HandoffStatus, InboxEntry, InboxEntryType, WorkPackage};
+use prism_context::store::{InboxFilters, Store};
 
 // ---------------------------------------------------------------------------
 // Query params
@@ -159,7 +159,7 @@ pub async fn list_work_packages(
     State(state): State<Arc<AppState>>,
     Query(params): Query<WorkPackageParams>,
 ) -> Result<impl IntoResponse> {
-    use uglyhat::model::WorkPackageStatus;
+    use prism_context::model::WorkPackageStatus;
 
     let (store, ws_id) = uh_store(&state)?;
 

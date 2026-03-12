@@ -4,7 +4,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use uuid::Uuid;
 
-use uglyhat::model::{HandoffConstraints, HandoffMode};
+use prism_context::model::{HandoffConstraints, HandoffMode};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SpawnConfig {

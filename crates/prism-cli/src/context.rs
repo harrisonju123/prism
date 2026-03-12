@@ -1,33 +1,24 @@
 use std::process;
 
+use anyhow::{anyhow, Result};
 use chrono::Utc;
-use clap::{Parser, Subcommand};
+use clap::Subcommand;
 use serde::Serialize;
 use uuid::Uuid;
 
-use uglyhat::config::{self, CONFIG_FILE, Config};
-use uglyhat::model::*;
-use uglyhat::store::sqlite::SqliteStore;
-use uglyhat::store::{ActivityFilters, InboxFilters, MemoryFilters, Store};
-use uglyhat::util::parse_duration;
-
-fn agent_name() -> String {
-    std::env::var("UH_AGENT_NAME").unwrap_or_else(|_| "claude".to_string())
-}
+use prism_cli::config::agent_name_from_env;
+use prism_context::config::{self, Config, CONFIG_DIR, NEW_CONFIG_FILE, NEW_DB_FILE};
+use prism_context::model::*;
+use prism_context::store::sqlite::SqliteStore;
+use prism_context::store::{ActivityFilters, InboxFilters, MemoryFilters, Store};
+use prism_context::util::parse_duration;
 
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
-#[derive(Parser)]
-#[command(name = "uh", about = "Context management for AI agents")]
-struct Cli {
-    #[command(subcommand)]
-    command: Commands,
-}
-
 #[derive(Subcommand)]
-enum Commands {
+pub enum ContextCmd {
     /// Bootstrap a new workspace
     Init {
         name: String,
@@ -207,7 +198,7 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
-enum ThreadAction {
+pub enum ThreadAction {
     Create {
         name: String,
         #[arg(long, default_value = "")]
@@ -252,7 +243,7 @@ enum ThreadAction {
 }
 
 #[derive(Subcommand)]
-enum AgentAction {
+pub enum AgentAction {
     /// Set agent state
     State {
         /// State: idle, working, blocked
@@ -269,7 +260,7 @@ enum AgentAction {
 }
 
 #[derive(Subcommand)]
-enum HandoffAction {
+pub enum HandoffAction {
     /// Create a handoff task
     Create {
         task: String,
@@ -308,7 +299,7 @@ enum HandoffAction {
 }
 
 #[derive(Subcommand)]
-enum InboxAction {
+pub enum InboxAction {
     /// Create a supervisory inbox entry
     Create {
         /// Entry type: approval | blocked | suggestion | risk | cost_spike | completed
@@ -346,7 +337,7 @@ enum InboxAction {
 }
 
 #[derive(Subcommand)]
-enum PlanAction {
+pub enum PlanAction {
     /// Create a new plan from an intent statement
     Create { intent: String },
     /// List plans
@@ -362,7 +353,7 @@ enum PlanAction {
 }
 
 #[derive(Subcommand)]
-enum WpAction {
+pub enum WpAction {
     /// Add a work package to a plan
     Add {
         intent: String,
@@ -395,7 +386,7 @@ enum WpAction {
 }
 
 #[derive(Subcommand)]
-enum FilesAction {
+pub enum FilesAction {
     /// Claim a file for editing (advisory lock)
     Claim {
         path: String,
@@ -422,7 +413,7 @@ enum FilesAction {
 fn print_json(val: &impl Serialize) {
     println!(
         "{}",
-        serde_json::to_string_pretty(val).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}")),
+        serde_json::to_string_pretty(val).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
     );
 }
 
@@ -439,56 +430,46 @@ async fn resolve_thread_id(
 }
 
 // ---------------------------------------------------------------------------
-// Main
+// Entry point
 // ---------------------------------------------------------------------------
 
-#[tokio::main]
-async fn main() {
-    let cli = Cli::parse();
-
-    if let Err(e) = run(cli).await {
-        eprintln!("error: {e}");
-        process::exit(1);
-    }
-}
-
-async fn run(cli: Cli) -> Result<(), String> {
+pub async fn run(cmd: ContextCmd) -> Result<()> {
     // Init is special — no config file yet
-    if let Commands::Init { ref name, ref desc } = cli.command {
+    if let ContextCmd::Init { ref name, ref desc } = cmd {
         return run_init(name, desc).await;
     }
 
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let cwd = std::env::current_dir()?;
     let config_path = config::find_config(&cwd)
-        .ok_or_else(|| format!("no {CONFIG_FILE} found (run 'uh init' first)"))?;
-    let config = config::load_config(&config_path)?;
+        .ok_or_else(|| anyhow!("no .prism/context.json found (run 'prism context init' first)"))?;
+    let config = config::load_config(&config_path).map_err(|e| anyhow!("{e}"))?;
     let db = config::resolve_db_path(&config_path, &config)
         .to_string_lossy()
         .to_string();
     let workspace_id: Uuid = config
         .workspace_id
         .parse()
-        .map_err(|e| format!("invalid workspace_id in config: {e}"))?;
+        .map_err(|e| anyhow!("invalid workspace_id in config: {e}"))?;
 
     let store = SqliteStore::open(&db)
         .await
-        .map_err(|e| format!("open db: {e}"))?;
+        .map_err(|e| anyhow!("open db: {e}"))?;
 
-    match cli.command {
-        Commands::Init { .. } => unreachable!(),
-        Commands::Context => {
+    match cmd {
+        ContextCmd::Init { .. } => unreachable!(),
+        ContextCmd::Context => {
             let overview = store
                 .get_workspace_overview(workspace_id)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| anyhow!("{e}"))?;
             print_json(&overview);
         }
-        Commands::Thread { action } => match action {
+        ContextCmd::Thread { action } => match action {
             ThreadAction::Create { name, desc, tags } => {
                 let t = store
                     .create_thread(workspace_id, &name, &desc, tags.unwrap_or_default())
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&t);
             }
             ThreadAction::List { active, archived } => {
@@ -502,14 +483,14 @@ async fn run(cli: Cli) -> Result<(), String> {
                 let threads = store
                     .list_threads(workspace_id, status)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&threads);
             }
             ThreadAction::Archive { name } => {
                 let t = store
                     .archive_thread(workspace_id, &name)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&t);
             }
             ThreadAction::Guard {
@@ -526,35 +507,32 @@ async fn run(cli: Cli) -> Result<(), String> {
                     let g = store
                         .get_guardrails(workspace_id, &name)
                         .await
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|e| anyhow!("{e}"))?;
                     match g {
                         Some(guardrails) => print_json(&guardrails),
                         None => println!("{{\"guardrails\": null}}"),
                     }
                 } else if unlock {
-                    // Get existing guardrails, set locked=false
                     let existing = store
                         .get_guardrails(workspace_id, &name)
                         .await
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|e| anyhow!("{e}"))?;
                     if let Some(mut g) = existing {
                         g.locked = false;
                         let updated = store
                             .set_guardrails(workspace_id, &name, g)
                             .await
-                            .map_err(|e| e.to_string())?;
+                            .map_err(|e| anyhow!("{e}"))?;
                         print_json(&updated);
                     } else {
                         println!("{{\"guardrails\": null}}");
                     }
                 } else {
-                    // Look up owner agent ID if provided
                     let owner_agent_id = if let Some(ref owner_name) = owner {
-                        // Resolve agent name to ID via checkin (upsert)
                         let ctx = store
                             .checkin(workspace_id, owner_name, vec![], None)
                             .await
-                            .map_err(|e| e.to_string())?;
+                            .map_err(|e| anyhow!("{e}"))?;
                         Some(ctx.agent.id)
                     } else {
                         None
@@ -563,7 +541,7 @@ async fn run(cli: Cli) -> Result<(), String> {
                     let thread = store
                         .get_thread(workspace_id, &name)
                         .await
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|e| anyhow!("{e}"))?;
 
                     let g = ThreadGuardrails {
                         id: Uuid::new_v4(),
@@ -581,12 +559,12 @@ async fn run(cli: Cli) -> Result<(), String> {
                     let result = store
                         .set_guardrails(workspace_id, &name, g)
                         .await
-                        .map_err(|e| e.to_string())?;
+                        .map_err(|e| anyhow!("{e}"))?;
                     print_json(&result);
                 }
             }
         },
-        Commands::Remember {
+        ContextCmd::Remember {
             key,
             value,
             thread,
@@ -598,7 +576,7 @@ async fn run(cli: Cli) -> Result<(), String> {
             } else {
                 None
             };
-            let src = source.unwrap_or_else(agent_name);
+            let src = source.unwrap_or_else(|| agent_name_from_env());
             let m = store
                 .save_memory(
                     workspace_id,
@@ -609,17 +587,17 @@ async fn run(cli: Cli) -> Result<(), String> {
                     tags.unwrap_or_default(),
                 )
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| anyhow!("{e}"))?;
             print_json(&m);
         }
-        Commands::Forget { key } => {
+        ContextCmd::Forget { key } => {
             store
                 .delete_memory(workspace_id, &key)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| anyhow!("{e}"))?;
             println!("{{\"deleted\":\"{key}\"}}");
         }
-        Commands::Memories {
+        ContextCmd::Memories {
             thread,
             tags,
             global,
@@ -634,10 +612,10 @@ async fn run(cli: Cli) -> Result<(), String> {
             let memories = store
                 .load_memories(workspace_id, filters)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| anyhow!("{e}"))?;
             print_json(&memories);
         }
-        Commands::Decide {
+        ContextCmd::Decide {
             title,
             content,
             thread,
@@ -649,16 +627,16 @@ async fn run(cli: Cli) -> Result<(), String> {
             if let Some(revoke_id) = revoke {
                 let id: Uuid = revoke_id
                     .parse()
-                    .map_err(|e| format!("invalid decision id: {e}"))?;
+                    .map_err(|e| anyhow!("invalid decision id: {e}"))?;
                 let d = store
                     .revoke_decision(workspace_id, id)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&d);
             } else if let Some(old_id_str) = supersede {
                 let old_id: Uuid = old_id_str
                     .parse()
-                    .map_err(|e| format!("invalid decision id: {e}"))?;
+                    .map_err(|e| anyhow!("invalid decision id: {e}"))?;
                 let thread_id = if let Some(ref tname) = thread {
                     resolve_thread_id(&store, workspace_id, tname).await
                 } else {
@@ -674,7 +652,7 @@ async fn run(cli: Cli) -> Result<(), String> {
                         tags.unwrap_or_default(),
                     )
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&d);
             } else {
                 let thread_id = if let Some(ref tname) = thread {
@@ -683,7 +661,7 @@ async fn run(cli: Cli) -> Result<(), String> {
                     None
                 };
                 let decision_scope = DecisionScope::from_str(&scope).ok_or_else(|| {
-                    format!("invalid scope: {scope} (use 'thread' or 'workspace')")
+                    anyhow!("invalid scope: {scope} (use 'thread' or 'workspace')")
                 })?;
                 let d = store
                     .save_decision(
@@ -695,11 +673,11 @@ async fn run(cli: Cli) -> Result<(), String> {
                         decision_scope,
                     )
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&d);
             }
         }
-        Commands::Decisions { thread, tags } => {
+        ContextCmd::Decisions { thread, tags } => {
             let thread_id = if let Some(ref tname) = thread {
                 resolve_thread_id(&store, workspace_id, tname).await
             } else {
@@ -708,10 +686,10 @@ async fn run(cli: Cli) -> Result<(), String> {
             let decisions = store
                 .list_decisions(workspace_id, thread_id, tags)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| anyhow!("{e}"))?;
             print_json(&decisions);
         }
-        Commands::Recall {
+        ContextCmd::Recall {
             thread,
             tags,
             since,
@@ -720,11 +698,11 @@ async fn run(cli: Cli) -> Result<(), String> {
                 let ctx = store
                     .recall_thread(workspace_id, tname)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&ctx);
             } else if tags.is_some() || since.is_some() {
                 let since_dt = if let Some(ref dur_str) = since {
-                    let dur = parse_duration(dur_str)?;
+                    let dur = parse_duration(dur_str).map_err(|e| anyhow!("{e}"))?;
                     Some(Utc::now() - dur)
                 } else {
                     None
@@ -732,18 +710,18 @@ async fn run(cli: Cli) -> Result<(), String> {
                 let result = store
                     .recall_by_tags(workspace_id, tags.unwrap_or_default(), since_dt)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&result);
             } else {
-                return Err("recall requires --thread, --tags, or --since".to_string());
+                return Err(anyhow!("recall requires --thread, --tags, or --since"));
             }
         }
-        Commands::Checkin {
+        ContextCmd::Checkin {
             name,
             capabilities,
             thread,
         } => {
-            let agent = name.unwrap_or_else(agent_name);
+            let agent = name.unwrap_or_else(|| agent_name_from_env());
             let thread_id = if let Some(ref tname) = thread {
                 resolve_thread_id(&store, workspace_id, tname).await
             } else {
@@ -757,17 +735,17 @@ async fn run(cli: Cli) -> Result<(), String> {
                     thread_id,
                 )
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| anyhow!("{e}"))?;
             print_json(&ctx);
         }
-        Commands::Checkout {
+        ContextCmd::Checkout {
             name,
             summary,
             findings,
             files,
             next_steps,
         } => {
-            let agent = name.unwrap_or_else(agent_name);
+            let agent = name.unwrap_or_else(|| agent_name_from_env());
             let session = store
                 .checkout(
                     workspace_id,
@@ -778,47 +756,47 @@ async fn run(cli: Cli) -> Result<(), String> {
                     next_steps.unwrap_or_default(),
                 )
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| anyhow!("{e}"))?;
             print_json(&session);
         }
-        Commands::Agents => {
+        ContextCmd::Agents => {
             let agents = store
                 .list_agents(workspace_id)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| anyhow!("{e}"))?;
             print_json(&agents);
         }
-        Commands::Heartbeat { name } => {
-            let agent = name.unwrap_or_else(agent_name);
+        ContextCmd::Heartbeat { name } => {
+            let agent = name.unwrap_or_else(|| agent_name_from_env());
             store
                 .heartbeat(workspace_id, &agent)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| anyhow!("{e}"))?;
             println!("{{\"heartbeat\":\"{agent}\"}}");
         }
-        Commands::Agent { action } => match action {
+        ContextCmd::Agent { action } => match action {
             AgentAction::State { state, name } => {
-                let agent = name.unwrap_or_else(agent_name);
+                let agent = name.unwrap_or_else(|| agent_name_from_env());
                 let agent_state = AgentState::from_str(&state).ok_or_else(|| {
-                    format!("invalid state: {state} (use idle, working, or blocked)")
+                    anyhow!("invalid state: {state} (use idle, working, or blocked)")
                 })?;
                 store
                     .set_agent_state(workspace_id, &agent, agent_state)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 println!("{{\"agent\":\"{agent}\",\"state\":\"{state}\"}}");
             }
             AgentAction::Reap { timeout } => {
-                let dur = parse_duration(&timeout)?;
+                let dur = parse_duration(&timeout).map_err(|e| anyhow!("{e}"))?;
                 let timeout_secs = dur.num_seconds();
                 let reaped = store
                     .reap_dead_agents(workspace_id, timeout_secs)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&serde_json::json!({"reaped": reaped}));
             }
         },
-        Commands::Handoff { action } => match action {
+        ContextCmd::Handoff { action } => match action {
             HandoffAction::Create {
                 task,
                 thread,
@@ -828,7 +806,7 @@ async fn run(cli: Cli) -> Result<(), String> {
                 allowed_tools,
                 allowed_files,
             } => {
-                let from_agent = agent_name();
+                let from_agent = agent_name_from_env();
                 let thread_id = if let Some(ref tname) = thread {
                     resolve_thread_id(&store, workspace_id, tname).await
                 } else {
@@ -854,51 +832,51 @@ async fn run(cli: Cli) -> Result<(), String> {
                         handoff_mode,
                     )
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&h);
             }
             HandoffAction::Accept { id, name } => {
-                let agent = name.unwrap_or_else(agent_name);
+                let agent = name.unwrap_or_else(|| agent_name_from_env());
                 let handoff_id: Uuid =
-                    id.parse().map_err(|e| format!("invalid handoff id: {e}"))?;
+                    id.parse().map_err(|e| anyhow!("invalid handoff id: {e}"))?;
                 let h = store
                     .accept_handoff(workspace_id, handoff_id, &agent)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&h);
             }
             HandoffAction::Complete { id, result } => {
                 let handoff_id: Uuid =
-                    id.parse().map_err(|e| format!("invalid handoff id: {e}"))?;
+                    id.parse().map_err(|e| anyhow!("invalid handoff id: {e}"))?;
                 let result_json: serde_json::Value = serde_json::from_str(&result)
-                    .map_err(|e| format!("invalid result JSON: {e}"))?;
+                    .map_err(|e| anyhow!("invalid result JSON: {e}"))?;
                 let h = store
                     .complete_handoff(workspace_id, handoff_id, result_json)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&h);
             }
             HandoffAction::List { agent, status } => {
                 let handoff_status = status
                     .as_deref()
                     .map(|s| {
-                        HandoffStatus::from_str(s).ok_or_else(|| format!("invalid status: {s}"))
+                        HandoffStatus::from_str(s).ok_or_else(|| anyhow!("invalid status: {s}"))
                     })
                     .transpose()?;
                 let handoffs = store
                     .list_handoffs(workspace_id, agent.as_deref(), handoff_status)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&handoffs);
             }
         },
-        Commands::Activity {
+        ContextCmd::Activity {
             since,
             actor,
             limit,
         } => {
             let since_dt = if let Some(ref dur_str) = since {
-                let dur = parse_duration(dur_str)?;
+                let dur = parse_duration(dur_str).map_err(|e| anyhow!("{e}"))?;
                 Some(Utc::now() - dur)
             } else {
                 None
@@ -911,17 +889,17 @@ async fn run(cli: Cli) -> Result<(), String> {
             let activity = store
                 .list_activity(workspace_id, filters)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| anyhow!("{e}"))?;
             print_json(&activity);
         }
-        Commands::Snapshot { label } => {
+        ContextCmd::Snapshot { label } => {
             let snap = store
                 .create_snapshot(workspace_id, &label)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| anyhow!("{e}"))?;
             print_json(&snap);
         }
-        Commands::Inbox { action } => match action {
+        ContextCmd::Inbox { action } => match action {
             InboxAction::Create {
                 r#type,
                 title,
@@ -929,17 +907,19 @@ async fn run(cli: Cli) -> Result<(), String> {
                 severity,
                 r#ref,
             } => {
-                let entry_type = InboxEntryType::from_str(&r#type)
-                    .ok_or_else(|| format!("invalid type: {type} (use approval|blocked|suggestion|risk|cost_spike|completed)"))?;
-                let sev = InboxSeverity::from_str(&severity).ok_or_else(|| {
-                    format!("invalid severity: {severity} (use critical|warning|info)")
+                let entry_type = InboxEntryType::from_str(&r#type).ok_or_else(|| {
+                    anyhow!(
+                        "invalid type: {type} (use approval|blocked|suggestion|risk|cost_spike|completed)"
+                    )
                 })?;
-                // Parse optional ref in the form "type:id"
+                let sev = InboxSeverity::from_str(&severity).ok_or_else(|| {
+                    anyhow!("invalid severity: {severity} (use critical|warning|info)")
+                })?;
                 let (ref_type, ref_id) = if let Some(ref s) = r#ref {
                     match s.split_once(':') {
                         Some((rtype, rid)) => (Some(rtype.to_string()), rid.parse::<Uuid>().ok()),
                         None => {
-                            return Err(format!(
+                            return Err(anyhow!(
                                 "invalid --ref format: expected type:uuid, got {s:?}"
                             ));
                         }
@@ -954,12 +934,12 @@ async fn run(cli: Cli) -> Result<(), String> {
                         &title,
                         &body,
                         sev,
-                        Some(&agent_name()),
+                        Some(&agent_name_from_env()),
                         ref_type.as_deref(),
                         ref_id,
                     )
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&entry);
             }
             InboxAction::List {
@@ -970,7 +950,8 @@ async fn run(cli: Cli) -> Result<(), String> {
                 let entry_type = r#type
                     .as_deref()
                     .map(|s| {
-                        InboxEntryType::from_str(s).ok_or_else(|| format!("invalid type: {s}"))
+                        InboxEntryType::from_str(s)
+                            .ok_or_else(|| anyhow!("invalid type: {s}"))
                     })
                     .transpose()?;
                 let filters = InboxFilters {
@@ -982,117 +963,119 @@ async fn run(cli: Cli) -> Result<(), String> {
                 let entries = store
                     .list_inbox_entries(workspace_id, filters)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&entries);
             }
             InboxAction::Read { id } => {
-                let entry_id: Uuid = id.parse().map_err(|e| format!("invalid id: {e}"))?;
+                let entry_id: Uuid = id.parse().map_err(|e| anyhow!("invalid id: {e}"))?;
                 store
                     .mark_inbox_read(workspace_id, entry_id)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 println!("{{\"read\":\"{id}\"}}");
             }
             InboxAction::Dismiss { id } => {
-                let entry_id: Uuid = id.parse().map_err(|e| format!("invalid id: {e}"))?;
+                let entry_id: Uuid = id.parse().map_err(|e| anyhow!("invalid id: {e}"))?;
                 store
                     .dismiss_inbox_entry(workspace_id, entry_id)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 println!("{{\"dismissed\":\"{id}\"}}");
             }
         },
-        Commands::Messages { unread } => {
+        ContextCmd::Messages { unread } => {
             let messages = store
-                .list_messages(workspace_id, &agent_name(), unread)
+                .list_messages(workspace_id, &agent_name_from_env(), unread)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| anyhow!("{e}"))?;
             print_json(&messages);
         }
-        Commands::Send {
+        ContextCmd::Send {
             to,
             message,
             conversation,
         } => {
             let conv_id = conversation
                 .as_deref()
-                .map(|s| s.parse::<Uuid>().map_err(|e| format!("invalid conversation id: {e}")))
+                .map(|s| s.parse::<Uuid>().map_err(|e| anyhow!("invalid conversation id: {e}")))
                 .transpose()?;
             let msg = store
-                .send_message(workspace_id, &agent_name(), &to, &message, conv_id)
+                .send_message(workspace_id, &agent_name_from_env(), &to, &message, conv_id)
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| anyhow!("{e}"))?;
             print_json(&msg);
         }
-        Commands::Plan { action } => match action {
+        ContextCmd::Plan { action } => match action {
             PlanAction::Create { intent } => {
                 let plan = store
                     .create_plan(workspace_id, &intent)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&plan);
             }
             PlanAction::List { status } => {
                 let plan_status = status
                     .as_deref()
-                    .map(|s| PlanStatus::from_str(s).ok_or_else(|| format!("invalid status: {s}")))
+                    .map(|s| {
+                        PlanStatus::from_str(s).ok_or_else(|| anyhow!("invalid status: {s}"))
+                    })
                     .transpose()?;
                 let plans = store
                     .list_plans(workspace_id, plan_status)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&plans);
             }
             PlanAction::Show { plan_id } => {
                 let pid: Uuid = plan_id
                     .parse()
-                    .map_err(|e| format!("invalid plan id: {e}"))?;
+                    .map_err(|e| anyhow!("invalid plan id: {e}"))?;
                 let plan = store
                     .get_plan(workspace_id, pid)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 let wps = store
                     .list_work_packages(workspace_id, Some(pid), None)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&serde_json::json!({"plan": plan, "work_packages": wps}));
             }
             PlanAction::Approve { plan_id } => {
                 let pid: Uuid = plan_id
                     .parse()
-                    .map_err(|e| format!("invalid plan id: {e}"))?;
+                    .map_err(|e| anyhow!("invalid plan id: {e}"))?;
                 let plan = store
                     .update_plan_status(workspace_id, pid, PlanStatus::Approved)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&plan);
             }
         },
-        Commands::Files { action } => match action {
+        ContextCmd::Files { action } => match action {
             FilesAction::Claim { path, ttl } => {
-                let agent = agent_name();
+                let agent = agent_name_from_env();
                 match store.claim_file(workspace_id, &agent, &path, ttl).await {
                     Ok(claim) => print_json(&claim),
-                    Err(uglyhat::error::Error::Conflict(msg)) => {
+                    Err(prism_context::error::Error::Conflict(msg)) => {
                         eprintln!("WARNING: file claimed by another agent: {msg}");
                         process::exit(1);
                     }
-                    Err(e) => return Err(e.to_string()),
+                    Err(e) => return Err(anyhow!("{e}")),
                 }
             }
             FilesAction::Release { path } => {
-                let agent = agent_name();
+                let agent = agent_name_from_env();
                 store
                     .release_file(workspace_id, &path, &agent)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 println!("{{\"released\":{:?}}}", path);
             }
             FilesAction::Check { path } => {
                 let claim = store
                     .check_file_claim(workspace_id, &path)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 match claim {
                     Some(c) => {
                         print_json(&c);
@@ -1107,11 +1090,11 @@ async fn run(cli: Cli) -> Result<(), String> {
                 let claims = store
                     .list_file_claims(workspace_id, agent.as_deref())
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&claims);
             }
         },
-        Commands::Wp { action } => match action {
+        ContextCmd::Wp { action } => match action {
             WpAction::Add {
                 intent,
                 plan,
@@ -1124,12 +1107,12 @@ async fn run(cli: Cli) -> Result<(), String> {
                     .as_deref()
                     .map(|s| {
                         s.parse::<Uuid>()
-                            .map_err(|e| format!("invalid plan id: {e}"))
+                            .map_err(|e| anyhow!("invalid plan id: {e}"))
                     })
                     .transpose()?;
                 let depends_on = after
                     .as_deref()
-                    .map(|s| s.parse::<Uuid>().map_err(|e| format!("invalid wp id: {e}")))
+                    .map(|s| s.parse::<Uuid>().map_err(|e| anyhow!("invalid wp id: {e}")))
                     .transpose()?
                     .into_iter()
                     .collect::<Vec<_>>();
@@ -1144,7 +1127,7 @@ async fn run(cli: Cli) -> Result<(), String> {
                         tags.unwrap_or_default(),
                     )
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&wp);
             }
             WpAction::List { plan, status } => {
@@ -1152,29 +1135,30 @@ async fn run(cli: Cli) -> Result<(), String> {
                     .as_deref()
                     .map(|s| {
                         s.parse::<Uuid>()
-                            .map_err(|e| format!("invalid plan id: {e}"))
+                            .map_err(|e| anyhow!("invalid plan id: {e}"))
                     })
                     .transpose()?;
                 let wp_status = status
                     .as_deref()
                     .map(|s| {
-                        WorkPackageStatus::from_str(s).ok_or_else(|| format!("invalid status: {s}"))
+                        WorkPackageStatus::from_str(s)
+                            .ok_or_else(|| anyhow!("invalid status: {s}"))
                     })
                     .transpose()?;
                 let wps = store
                     .list_work_packages(workspace_id, plan_id, wp_status)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&wps);
             }
             WpAction::Status { wp_id, status } => {
-                let wid: Uuid = wp_id.parse().map_err(|e| format!("invalid wp id: {e}"))?;
+                let wid: Uuid = wp_id.parse().map_err(|e| anyhow!("invalid wp id: {e}"))?;
                 let wp_status = WorkPackageStatus::from_str(&status)
-                    .ok_or_else(|| format!("invalid status: {status}"))?;
+                    .ok_or_else(|| anyhow!("invalid status: {status}"))?;
                 let wp = store
                     .update_work_package_status(workspace_id, wid, wp_status)
                     .await
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| anyhow!("{e}"))?;
                 print_json(&wp);
             }
         },
@@ -1183,32 +1167,34 @@ async fn run(cli: Cli) -> Result<(), String> {
     Ok(())
 }
 
-async fn run_init(name: &str, desc: &str) -> Result<(), String> {
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let config_path = cwd.join(CONFIG_FILE);
-    let db_path = cwd.join(config::DB_FILE);
+async fn run_init(name: &str, desc: &str) -> Result<()> {
+    let cwd = std::env::current_dir()?;
+    let prism_dir = cwd.join(CONFIG_DIR);
+    let config_path = prism_dir.join(NEW_CONFIG_FILE);
+    let db_path = prism_dir.join(NEW_DB_FILE);
 
     if config_path.exists() {
-        return Err(format!("{CONFIG_FILE} already exists"));
+        anyhow::bail!("{NEW_CONFIG_FILE} already exists in .prism/");
     }
+
+    std::fs::create_dir_all(&prism_dir)?;
 
     let store = SqliteStore::open(&db_path.to_string_lossy())
         .await
-        .map_err(|e| format!("open db: {e}"))?;
+        .map_err(|e| anyhow!("open db: {e}"))?;
 
     let workspace = store
         .init_workspace(name, desc)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| anyhow!("{e}"))?;
 
     let config = Config {
         workspace_id: workspace.id.to_string(),
         db_path: String::new(),
     };
 
-    let config_json =
-        serde_json::to_string_pretty(&config).map_err(|e| format!("serialize config: {e}"))?;
-    std::fs::write(&config_path, config_json).map_err(|e| format!("write config: {e}"))?;
+    let config_json = serde_json::to_string_pretty(&config)?;
+    std::fs::write(&config_path, config_json)?;
 
     print_json(&workspace);
     eprintln!("workspace initialized: {}", workspace.name);

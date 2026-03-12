@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# seed-roadmap.sh — Bootstrap PrisM development roadmap in uglyhat
+# seed-roadmap.sh — Bootstrap PrisM development roadmap in prism-context
 # Usage: bash scripts/seed-roadmap.sh [--rebuild]
 #
+# NOTE: This script uses the legacy initiative/epic/task commands from the old
+# Go-based uglyhat. It has not been ported to the Rust prism-context data model
+# (threads, memories, decisions, work packages, plans). Use `prism context plan`
+# and `prism context wp` subcommands for the current approach.
+#
 # Creates the full initiative → epic → task hierarchy for the PrisM platform.
-# Idempotent by default (skips init if .uglyhat.json exists). Pass --rebuild
-# to remove existing db and re-seed from scratch.
+# Idempotent by default (skips init if .prism/context.json exists). Pass
+# --rebuild to remove existing db and re-seed from scratch.
 
 set -euo pipefail
 

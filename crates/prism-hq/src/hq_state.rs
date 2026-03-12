@@ -1,12 +1,12 @@
 use std::time::Duration;
 
 use gpui::{App, AppContext as _, Context, Entity, Global, Task, WeakEntity};
-use uglyhat::model::{
+use prism_context::model::{
     ActivityEntry, AgentStatus, Handoff, InboxEntry, Plan, PlanStatus, Thread, ThreadStatus,
     WorkPackage, WorkspaceOverview,
 };
-use uglyhat::store::ActivityFilters;
-use uglyhat_panel::UglyhatService;
+use prism_context::store::ActivityFilters;
+use crate::context_service::ContextService;
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const ACTIVITY_LIMIT: i64 = 200;
@@ -90,7 +90,7 @@ impl HqState {
             // Extract the handle before the await boundary so the borrow is dropped.
             let handle = this
                 .update(cx, |_, cx| {
-                    cx.try_global::<UglyhatService>()
+                    cx.try_global::<ContextService>()
                         .and_then(|svc| svc.handle())
                 })
                 .ok()

@@ -82,7 +82,7 @@ pub struct DbThread {
     #[serde(default)]
     pub ui_scroll_position: Option<SerializedScrollPosition>,
     #[serde(default)]
-    pub uglyhat_thread_id: Option<String>,
+    pub context_thread_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -132,7 +132,7 @@ impl SharedThread {
             thinking_effort: None,
             draft_prompt: None,
             ui_scroll_position: None,
-            uglyhat_thread_id: None,
+            context_thread_id: None,
         }
     }
 
@@ -312,7 +312,7 @@ impl DbThread {
             thinking_effort: None,
             draft_prompt: None,
             ui_scroll_position: None,
-            uglyhat_thread_id: None,
+            context_thread_id: None,
         })
     }
 }
@@ -695,7 +695,7 @@ mod tests {
             thinking_effort: None,
             draft_prompt: None,
             ui_scroll_position: None,
-            uglyhat_thread_id: None,
+            context_thread_id: None,
         }
     }
 

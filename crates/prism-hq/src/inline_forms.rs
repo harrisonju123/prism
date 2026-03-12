@@ -1,4 +1,4 @@
-use uglyhat::model::{DecisionScope, HandoffMode};
+use prism_context::model::{DecisionScope, HandoffMode};
 
 /// State for the inline "Add Memory" form shown in ThreadViewItem.
 pub struct AddMemoryForm {

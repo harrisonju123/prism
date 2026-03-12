@@ -1,65 +1,56 @@
-# PrisM — LLM Gateway + uglyhat Monorepo
+# PrisM — LLM Gateway + Agent Monorepo
 
 ## Agent Workflow (multi-agent coordination)
 
 Each Claude Code session is an agent. Sessions auto checkin/checkout via hooks — no manual action needed at startup/shutdown.
 
-> **IMPORTANT — use the right `uh` binary.**
-> `/opt/homebrew/bin/uh` is the old Go CLI that requires a running HTTP server and will return 401 errors.
-> Always use `~/.cargo/bin/uh` (the Rust rewrite, talks directly to SQLite).
-> Either prepend PATH or use the full path:
-> ```bash
-> export PATH="$HOME/.cargo/bin:$PATH"
-> ```
-> The Claude Code hooks already do this automatically.
-
 **Set your agent name (once per shell):**
 ```bash
-export UH_AGENT_NAME=claude-zed-surface   # matches your track/worktree branch
+export PRISM_AGENT_NAME=claude-zed-surface   # matches your track/worktree branch
 ```
-Default name if unset: `claude`.
+Default name if unset: `claude`. The old `UH_AGENT_NAME` env var is still read as a fallback.
 
 **Checkin happens automatically on first prompt. To do it manually:**
 ```bash
-~/.cargo/bin/uh checkin --name $UH_AGENT_NAME --capabilities rust,api,zed
+~/.cargo/bin/prism context checkin --name $PRISM_AGENT_NAME --capabilities rust,api,zed
 # → returns active threads, global memories, recent sessions, other agents
 ```
 
 **Organize work into threads (named context buckets):**
 ```bash
-~/.cargo/bin/uh thread create auth-refactor --desc "JWT auth migration" --tags auth,security
-~/.cargo/bin/uh thread list                         # active threads
-~/.cargo/bin/uh thread archive auth-refactor        # mark thread done
+~/.cargo/bin/prism context thread create auth-refactor --desc "JWT auth migration" --tags auth,security
+~/.cargo/bin/prism context thread list                         # active threads
+~/.cargo/bin/prism context thread archive auth-refactor        # mark thread done
 ```
 
 **Save knowledge that persists across sessions:**
 ```bash
-~/.cargo/bin/uh remember "auth_approach" "Using JWT with refresh tokens" --thread auth-refactor
-~/.cargo/bin/uh forget "auth_approach"              # delete a memory
-~/.cargo/bin/uh memories --thread auth-refactor     # list memories for a thread
+~/.cargo/bin/prism context remember "auth_approach" "Using JWT with refresh tokens" --thread auth-refactor
+~/.cargo/bin/prism context forget "auth_approach"              # delete a memory
+~/.cargo/bin/prism context memories --thread auth-refactor     # list memories for a thread
 ```
 
 **Record decisions with rationale:**
 ```bash
-~/.cargo/bin/uh decide "Use JWT" --content "Chose JWT over sessions because..." --thread auth-refactor
+~/.cargo/bin/prism context decide "Use JWT" --content "Chose JWT over sessions because..." --thread auth-refactor
 ```
 
 **Recall context mid-session:**
 ```bash
-~/.cargo/bin/uh recall auth-refactor               # full thread context (memories, decisions, sessions)
-~/.cargo/bin/uh recall --tags auth,security        # memories + decisions by tag
-~/.cargo/bin/uh recall --since 2h                  # everything from last 2 hours
+~/.cargo/bin/prism context recall auth-refactor               # full thread context (memories, decisions, sessions)
+~/.cargo/bin/prism context recall --tags auth,security        # memories + decisions by tag
+~/.cargo/bin/prism context recall --since 2h                  # everything from last 2 hours
 ```
 
 **Checkout when done:**
 ```bash
-~/.cargo/bin/uh checkout --name $UH_AGENT_NAME --summary "what was done"
+~/.cargo/bin/prism context checkout --name $PRISM_AGENT_NAME --summary "what was done"
 ```
 
 **See what all agents are doing:**
 ```bash
-~/.cargo/bin/uh agents          # roster: name, session open/idle, current thread
-~/.cargo/bin/uh context         # full workspace overview
+~/.cargo/bin/prism context agents          # roster: name, session open/idle, current thread
+~/.cargo/bin/prism context context         # full workspace overview
 ```
 
 ---
@@ -85,14 +76,12 @@ make test           # cargo test
 make lint           # cargo clippy -- -W clippy::all
 make fmt            # cargo fmt
 make ci             # fmt + lint + test (full quality gate)
-make run-prism      # cargo run -p prism
-make run-uh         # cargo run -p uglyhat --bin uh
-make install-uh     # install uh CLI to ~/.cargo/bin
-make install-prism-cli  # install prism CLI to ~/.cargo/bin
+make run-prism      # cargo run -p prism --bin prism-server
+make install-prism-cli  # install prism CLI to ~/.cargo/bin (prism + prism context subcommands)
 make docker-up      # docker compose up -d
 make docker-deps    # start only postgres + clickhouse
 make dev-setup      # one-time: create config, start deps, create virtual key
-make dev            # daily: start deps + run prism locally
+make dev            # daily: start deps + run prism-server locally
 make dev-min        # minimal: no Docker, no virtual keys, just cargo run -p prism
 make docker-down    # docker compose down
 make health         # curl health endpoint
@@ -103,11 +92,22 @@ Cargo is at `~/.cargo/bin/cargo` — may not be in shell PATH. Use `export PATH=
 
 ## Architecture
 
-Cargo workspace with two crates:
+Cargo workspace with 6 crates:
 
 ```
 crates/
-├── prism/               # LLM gateway binary
+├── prism-types/         # Shared types (leaf, no workspace deps)
+├── prism-context/       # Context management library for AI agents
+│   ├── Cargo.toml
+│   └── src/
+│       ├── lib.rs               # Library root (error, model, store)
+│       ├── error.rs             # Error enum (NotFound, BadRequest, Conflict, Internal, Sqlx)
+│       ├── model/mod.rs         # Domain types (Workspace, Thread, Memory, Decision, Agent, Session, Activity)
+│       ├── config.rs            # Config discovery (.prism/context.json with .uglyhat.json fallback)
+│       └── store/               # Store trait (~19 async methods) + SQLite implementation
+│           └── sqlite/          # sqlx SQLite, WAL mode, schema.sql embedded via include_str!
+├── prism-client/        # HTTP client for gateway API
+├── prism/               # LLM gateway lib + server
 │   ├── Cargo.toml
 │   ├── migrations/postgres/
 │   └── src/
@@ -128,19 +128,16 @@ crates/
 │       ├── proxy/               # Request forwarding, cost computation, SSE streaming
 │       ├── routing/             # Smart model routing (fitness scoring, policies)
 │       └── server/              # Axum router, CORS middleware
-└── uglyhat/             # Context management system for AI agents
-    ├── Cargo.toml
-    └── src/
-        ├── lib.rs               # Library root (error, model, store)
-        ├── error.rs             # Error enum (NotFound, BadRequest, Conflict, Internal, Sqlx)
-        ├── model/mod.rs         # Domain types (Workspace, Thread, Memory, Decision, Agent, Session, Activity)
-        ├── store/               # Store trait (~19 async methods) + SQLite implementation
-        │   └── sqlite/          # sqlx SQLite, WAL mode, schema.sql embedded via include_str!
-        └── bin/uh.rs            # CLI binary (clap derive, direct SQLite, JSON stdout)
+├── prism-cli/           # Unified agent CLI + context subcommands
+│   └── src/
+│       ├── main.rs              # Commands: run, personas, models, health, sessions, context, ...
+│       └── context.rs           # prism context subcommands (ported from prism-context bin)
+└── prism-hq/            # All Zed IDE panels (agent roster, task board, dashboard, etc.)
 ```
 
 Workspace root: `Cargo.toml` with `[workspace] resolver = "2"`.
-Dockerfile builds only prism: `COPY crates ./crates && cargo build --release -p prism`.
+Dockerfile builds `prism-server`: `cargo build --release -p prism`.
+Gateway binary is `prism-server`; agent CLI binary is `prism`.
 
 ## Key Patterns
 
@@ -170,9 +167,9 @@ Figment layers: TOML file → `PRISM_` env var overrides. Env vars like `${VAR}`
 ### Background tasks
 Pattern: `tokio::spawn` + `tokio::select!` with `cancel.cancelled()` for graceful shutdown. See rate limiter pruning and budget reconciliation in `main.rs`.
 
-## uglyhat Patterns (SQLite / sqlx)
+## prism-context Patterns (SQLite / sqlx)
 
-uglyhat uses SQLite with raw sqlx — no ORM. All TEXT columns for UUIDs, timestamps, and arrays.
+prism-context uses SQLite with raw sqlx — no ORM. All TEXT columns for UUIDs, timestamps, and arrays.
 
 ```rust
 // UUIDs: always stringify
@@ -207,46 +204,46 @@ Store trait has ~19 async methods — requires `#[async_trait]`. `RETURNING` cla
 - Module files: singular (`workspace.rs` not `workspaces.rs`).
 - Concurrent context fetches: use `tokio::join!` not sequential awaits.
 
-## uglyhat CLI (uh)
+## prism context CLI
 
-The `uh` binary (`~/.cargo/bin/uh`) operates in **local mode** (direct SQLite, no server).
-**Always use `~/.cargo/bin/uh`** — the Homebrew `uh` at `/opt/homebrew/bin/uh` is an unrelated Go binary.
+Context management is now a subcommand of the main `prism` CLI binary (`~/.cargo/bin/prism`).
+Config file: `.prism/context.json` (discovered by walking up from `$CWD`; falls back to `.uglyhat.json` for backward compat).
 
 ```bash
 # Setup
-uh init <name>                                    # bootstrap workspace → .uglyhat.json + .uglyhat.db
-uh context                                        # workspace overview JSON
+prism context init <name>                                    # bootstrap workspace → .prism/context.json + .prism/context.db
+prism context context                                        # workspace overview JSON
 
 # Threads (named context buckets — the core organizing primitive)
-uh thread create <name> [--desc --tags]           # start a new context thread
-uh thread list [--active --archived]              # list threads
-uh thread archive <name>                          # mark thread done
+prism context thread create <name> [--desc --tags]           # start a new context thread
+prism context thread list [--active --archived]              # list threads
+prism context thread archive <name>                          # mark thread done
 
 # Memory (persistent facts + knowledge)
-uh remember <key> <value> [--thread --tags]       # save/upsert a memory (UNIQUE on workspace+key)
-uh forget <key>                                   # delete a memory
-uh memories [--thread --tags]                     # list memories
+prism context remember <key> <value> [--thread --tags]       # save/upsert a memory (UNIQUE on workspace+key)
+prism context forget <key>                                   # delete a memory
+prism context memories [--thread --tags]                     # list memories
 
 # Decisions
-uh decide <title> [--content --thread --tags]     # record a decision with rationale
-uh decisions [--thread --tags]                    # list decisions
+prism context decide <title> [--content --thread --tags]     # record a decision with rationale
+prism context decisions [--thread --tags]                    # list decisions
 
 # Context retrieval (the main agent interface)
-uh recall <thread-name>                           # full thread context (memories, decisions, sessions)
-uh recall --tags <tag1,tag2>                      # memories + decisions by tag
-uh recall --since 2h                              # everything recent (supports m/h/d)
+prism context recall <thread-name>                           # full thread context (memories, decisions, sessions)
+prism context recall --tags <tag1,tag2>                      # memories + decisions by tag
+prism context recall --since 2h                              # everything recent (supports m/h/d)
 
 # Agent coordination
-uh checkin --name <agent> [--capabilities --thread]
-uh checkout --name <agent> [--summary --findings --files --next-steps]
-uh agents                                         # who's doing what
+prism context checkin --name <agent> [--capabilities --thread]
+prism context checkout --name <agent> [--summary --findings --files --next-steps]
+prism context agents                                         # who's doing what
 
 # History
-uh activity [--since --actor --limit]
-uh snapshot [--label]                             # capture point-in-time state
+prism context activity [--since --actor --limit]
+prism context snapshot [--label]                             # capture point-in-time state
 ```
 
-Config: `.uglyhat.json` discovered by walking up from `$CWD`. `UH_AGENT_NAME` env sets agent name.
+`PRISM_AGENT_NAME` env sets agent name. `UH_AGENT_NAME` is still read as fallback.
 
 ### Core entities (6)
 
@@ -313,5 +310,5 @@ Rust does not auto-grow thread stacks. Each thread gets a fixed stack (typically
 ## Known Issues
 
 - `classify_summarization` test is flaky (classifies as Documentation instead of Summarization) — pre-existing Phase 2 issue. Keyword-based classifier is brittle; agents don't use textbook phrasing.
-- `.gitignore` only excludes `/target` — **do not commit `.env`, `.uglyhat.json`, or any credentials**.
+- `.gitignore` only excludes `/target` — **do not commit `.env`, `.prism/context.json`, or any credentials**.
 - Fitness cache runs on hardcoded synthetic data — feedback loop (LLM-judge → fitness) not yet wired to live traffic.

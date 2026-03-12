@@ -1,4 +1,10 @@
 /target
+# New-style prism-context config
+.prism/context.json
+.prism/context.db
+.prism/context.db-shm
+.prism/context.db-wal
+# Legacy uglyhat config (backward compat)
 .uglyhat.json
 .uglyhat.db
 .uglyhat.db-shm

@@ -6,6 +6,14 @@ use crate::hooks::HookRunner;
 use crate::hooks::config::HooksConfig;
 use crate::permissions::PermissionMode;
 
+/// Returns the agent name from the environment.
+/// Reads `PRISM_AGENT_NAME`, falling back to `UH_AGENT_NAME` (backward compat), then `"claude"`.
+pub fn agent_name_from_env() -> String {
+    std::env::var("PRISM_AGENT_NAME")
+        .or_else(|_| std::env::var("UH_AGENT_NAME"))
+        .unwrap_or_else(|_| "claude".to_string())
+}
+
 /// Returns `~/.prism`, the base directory for all prism-cli state.
 pub fn prism_home() -> PathBuf {
     dirs::home_dir()

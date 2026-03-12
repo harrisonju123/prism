@@ -3,13 +3,10 @@ resolver = "2"
 members = [
     # PrisM crates
     "crates/prism",
-    "crates/uglyhat",
-    "crates/uglyhat-types",
+    "crates/prism-context",
     "crates/prism-types",
     "crates/prism-client",
     "crates/prism-cli",
-    "crates/uglyhat-panel",
-    "crates/prism-dashboard",
     "crates/prism-hq",
     # Zed crates
     "zed-upstream/crates/acp_thread",
@@ -249,13 +246,10 @@ members = [
 ]
 default-members = [
     "crates/prism",
-    "crates/uglyhat",
-    "crates/uglyhat-types",
+    "crates/prism-context",
     "crates/prism-types",
     "crates/prism-client",
     "crates/prism-cli",
-    "crates/uglyhat-panel",
-    "crates/prism-dashboard",
     "crates/prism-hq",
 ]
 
@@ -271,11 +265,8 @@ edition = "2024"
 prism = { path = "crates/prism", default-features = false, features = ["embedded"] }
 prism-types = { path = "crates/prism-types" }
 prism-client = { path = "crates/prism-client" }
-uglyhat = { path = "crates/uglyhat" }
-uglyhat-types = { path = "crates/uglyhat-types" }
-uglyhat-panel = { path = "crates/uglyhat-panel" }
+prism-context = { path = "crates/prism-context" }
 prism-hq = { path = "crates/prism-hq" }
-prism-dashboard = { path = "crates/prism-dashboard" }
 
 #
 # Zed internal crates (paths prefixed with zed-upstream/)

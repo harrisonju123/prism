@@ -1,5 +1,5 @@
 [package]
-name = "uglyhat"
+name = "prism-context"
 version = "0.2.0"
 edition.workspace = true
 description = "Context management system for AI agents"
@@ -16,11 +16,6 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 async-trait = { workspace = true }
 sqlx = { workspace = true }
-clap = { version = "4", features = ["derive"] }
-
-[[bin]]
-name = "uh"
-path = "src/bin/uh.rs"
 
 [dev-dependencies]
 wiremock = "0.6"

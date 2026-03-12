@@ -118,7 +118,7 @@ pub async fn anthropic_messages(
         .and_then(|v| v.to_str().ok())
         .map(String::from);
     let thread_id = headers
-        .get("x-uglyhat-thread-id")
+        .get("x-prism-thread-id")
         .and_then(|v| v.to_str().ok())
         .map(String::from);
     let episode_id = headers

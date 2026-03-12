@@ -134,7 +134,7 @@ if [ ! -d "$WORKTREE_PATH" ]; then
 fi
 
 export PATH="$HOME/.cargo/bin:$PATH"
-export UH_AGENT_NAME="$AGENT_NAME"
+export PRISM_AGENT_NAME="$AGENT_NAME"
 
 # Attempt to claim an existing task whose name matches, otherwise create one
 TASK_ID=$(~/.cargo/bin/uh next 2>/dev/null | \
@@ -163,7 +163,7 @@ exec claude --dangerously-skip-permissions
         args: vec!["-c".to_string(), shell_cmd],
         command_label: format!("claude --dangerously-skip-permissions # worktree: {}", name),
         cwd: Some(worktree_path),
-        env: HashMap::from_iter([("UH_AGENT_NAME".to_string(), agent_name)]),
+        env: HashMap::from_iter([("PRISM_AGENT_NAME".to_string(), agent_name)]),
         use_new_terminal: true,
         allow_concurrent_runs: true,
         reveal: RevealStrategy::Always,

@@ -2,7 +2,7 @@ use gpui::{
     App, AppContext as _, Context, EventEmitter, FocusHandle, Focusable, IntoElement, KeyDownEvent,
     ParentElement, Render, SharedString, Styled, Task, WeakEntity, Window, actions,
 };
-use uglyhat::model::{
+use prism_context::model::{
     AgentSession, AgentState, AgentStatus, Decision, Handoff, HandoffConstraints, HandoffStatus,
     Memory, ThreadContext, ThreadStatus,
 };
@@ -15,7 +15,7 @@ use workspace::item::{Item, ItemEvent};
 use crate::inline_forms::{
     AddMemoryForm, CreateHandoffForm, DecisionField, MemoryField, RecordDecisionForm,
 };
-use uglyhat_panel::UglyhatService;
+use crate::context_service::ContextService;
 
 actions!(prism_hq, [OpenThreadView]);
 
@@ -91,7 +91,7 @@ impl ThreadViewItem {
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
             let handle = this
                 .update(cx, |_, cx| {
-                    cx.try_global::<UglyhatService>()
+                    cx.try_global::<ContextService>()
                         .and_then(|svc| svc.handle())
                 })
                 .ok()
@@ -160,7 +160,7 @@ impl ThreadViewItem {
         self.save_task = Some(cx.spawn(async move |this, cx| {
             let handle = this
                 .update(cx, |_, cx| {
-                    cx.try_global::<UglyhatService>()
+                    cx.try_global::<ContextService>()
                         .and_then(|svc| svc.handle())
                 })
                 .ok()
@@ -206,7 +206,7 @@ impl ThreadViewItem {
         self.save_task = Some(cx.spawn(async move |this, cx| {
             let handle = this
                 .update(cx, |_, cx| {
-                    cx.try_global::<UglyhatService>()
+                    cx.try_global::<ContextService>()
                         .and_then(|svc| svc.handle())
                 })
                 .ok()
@@ -251,7 +251,7 @@ impl ThreadViewItem {
         self.save_task = Some(cx.spawn(async move |this, cx| {
             let handle = this
                 .update(cx, |_, cx| {
-                    cx.try_global::<UglyhatService>()
+                    cx.try_global::<ContextService>()
                         .and_then(|svc| svc.handle())
                 })
                 .ok()
@@ -295,7 +295,7 @@ impl ThreadViewItem {
         self.save_task = Some(cx.spawn(async move |this, cx| {
             let handle = this
                 .update(cx, |_, cx| {
-                    cx.try_global::<UglyhatService>()
+                    cx.try_global::<ContextService>()
                         .and_then(|svc| svc.handle())
                 })
                 .ok()
@@ -479,7 +479,7 @@ impl Render for ThreadViewItem {
                                 this.save_task = Some(cx.spawn(async move |this_weak, cx| {
                                     let handle = this_weak
                                         .update(cx, |_, cx| {
-                                            cx.try_global::<UglyhatService>()
+                                            cx.try_global::<ContextService>()
                                                 .and_then(|svc| svc.handle())
                                         })
                                         .ok()

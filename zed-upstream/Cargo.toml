@@ -635,8 +635,6 @@ palette = { version = "0.7.5", default-features = false, features = ["std"] }
 parking_lot = "0.12.1"
 partial-json-fixer = "0.5.3"
 prism = { path = "../crates/prism" }
-prism-dashboard = { path = "../crates/prism-dashboard" }
-uglyhat-panel = { path = "../crates/uglyhat-panel" }
 parse_int = "0.9"
 pciid-parser = "0.8.0"
 pathdiff = "0.2"

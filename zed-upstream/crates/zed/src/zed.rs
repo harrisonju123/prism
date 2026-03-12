@@ -502,7 +502,7 @@ impl Render for PrismRoutingIndicator {
 
                         menu.separator().action(
                             "Open PrisM Dashboard",
-                            prism_dashboard::ToggleFocus.boxed_clone(),
+                            prism_hq::DashboardToggleFocus.boxed_clone(),
                         )
                     }))
                 })
@@ -595,7 +595,7 @@ impl Render for CostGaugeStatusItem {
                 .color(color)
                 .tooltip(ui::Tooltip::text(tooltip))
                 .on_click(|_, window, cx| {
-                    window.dispatch_action(prism_dashboard::ToggleFocus.boxed_clone(), cx);
+                    window.dispatch_action(prism_hq::DashboardToggleFocus.boxed_clone(), cx);
                 }),
         )
     }
@@ -904,7 +904,7 @@ fn initialize_panels(
         );
         let debug_panel = DebugPanel::load(workspace_handle.clone(), cx);
         let prism_dashboard =
-            prism_dashboard::PrismDashboardPanel::load(workspace_handle.clone(), cx.clone());
+            prism_hq::PrismDashboardPanel::load(workspace_handle.clone(), cx.clone());
         let hq_navigator =
             NavigatorPanel::load(workspace_handle.clone(), cx.clone());
 
@@ -5287,8 +5287,6 @@ mod tests {
             git_ui::init(cx);
             project_panel::init(cx);
             outline_panel::init(cx);
-            uglyhat_panel::init(cx);
-            prism_dashboard::init(cx);
             prism_hq::init(cx);
             terminal_view::init(cx);
             copilot_chat::init(

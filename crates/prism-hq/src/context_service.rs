@@ -2,44 +2,44 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use gpui::{App, Global, WeakEntity};
-use uglyhat::model::{
+use prism_context::model::{
     ActivityEntry, AgentSession, AgentState, AgentStatus, CheckinContext, Decision, DecisionScope,
     Handoff, HandoffConstraints, HandoffMode, HandoffStatus, InboxEntry, InboxEntryType,
     InboxSeverity, Memory, Plan, PlanStatus, Thread, ThreadContext, ThreadGuardrails, ThreadStatus,
     WorkPackage, WorkPackageStatus, WorkspaceOverview,
 };
-use uglyhat::store::sqlite::SqliteStore;
-use uglyhat::store::{ActivityFilters, InboxFilters, Store};
+use prism_context::store::sqlite::SqliteStore;
+use prism_context::store::{ActivityFilters, InboxFilters, Store};
 use uuid::Uuid;
 
 /// GPUI Global that holds uglyhat state. Lives on the main thread.
 /// Use `handle()` to get a cloneable, Send-able handle for background work.
-pub struct UglyhatService {
-    inner: Option<UglyhatHandle>,
+pub struct ContextService {
+    inner: Option<ContextHandle>,
 }
 
-impl Global for UglyhatService {}
+impl Global for ContextService {}
 
 /// Thread-safe, cloneable handle to uglyhat. Can be sent to background threads.
 #[derive(Clone)]
-pub struct UglyhatHandle {
+pub struct ContextHandle {
     store: Arc<SqliteStore>,
     workspace_id: Uuid,
     handle: tokio::runtime::Handle,
 }
 
-impl UglyhatService {
+impl ContextService {
     /// Initialize the service by discovering `.uglyhat.json` from `workspace_root`.
     /// Config discovery is synchronous; store opening is async (non-blocking).
     pub fn init(workspace_root: &std::path::Path, cx: &mut App) -> Result<()> {
         let tokio_handle = gpui_tokio::Tokio::handle(cx);
 
-        let config_path = match uglyhat::config::find_config(workspace_root) {
+        let config_path = match prism_context::config::find_config(workspace_root) {
             Some(path) => path,
             None => {
                 // Only auto-init inside git repos to avoid false positives.
                 if !workspace_root.join(".git").exists() {
-                    anyhow::bail!("uglyhat not initialized in this workspace");
+                    anyhow::bail!("prism-context not initialized in this workspace");
                 }
                 let workspace_name = workspace_root
                     .file_name()
@@ -48,31 +48,31 @@ impl UglyhatService {
                     .to_string();
                 let dir = workspace_root.to_path_buf();
                 let (path, _) = tokio_handle
-                    .block_on(uglyhat::config::auto_init(&dir, &workspace_name))
-                    .map_err(|e| anyhow::anyhow!("uglyhat auto-init: {e}"))?;
-                add_uglyhat_to_gitignore(workspace_root);
-                log::info!("uglyhat auto-initialized at {:?}", path);
+                    .block_on(prism_context::config::auto_init(&dir, &workspace_name))
+                    .map_err(|e| anyhow::anyhow!("prism-context auto-init: {e}"))?;
+                add_context_to_gitignore(workspace_root);
+                log::info!("prism-context auto-initialized at {:?}", path);
                 path
             }
         };
 
         let config =
-            uglyhat::config::load_config(&config_path).map_err(|e| anyhow::anyhow!("{e}"))?;
+            prism_context::config::load_config(&config_path).map_err(|e| anyhow::anyhow!("{e}"))?;
         let workspace_id: Uuid = config
             .workspace_id
             .parse()
-            .context("invalid workspace_id in .uglyhat.json")?;
+            .context("invalid workspace_id in .prism/context.json")?;
 
-        let db_path = uglyhat::config::resolve_db_path(&config_path, &config)
+        let db_path = prism_context::config::resolve_db_path(&config_path, &config)
             .to_string_lossy()
             .to_string();
 
         // Set global immediately with no handle — callers already handle None gracefully
-        cx.set_global(UglyhatService { inner: None });
+        cx.set_global(ContextService { inner: None });
 
         // Open the store on the tokio runtime, update global when ready
         let open_task = gpui_tokio::Tokio::spawn_result(cx, async move {
-            use uglyhat::store::Store as _;
+            use prism_context::store::Store as _;
             let store = SqliteStore::open(&db_path)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -84,7 +84,7 @@ impl UglyhatService {
         cx.spawn(async move |cx| match open_task.await {
             Ok(store) => {
                 cx.update(|cx| {
-                    cx.global_mut::<UglyhatService>().inner = Some(UglyhatHandle {
+                    cx.global_mut::<ContextService>().inner = Some(ContextHandle {
                         store: Arc::new(store),
                         workspace_id,
                         handle: tokio_handle,
@@ -92,7 +92,7 @@ impl UglyhatService {
                 });
             }
             Err(e) => {
-                log::warn!("failed to open uglyhat store: {e}");
+                log::warn!("failed to open prism-context store: {e}");
             }
         })
         .detach();
@@ -101,19 +101,19 @@ impl UglyhatService {
     }
 
     /// Get a cloneable handle that can be sent to background threads.
-    pub fn handle(&self) -> Option<UglyhatHandle> {
+    pub fn handle(&self) -> Option<ContextHandle> {
         self.inner.clone()
     }
 }
 
-impl UglyhatHandle {
+impl ContextHandle {
     pub fn workspace_id(&self) -> Uuid {
         self.workspace_id
     }
 
     fn run<F, T>(&self, f: F) -> Result<T>
     where
-        F: std::future::Future<Output = std::result::Result<T, uglyhat::error::Error>>,
+        F: std::future::Future<Output = std::result::Result<T, prism_context::error::Error>>,
     {
         self.handle.block_on(f).map_err(|e| anyhow::anyhow!("{e}"))
     }
@@ -332,7 +332,7 @@ impl UglyhatHandle {
         from_agent: &str,
         to_agent: &str,
         content: &str,
-    ) -> Result<uglyhat::model::Message> {
+    ) -> Result<prism_context::model::Message> {
         self.run(
             self.store
                 .send_message(self.workspace_id, from_agent, to_agent, content, None),
@@ -343,7 +343,7 @@ impl UglyhatHandle {
         &self,
         to_agent: &str,
         unread_only: bool,
-    ) -> Result<Vec<uglyhat::model::Message>> {
+    ) -> Result<Vec<prism_context::model::Message>> {
         self.run(
             self.store
                 .list_messages(self.workspace_id, to_agent, unread_only),
@@ -471,13 +471,14 @@ impl UglyhatHandle {
     }
 }
 
-fn add_uglyhat_to_gitignore(workspace_root: &std::path::Path) {
+fn add_context_to_gitignore(workspace_root: &std::path::Path) {
     let gitignore_path = workspace_root.join(".gitignore");
-    let entries = [".uglyhat.json", ".uglyhat.db"];
+    let entries = [".prism/context.json", ".prism/context.db", ".uglyhat.json", ".uglyhat.db"];
     let content = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
+    let existing: std::collections::HashSet<&str> = content.lines().map(|l| l.trim()).collect();
     let mut to_add = Vec::new();
     for entry in entries {
-        if !content.lines().any(|l| l.trim() == entry) {
+        if !existing.contains(entry) {
             to_add.push(entry);
         }
     }
@@ -492,14 +493,14 @@ fn add_uglyhat_to_gitignore(workspace_root: &std::path::Path) {
     }
 }
 
-/// Helper to extract an `UglyhatHandle` from a `WeakEntity` context.
+/// Helper to extract an `ContextHandle` from a `WeakEntity` context.
 /// Use from within `cx.spawn(async move |this, cx| { ... })` closures.
-pub fn get_uglyhat_handle<T: 'static>(
+pub fn get_context_handle<T: 'static>(
     this: &WeakEntity<T>,
     cx: &mut gpui::AsyncApp,
-) -> Option<UglyhatHandle> {
+) -> Option<ContextHandle> {
     this.update(cx, |_, cx| {
-        cx.try_global::<UglyhatService>()
+        cx.try_global::<ContextService>()
             .and_then(|svc| svc.handle())
     })
     .ok()

@@ -7,7 +7,7 @@ use workspace::Workspace;
 use workspace::item::{Item, ItemEvent};
 
 use crate::hq_state::HqState;
-use uglyhat::model::{Plan, PlanStatus, WorkPackage, WorkPackageStatus};
+use prism_context::model::{Plan, PlanStatus, WorkPackage, WorkPackageStatus};
 
 actions!(prism_hq, [OpenPlanView]);
 

@@ -380,8 +380,6 @@ pub struct Agent {
     pending_self_review: Option<Vec<String>>,
 }
 
-const UH_AGENT_NAME_ENV: &str = "UH_AGENT_NAME";
-const UH_AGENT_NAME_DEFAULT: &str = "claude";
 const UH_THREAD_ENV: &str = "UH_THREAD";
 
 impl Agent {
@@ -568,9 +566,8 @@ impl Agent {
         // If spawned as a child agent, accept the handoff so the parent can track progress.
         if let Ok(hid_str) = std::env::var("PRISM_HANDOFF_ID") {
             if let Ok(hid) = hid_str.parse::<uuid::Uuid>() {
-                use uglyhat::store::Store;
-                let agent_name = std::env::var(UH_AGENT_NAME_ENV)
-                    .unwrap_or_else(|_| UH_AGENT_NAME_DEFAULT.to_string());
+                use prism_context::store::Store;
+                let agent_name = crate::config::agent_name_from_env();
                 if let (Some(store), Some(ws_id)) =
                     (self.memory.store().cloned(), self.memory.workspace_id())
                 {
@@ -885,9 +882,9 @@ If you have questions, ask them now. If you're confident, continue."
                     .is_some_and(|cap| total_cost_usd >= 0.8 * cap);
                 if is_spike || is_near_cap {
                     let severity = if is_near_cap {
-                        uglyhat::model::InboxSeverity::Critical
+                        prism_context::model::InboxSeverity::Critical
                     } else {
-                        uglyhat::model::InboxSeverity::Warning
+                        prism_context::model::InboxSeverity::Warning
                     };
                     let title = if is_near_cap {
                         format!(
@@ -904,7 +901,7 @@ If you have questions, ask them now. If you're confident, continue."
                     };
                     let thread_ref_id = self.current_thread_id().await;
                     self.create_inbox_event(
-                        uglyhat::model::InboxEntryType::CostSpike,
+                        prism_context::model::InboxEntryType::CostSpike,
                         &title,
                         "",
                         severity,
@@ -1060,13 +1057,13 @@ If you have questions, ask them now. If you're confident, continue."
                             if !is_read_only(&name) {
                                 let thread_ref = self.current_thread_id().await;
                                 self.create_inbox_event(
-                                    uglyhat::model::InboxEntryType::Approval,
+                                    prism_context::model::InboxEntryType::Approval,
                                     &format!("Tool denied: {name}"),
                                     &format!(
                                         "Agent requested `{name}` but was denied. \
                                          Review and approve if the action is safe.",
                                     ),
-                                    uglyhat::model::InboxSeverity::Warning,
+                                    prism_context::model::InboxSeverity::Warning,
                                     "thread",
                                     thread_ref,
                                 )
@@ -1483,7 +1480,7 @@ If you have questions, ask them now. If you're confident, continue."
                                             if let (Some(store), Some(ws_id), Some(hid)) =
                                                 (spawn_store, spawn_ws_id, handoff_id)
                                             {
-                                                use uglyhat::store::Store;
+                                                use prism_context::store::Store;
                                                 let _ = store
                                                     .complete_handoff(
                                                         ws_id,
@@ -1559,7 +1556,7 @@ If you have questions, ask them now. If you're confident, continue."
                                         if let (Some(store), Some(ws_id), Some(hid)) =
                                             (spawn_store, spawn_ws_id, handoff_id)
                                         {
-                                            use uglyhat::store::Store;
+                                            use prism_context::store::Store;
                                             let result_val = agent_result
                                                 .as_ref()
                                                 .and_then(|r| serde_json::to_value(r).ok())
@@ -1906,7 +1903,7 @@ If you have questions, ask them now. If you're confident, continue."
         let thread_ref_id = self.current_thread_id().await;
         if stop_reason == Some(AgentStopReason::Stop) {
             self.create_inbox_event(
-                uglyhat::model::InboxEntryType::Completed,
+                prism_context::model::InboxEntryType::Completed,
                 &format!(
                     "Session completed: {} turn{}, ${:.4}",
                     turns,
@@ -1929,7 +1926,7 @@ If you have questions, ask them now. If you're confident, continue."
                         }
                     })
                     .unwrap_or_default(),
-                uglyhat::model::InboxSeverity::Info,
+                prism_context::model::InboxSeverity::Info,
                 "thread",
                 thread_ref_id,
             )
@@ -1938,10 +1935,10 @@ If you have questions, ask them now. If you're confident, continue."
             // Suggest refactor review if many files were touched
             if files_vec.len() >= 3 {
                 self.create_inbox_event(
-                    uglyhat::model::InboxEntryType::Suggestion,
+                    prism_context::model::InboxEntryType::Suggestion,
                     &format!("{} files modified — consider review", files_vec.len()),
                     &format!("Files: {}", files_vec.join(", ")),
-                    uglyhat::model::InboxSeverity::Info,
+                    prism_context::model::InboxSeverity::Info,
                     "thread",
                     thread_ref_id,
                 )
@@ -1966,24 +1963,23 @@ If you have questions, ask them now. If you're confident, continue."
     /// Returns cloned (store, workspace_id) for use by callers outside the agent loop (e.g. REPL).
     pub fn uh_store_context(
         &self,
-    ) -> Option<(std::sync::Arc<uglyhat::store::sqlite::SqliteStore>, uuid::Uuid)> {
+    ) -> Option<(std::sync::Arc<prism_context::store::sqlite::SqliteStore>, uuid::Uuid)> {
         let store = self.memory.store()?.clone();
         let ws_id = self.memory.workspace_id()?;
         Some((store, ws_id))
     }
 
     /// Returns (store, workspace_id, agent_name) if uglyhat is configured.
-    fn uh_context(&self) -> Option<(&dyn uglyhat::store::Store, uuid::Uuid, String)> {
+    fn uh_context(&self) -> Option<(&dyn prism_context::store::Store, uuid::Uuid, String)> {
         let store = self.memory.store()?;
         let ws_id = self.memory.workspace_id()?;
-        let agent_name =
-            std::env::var(UH_AGENT_NAME_ENV).unwrap_or_else(|_| UH_AGENT_NAME_DEFAULT.to_string());
+        let agent_name = crate::config::agent_name_from_env();
         Some((store.as_ref(), ws_id, agent_name))
     }
 
     /// Send heartbeat and set agent state to Working via uglyhat store.
     async fn send_heartbeat_and_set_working(&self) {
-        use uglyhat::model::AgentState;
+        use prism_context::model::AgentState;
 
         let Some((store, ws_id, agent_name)) = self.uh_context() else {
             return;
@@ -1997,7 +1993,7 @@ If you have questions, ask them now. If you're confident, continue."
 
     /// Poll for pending decision notifications and inject them as a system message.
     async fn poll_and_inject_decisions(&mut self) {
-        use uglyhat::store::Store;
+        use prism_context::store::Store;
 
         // Need an owned store clone because we later mutably borrow self.session
         let Some(store) = self.memory.store().cloned() else {
@@ -2006,8 +2002,7 @@ If you have questions, ask them now. If you're confident, continue."
         let Some(ws_id) = self.memory.workspace_id() else {
             return;
         };
-        let agent_name =
-            std::env::var(UH_AGENT_NAME_ENV).unwrap_or_else(|_| UH_AGENT_NAME_DEFAULT.to_string());
+        let agent_name = crate::config::agent_name_from_env();
 
         let decisions = match store
             .pending_decision_notifications(ws_id, &agent_name)
@@ -2033,7 +2028,7 @@ If you have questions, ask them now. If you're confident, continue."
 
     /// Poll inbox for unread messages from the IDE or other agents, inject as context.
     async fn poll_and_inject_messages(&mut self) {
-        use uglyhat::store::Store;
+        use prism_context::store::Store;
 
         let Some(store) = self.memory.store().cloned() else {
             return;
@@ -2041,8 +2036,7 @@ If you have questions, ask them now. If you're confident, continue."
         let Some(ws_id) = self.memory.workspace_id() else {
             return;
         };
-        let agent_name =
-            std::env::var(UH_AGENT_NAME_ENV).unwrap_or_else(|_| UH_AGENT_NAME_DEFAULT.to_string());
+        let agent_name = crate::config::agent_name_from_env();
 
         let messages = match store.list_messages(ws_id, &agent_name, true).await {
             Ok(msgs) if !msgs.is_empty() => msgs,
@@ -2065,12 +2059,11 @@ If you have questions, ask them now. If you're confident, continue."
         task: &str,
         args: &serde_json::Value,
     ) -> Option<uuid::Uuid> {
-        use uglyhat::store::Store;
+        use prism_context::store::Store;
 
         let store = self.memory.store()?.clone();
         let ws_id = self.memory.workspace_id()?;
-        let agent_name =
-            std::env::var(UH_AGENT_NAME_ENV).unwrap_or_else(|_| UH_AGENT_NAME_DEFAULT.to_string());
+        let agent_name = crate::config::agent_name_from_env();
 
         let thread_id = self.current_thread_id().await;
         let constraints = args["constraints"]
@@ -2079,8 +2072,8 @@ If you have questions, ask them now. If you're confident, continue."
             .unwrap_or_default();
         let mode = args["handoff_mode"]
             .as_str()
-            .and_then(uglyhat::model::HandoffMode::from_str)
-            .unwrap_or(uglyhat::model::HandoffMode::DelegateAndAwait);
+            .and_then(prism_context::model::HandoffMode::from_str)
+            .unwrap_or(prism_context::model::HandoffMode::DelegateAndAwait);
 
         match store
             .create_handoff(ws_id, &agent_name, task, thread_id, constraints, mode)
@@ -2099,7 +2092,7 @@ If you have questions, ask them now. If you're confident, continue."
 
     /// Returns the UUID of the current thread, if any.
     async fn current_thread_id(&self) -> Option<uuid::Uuid> {
-        use uglyhat::store::Store;
+        use prism_context::store::Store;
 
         let thread_name = self.current_thread.as_deref()?;
         let store = self.memory.store()?;
@@ -2114,14 +2107,14 @@ If you have questions, ask them now. If you're confident, continue."
     /// Create an inbox entry in the uglyhat store. Silently no-ops if uglyhat is unavailable.
     async fn create_inbox_event(
         &self,
-        entry_type: uglyhat::model::InboxEntryType,
+        entry_type: prism_context::model::InboxEntryType,
         title: &str,
         body: &str,
-        severity: uglyhat::model::InboxSeverity,
+        severity: prism_context::model::InboxSeverity,
         ref_type: &str,
         ref_id: Option<uuid::Uuid>,
     ) {
-        use uglyhat::store::Store;
+        use prism_context::store::Store;
 
         let Some(store) = self.memory.store().cloned() else {
             return;
@@ -2129,8 +2122,7 @@ If you have questions, ask them now. If you're confident, continue."
         let Some(ws_id) = self.memory.workspace_id() else {
             return;
         };
-        let agent_name =
-            std::env::var(UH_AGENT_NAME_ENV).unwrap_or_else(|_| UH_AGENT_NAME_DEFAULT.to_string());
+        let agent_name = crate::config::agent_name_from_env();
 
         let ref_type_opt = if ref_type.is_empty() {
             None
@@ -2158,7 +2150,7 @@ If you have questions, ask them now. If you're confident, continue."
     /// Poll unread inbox entries addressed to this agent and inject as context.
     /// Approval entries in non-interactive mode are surfaced so the agent knows to pause.
     async fn poll_and_inject_inbox(&mut self) {
-        use uglyhat::store::{InboxFilters, Store};
+        use prism_context::store::{InboxFilters, Store};
 
         let Some(store) = self.memory.store().cloned() else {
             return;
@@ -2166,8 +2158,7 @@ If you have questions, ask them now. If you're confident, continue."
         let Some(ws_id) = self.memory.workspace_id() else {
             return;
         };
-        let agent_name =
-            std::env::var(UH_AGENT_NAME_ENV).unwrap_or_else(|_| UH_AGENT_NAME_DEFAULT.to_string());
+        let agent_name = crate::config::agent_name_from_env();
 
         let entries = match store
             .list_inbox_entries(
@@ -2258,7 +2249,7 @@ If you have questions, ask them now. If you're confident, continue."
     ///
     /// Returns true if structural enforcement was activated.
     async fn setup_plan_mode_guardrails(&mut self) -> bool {
-        use uglyhat::store::Store;
+        use prism_context::store::Store;
 
         let plan_file = match self.plan_file.clone() {
             Some(pf) => pf,
@@ -2323,7 +2314,7 @@ If you have questions, ask them now. If you're confident, continue."
 
     /// Clean up plan mode guardrails at session end.
     async fn teardown_plan_mode_guardrails(&self) {
-        use uglyhat::store::Store;
+        use prism_context::store::Store;
 
         let thread_name = match self.current_thread.as_deref() {
             Some(t) => t,
@@ -2371,7 +2362,7 @@ If you have questions, ask them now. If you're confident, continue."
 
     /// Set agent state to Idle (called from REPL at prompt).
     pub async fn set_idle(&self) {
-        use uglyhat::model::AgentState;
+        use prism_context::model::AgentState;
 
         let Some((store, ws_id, agent_name)) = self.uh_context() else {
             return;
@@ -2385,7 +2376,7 @@ If you have questions, ask them now. If you're confident, continue."
     /// Handle the `ask_human` tool — posts a question to the human's inbox in uglyhat.
     /// The REPL surfaces pending inbox entries before each prompt so the human sees it immediately.
     async fn handle_ask_human(&self, args: &serde_json::Value) -> String {
-        use uglyhat::model::{InboxEntryType, InboxSeverity};
+        use prism_context::model::{InboxEntryType, InboxSeverity};
 
         let Some((store, ws_id, agent_name)) = self.uh_context() else {
             return json!({"error": "no uglyhat context store available"}).to_string();
@@ -2422,7 +2413,7 @@ If you have questions, ask them now. If you're confident, continue."
 
     /// Handle the `record_decision` tool — persists a decision with rationale to uglyhat.
     async fn handle_record_decision(&self, args: &serde_json::Value) -> String {
-        use uglyhat::model::DecisionScope;
+        use prism_context::model::DecisionScope;
 
         let Some((store, ws_id, _agent_name)) = self.uh_context() else {
             return json!({"error": "no uglyhat context store available"}).to_string();
@@ -2473,7 +2464,7 @@ If you have questions, ask them now. If you're confident, continue."
 
     /// Handle the `recall` tool — loads context from uglyhat store.
     async fn handle_recall(&self, args: &serde_json::Value) -> String {
-        use uglyhat::store::Store;
+        use prism_context::store::Store;
 
         let Some(store) = self.memory.store() else {
             return json!({"error": "no uglyhat context store available"}).to_string();
@@ -2505,15 +2496,15 @@ If you have questions, ask them now. If you're confident, continue."
 }
 
 fn parse_duration_str(s: &str) -> Result<chrono::Duration> {
-    uglyhat::util::parse_duration(s).map_err(|e| anyhow::anyhow!(e))
+    prism_context::util::parse_duration(s).map_err(|e| anyhow::anyhow!(e))
 }
 
 fn make_guardrails(
     ws_id: uuid::Uuid,
     allowed_files: Vec<String>,
     allowed_tools: Vec<String>,
-) -> uglyhat::model::ThreadGuardrails {
-    uglyhat::model::ThreadGuardrails {
+) -> prism_context::model::ThreadGuardrails {
+    prism_context::model::ThreadGuardrails {
         id: uuid::Uuid::new_v4(),
         thread_id: uuid::Uuid::nil(),
         workspace_id: ws_id,

@@ -94,10 +94,10 @@ impl CommandCenterItem {
                     })
                     .children(agents.into_iter().enumerate().map(|(ix, agent)| {
                         let state_color = match agent.state {
-                            uglyhat::model::AgentState::Working => Color::Accent,
-                            uglyhat::model::AgentState::Idle => Color::Success,
-                            uglyhat::model::AgentState::Blocked => Color::Warning,
-                            uglyhat::model::AgentState::Dead => Color::Muted,
+                            prism_context::model::AgentState::Working => Color::Accent,
+                            prism_context::model::AgentState::Idle => Color::Success,
+                            prism_context::model::AgentState::Blocked => Color::Warning,
+                            prism_context::model::AgentState::Dead => Color::Muted,
                         };
                         let state_label = agent.state.to_string();
                         let agent_name = agent.name.clone();

@@ -9,13 +9,10 @@ name = "prism"
 path = "src/lib.rs"
 
 [[bin]]
-name = "prism"
+name = "prism-server"
 path = "src/main.rs"
 required-features = ["full"]
 
-[[bin]]
-name = "prism-cli"
-path = "src/bin/prism_cli.rs"
 
 [features]
 default = ["full"]
@@ -33,7 +30,7 @@ tracing-loki      = ["dep:tracing-loki"]
 
 [dependencies]
 prism-types = { workspace = true }
-uglyhat = { workspace = true }
+prism-context = { workspace = true }
 
 # HTTP server
 axum = { workspace = true }

@@ -8,7 +8,7 @@ use workspace::{ModalView, Workspace};
 
 use crate::agent_spawner::spawn_agent_in_worktree;
 use crate::agent_view::open_agent_view;
-use uglyhat_panel::UglyhatService;
+use crate::context_service::ContextService;
 
 actions!(prism_hq, [DispatchTask]);
 
@@ -122,7 +122,7 @@ impl TaskDispatchModal {
             let (handle, repo_root) = this
                 .update(cx, |this, cx| {
                     let handle = cx
-                        .try_global::<UglyhatService>()
+                        .try_global::<ContextService>()
                         .and_then(|svc| svc.handle());
                     let repo_root = this.workspace.upgrade().and_then(|ws| {
                         ws.read(cx)

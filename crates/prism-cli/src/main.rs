@@ -4,6 +4,8 @@ use prism_cli::{
     acp, agent::Agent, config::Config, mcp, memory, permissions::PermissionMode, persona, repl,
     request_replay, session::Session, skills::SkillRegistry,
 };
+
+mod context;
 use prism_client::{PrismClient, RetryConfig};
 use std::io::IsTerminal;
 use std::path::Path;
@@ -89,6 +91,11 @@ enum Commands {
         cost_cap: Option<f64>,
         #[arg(long, help = "Timeout in seconds (default 300)")]
         timeout: Option<u64>,
+    },
+    /// Context management (threads, memories, decisions, agent coordination)
+    Context {
+        #[command(subcommand)]
+        cmd: context::ContextCmd,
     },
 }
 
@@ -415,6 +422,9 @@ async fn run(cli: Cli) -> Result<()> {
             )
             .await?;
             println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Commands::Context { cmd } => {
+            context::run(cmd).await?;
         }
         Commands::Sessions { cmd } => {
             // For sessions subcommand, use sessions_dir from env or default; don't require API key

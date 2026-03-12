@@ -774,8 +774,8 @@ async fn main() -> anyhow::Result<()> {
     // Open uglyhat SQLite store for agent inbox/handoff APIs (best-effort).
     // Discovers .uglyhat.json by walking up from the current working directory.
     let (uh_store_arc, uh_workspace_id) = {
-        use uglyhat::config as uh_config;
-        use uglyhat::store::sqlite::SqliteStore;
+        use prism_context::config as uh_config;
+        use prism_context::store::sqlite::SqliteStore;
 
         let result: (Option<Arc<SqliteStore>>, Option<uuid::Uuid>) = async {
             let cwd = std::env::current_dir().ok()?;

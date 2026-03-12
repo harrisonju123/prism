@@ -1,4 +1,4 @@
-use crate::types::DashboardData;
+use crate::dashboard_types::DashboardData;
 use anyhow::Result;
 use db::kvp::KEY_VALUE_STORE;
 use gpui::{
@@ -6,10 +6,10 @@ use gpui::{
     EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Pixels, Render, Styled, Task,
     WeakEntity, Window,
 };
-use prism_hq::HqState;
+use crate::HqState;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use uglyhat::model::{ActivityEntry, AgentState, AgentStatus};
+use prism_context::model::{ActivityEntry, AgentState, AgentStatus};
 use ui::{
     h_flex, prelude::*, v_flex, Color, Icon, IconButton, IconName, Label, LabelSize, Tooltip,
 };

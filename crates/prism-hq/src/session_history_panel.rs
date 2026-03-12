@@ -1,5 +1,5 @@
-use crate::service::get_uglyhat_handle;
-use crate::types::SessionEntry;
+use crate::context_service::get_context_handle;
+use crate::panel_types::SessionEntry;
 use anyhow::Result;
 use db::kvp::KEY_VALUE_STORE;
 use futures::AsyncReadExt as _;
@@ -176,14 +176,14 @@ impl SessionHistoryPanel {
         cx.notify();
 
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
-            let handle = get_uglyhat_handle(&this, cx);
+            let handle = get_context_handle(&this, cx);
 
             let result: anyhow::Result<Vec<SessionEntry>> = cx
                 .background_spawn(async move {
                     let Some(handle) = handle else {
                         anyhow::bail!("uglyhat service not available");
                     };
-                    let activities = handle.list_activity(uglyhat::store::ActivityFilters {
+                    let activities = handle.list_activity(prism_context::store::ActivityFilters {
                         limit: 50,
                         ..Default::default()
                     })?;

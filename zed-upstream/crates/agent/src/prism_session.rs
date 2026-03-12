@@ -106,7 +106,7 @@ pub fn session_file_path(worktree_root: &Path) -> PathBuf {
 
 /// Read `UH_AGENT_NAME` from the environment, falling back to `"claude"`.
 pub fn agent_name_from_env() -> String {
-    std::env::var("UH_AGENT_NAME").unwrap_or_else(|_| "claude".to_string())
+    std::env::var("PRISM_AGENT_NAME").or_else(|_| std::env::var("UH_AGENT_NAME")).unwrap_or_else(|_| "claude".to_string())
 }
 
 fn uh_binary() -> Option<PathBuf> {

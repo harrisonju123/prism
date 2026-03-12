@@ -89,7 +89,7 @@ const HEADER_WAS_OVERRIDDEN: &str = "x-prism-was-overridden";
 const HEADER_ROUTING_REASON: &str = "x-prism-routing-reason";
 const HEADER_TASK_TYPE: &str = "x-prism-task-type";
 const HEADER_REQUESTED_MODEL: &str = "x-prism-requested-model";
-const HEADER_THREAD_ID: &str = "x-uglyhat-thread-id";
+const HEADER_THREAD_ID: &str = "x-prism-thread-id";
 
 impl RoutingInfo {
     fn from_headers(headers: &http_client::http::HeaderMap) -> Option<Self> {
