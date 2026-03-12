@@ -60,6 +60,9 @@ pub enum MentionUri {
     GitDiff {
         base_ref: String,
     },
+    Codebase {
+        query: String,
+    },
 }
 
 impl MentionUri {
@@ -215,6 +218,10 @@ impl MentionUri {
                     let base_ref =
                         single_query_param(&url, "base")?.unwrap_or_else(|| "main".to_string());
                     Ok(Self::GitDiff { base_ref })
+                } else if path.starts_with("/agent/codebase") {
+                    let query = single_query_param(&url, "query")?
+                        .context("Missing query for codebase mention")?;
+                    Ok(Self::Codebase { query })
                 } else {
                     bail!("invalid zed url: {:?}", input);
                 }
@@ -245,6 +252,7 @@ impl MentionUri {
                 }
             }
             MentionUri::GitDiff { base_ref } => format!("Branch Diff ({})", base_ref),
+            MentionUri::Codebase { query } => format!("Codebase: {}", query),
             MentionUri::Selection {
                 abs_path: path,
                 line_range,
@@ -306,6 +314,7 @@ impl MentionUri {
             MentionUri::Selection { .. } => IconName::Reader.path().into(),
             MentionUri::Fetch { .. } => IconName::ToolWeb.path().into(),
             MentionUri::GitDiff { .. } => IconName::GitBranch.path().into(),
+            MentionUri::Codebase { .. } => IconName::ToolSearch.path().into(),
         }
     }
 
@@ -407,6 +416,11 @@ impl MentionUri {
             MentionUri::GitDiff { base_ref } => {
                 let mut url = Url::parse("zed:///agent/git-diff").unwrap();
                 url.query_pairs_mut().append_pair("base", base_ref);
+                url
+            }
+            MentionUri::Codebase { query } => {
+                let mut url = Url::parse("zed:///agent/codebase").unwrap();
+                url.query_pairs_mut().append_pair("query", query);
                 url
             }
         }

@@ -219,6 +219,7 @@ impl UserMessage {
             "<rules>\nThe user has specified the following rules that should be applied:\n";
         const OPEN_DIAGNOSTICS_TAG: &str = "<diagnostics>";
         const OPEN_DIFFS_TAG: &str = "<diffs>";
+        const OPEN_CODEBASE_TAG: &str = "<codebase_search_results>";
 
         let mut file_context = OPEN_FILES_TAG.to_string();
         let mut directory_context = OPEN_DIRECTORIES_TAG.to_string();
@@ -229,6 +230,7 @@ impl UserMessage {
         let mut rules_context = OPEN_RULES_TAG.to_string();
         let mut diagnostics_context = OPEN_DIAGNOSTICS_TAG.to_string();
         let mut diffs_context = OPEN_DIFFS_TAG.to_string();
+        let mut codebase_context = OPEN_CODEBASE_TAG.to_string();
 
         for chunk in &self.content {
             let chunk = match chunk {
@@ -336,6 +338,15 @@ impl UserMessage {
                             )
                             .ok();
                         }
+                        MentionUri::Codebase { query } => {
+                            write!(
+                                &mut codebase_context,
+                                "\n<result query=\"{}\">\n{}\n</result>",
+                                query,
+                                content
+                            )
+                            .ok();
+                        }
                     }
 
                     language_model::MessageContent::Text(uri.as_link().to_string())
@@ -380,6 +391,13 @@ impl UserMessage {
             message
                 .content
                 .push(language_model::MessageContent::Text(diffs_context));
+        }
+
+        if codebase_context.len() > OPEN_CODEBASE_TAG.len() {
+            codebase_context.push_str("</codebase_search_results>\n");
+            message
+                .content
+                .push(language_model::MessageContent::Text(codebase_context));
         }
 
         if thread_context.len() > OPEN_THREADS_TAG.len() {
