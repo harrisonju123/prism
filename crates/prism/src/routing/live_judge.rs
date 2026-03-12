@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use crate::benchmark::judge::Judge;
 use crate::config::Config;
@@ -9,18 +10,21 @@ use crate::providers::ProviderRegistry;
 use crate::routing::FitnessCache;
 use crate::types::{Message, MessageRole, TaskType};
 
-/// A sampled completion row read from ClickHouse inference_events.
+/// A sampled completion row read from ClickHouse completion_samples.
 struct LiveSample {
+    id: Uuid,
     model: String,
     task_type: Option<TaskType>,
-    completion_hash: String,
-    prompt_hash: String,
+    prompt_messages: String,
+    completion_text: String,
+    input_tokens: u32,
+    output_tokens: u32,
     latency_ms: u64,
     cost_usd: f64,
 }
 
-/// Background task that samples recent inference_events from ClickHouse,
-/// runs the LLM-judge on each completion, and updates the fitness cache.
+/// Background task that samples unjudged completions from ClickHouse,
+/// runs the LLM-judge on each, and updates the fitness cache.
 ///
 /// Rate-limited to at most `max_calls_per_minute` judge invocations.
 pub struct LiveJudgeTask {
@@ -33,6 +37,7 @@ pub struct LiveJudgeTask {
     lookback_secs: u64,
     ch_url: String,
     ch_db: String,
+    client: reqwest::Client,
 }
 
 impl LiveJudgeTask {
@@ -57,6 +62,7 @@ impl LiveJudgeTask {
             lookback_secs,
             ch_url,
             ch_db,
+            client: reqwest::Client::new(),
         }
     }
 
@@ -93,8 +99,6 @@ impl LiveJudgeTask {
 
         let judge = Judge::new(self.config.benchmark.judge_model.clone());
 
-        // Simple token bucket: allow max_calls_per_minute across the whole run.
-        // We space calls evenly within a 60s window.
         let allowed = (self.max_calls_per_minute as usize).min(samples.len());
         let min_gap_ms = if allowed > 0 {
             60_000 / allowed as u64
@@ -105,6 +109,7 @@ impl LiveJudgeTask {
         let mut last_call = Instant::now()
             .checked_sub(Duration::from_secs(60))
             .unwrap_or_else(Instant::now);
+        let mut judged_ids: Vec<Uuid> = Vec::new();
         let mut judged = 0;
 
         for sample in samples.iter().take(allowed) {
@@ -112,24 +117,18 @@ impl LiveJudgeTask {
                 break;
             }
 
-            // Enforce minimum gap between calls
             let elapsed = last_call.elapsed();
             let gap = Duration::from_millis(min_gap_ms);
             if elapsed < gap {
                 tokio::time::sleep(gap - elapsed).await;
             }
 
-            // Build a minimal prompt/completion pair for the judge.
-            // We only have hashes so we use a self-comparison to score quality
-            // based on the model's past outputs against a synthetic baseline.
-            // This updates cost/latency from live data.
             let score = self.judge_sample(&judge, sample).await;
 
             if let (Some(task_type), Some(quality)) = (sample.task_type, score) {
-                let cost_per_1k = if sample.cost_usd > 0.0 && sample.latency_ms > 0 {
-                    // Estimate cost per 1k tokens from total cost / assumed token count
-                    // We don't have raw token counts in this view, use cost_usd directly as proxy
-                    sample.cost_usd * 1000.0
+                let total_tokens = sample.input_tokens + sample.output_tokens;
+                let cost_per_1k = if total_tokens > 0 {
+                    sample.cost_usd / (total_tokens as f64 / 1000.0)
                 } else {
                     0.0
                 };
@@ -150,10 +149,17 @@ impl LiveJudgeTask {
                     quality,
                     "live judge updated fitness cache"
                 );
+                judged_ids.push(sample.id);
                 judged += 1;
             }
 
             last_call = Instant::now();
+        }
+
+        if !judged_ids.is_empty() {
+            if let Err(e) = self.mark_judged(&judged_ids).await {
+                tracing::warn!(error = %e, count = judged_ids.len(), "failed to mark samples as judged");
+            }
         }
 
         tracing::info!(judged, samples = samples.len(), "live judge cycle complete");
@@ -161,18 +167,15 @@ impl LiveJudgeTask {
     }
 
     async fn fetch_samples(&self) -> anyhow::Result<Vec<LiveSample>> {
-        let client = reqwest::Client::new();
-
         let query = format!(
-            "SELECT model, task_type, completion_hash, prompt_hash, \
-                    avg(latency_ms) AS latency_ms, \
-                    avg(estimated_cost_usd) AS cost_usd \
-             FROM {db}.inference_events \
-             WHERE status = 'success' \
+            "SELECT id, model, task_type, \
+                    prompt_messages, completion_text, \
+                    input_tokens, output_tokens, \
+                    latency_ms, estimated_cost_usd AS cost_usd \
+             FROM {db}.completion_samples \
+             WHERE judged = 0 \
                AND task_type IS NOT NULL \
-               AND completion_hash != '' \
                AND timestamp >= now() - INTERVAL {secs} SECOND \
-             GROUP BY model, task_type, completion_hash, prompt_hash \
              ORDER BY rand() \
              LIMIT {limit} \
              FORMAT JSONEachRow",
@@ -181,7 +184,8 @@ impl LiveJudgeTask {
             limit = self.max_calls_per_minute * 2,
         );
 
-        let resp = client
+        let resp = self
+            .client
             .post(&self.ch_url)
             .body(query)
             .send()
@@ -192,6 +196,14 @@ impl LiveJudgeTask {
         let mut samples = Vec::new();
         for line in resp.lines() {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+                let id = match v
+                    .get("id")
+                    .and_then(|x| x.as_str())
+                    .and_then(|s| s.parse::<Uuid>().ok())
+                {
+                    Some(id) => id,
+                    None => continue,
+                };
                 let model = match v.get("model").and_then(|x| x.as_str()) {
                     Some(m) => m.to_string(),
                     None => continue,
@@ -201,25 +213,32 @@ impl LiveJudgeTask {
                     task_type_str.to_string(),
                 ))
                 .ok();
-                let completion_hash = v
-                    .get("completion_hash")
+                let prompt_messages = v
+                    .get("prompt_messages")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("[]")
+                    .to_string();
+                let completion_text = v
+                    .get("completion_text")
                     .and_then(|x| x.as_str())
                     .unwrap_or("")
                     .to_string();
-                let prompt_hash = v
-                    .get("prompt_hash")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                let input_tokens =
+                    v.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+                let output_tokens =
+                    v.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
                 let latency_ms = v.get("latency_ms").and_then(|x| x.as_f64()).unwrap_or(0.0) as u64;
                 let cost_usd = v.get("cost_usd").and_then(|x| x.as_f64()).unwrap_or(0.0);
 
-                if !completion_hash.is_empty() {
+                if !completion_text.is_empty() {
                     samples.push(LiveSample {
+                        id,
                         model,
                         task_type,
-                        completion_hash,
-                        prompt_hash,
+                        prompt_messages,
+                        completion_text,
+                        input_tokens,
+                        output_tokens,
                         latency_ms,
                         cost_usd,
                     });
@@ -229,56 +248,67 @@ impl LiveJudgeTask {
         Ok(samples)
     }
 
-    /// Judge a single live sample. Since we only have hashes (not raw text),
-    /// we use the judge in self-comparison mode: we ask it to rate the model's
-    /// output quality based on the task type. Returns a quality score 0.0-1.0.
     async fn judge_sample(&self, judge: &Judge, sample: &LiveSample) -> Option<f64> {
-        // Build a synthetic prompt that describes the context by hash.
-        // The judge will evaluate the completion hash as a stand-in.
-        // In a production setup you'd store compressed completions in ClickHouse
-        // or a fast retrieval store. Here we use the hash as a quality signal
-        // by asking the judge to assess based on task type alone.
-        //
-        // Note: This produces a rough quality score from the judge model's priors.
-        // The key value is the cost/latency update from real traffic.
-        let synthetic_messages = vec![Message {
-            role: MessageRole::User,
-            content: Some(serde_json::Value::String(format!(
-                "Task type: {}. Completion hash: {}. Rate the expected quality.",
-                sample.task_type.map_or("unknown", |_| "known"),
-                &sample.completion_hash[..8.min(sample.completion_hash.len())]
-            ))),
-            name: None,
-            tool_calls: None,
-            tool_call_id: None,
-            extra: serde_json::Map::new(),
-        }];
+        // Deserialize the stored prompt messages back to Vec<Message>
+        let messages: Vec<Message> =
+            serde_json::from_str(&sample.prompt_messages).unwrap_or_else(|_| {
+                // Fallback: single synthetic user message if deserialization fails
+                vec![Message {
+                    role: MessageRole::User,
+                    content: Some(serde_json::Value::String(format!(
+                        "sample_id: {}",
+                        sample.id
+                    ))),
+                    name: None,
+                    tool_calls: None,
+                    tool_call_id: None,
+                    extra: serde_json::Map::new(),
+                }]
+            });
 
         match judge
-            .score(
+            .score_absolute(
                 &self.providers,
                 &self.config,
                 sample.task_type,
-                &synthetic_messages,
-                "baseline response",
-                "live traffic response",
+                &messages,
+                &sample.completion_text,
             )
             .await
         {
-            Ok(result) => {
-                // Use the average of original and benchmark scores as the quality estimate
-                // since we're comparing against a synthetic baseline
-                Some((result.original_score + result.benchmark_score) / 2.0)
-            }
+            Ok(score) => Some(score),
             Err(e) => {
                 tracing::debug!(
                     error = %e,
                     model = %sample.model,
-                    "live judge score failed for sample"
+                    "live judge absolute score failed for sample"
                 );
                 None
             }
         }
+    }
+
+    async fn mark_judged(&self, ids: &[Uuid]) -> anyhow::Result<()> {
+        let id_list = ids
+            .iter()
+            .map(|id| format!("'{id}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let query = format!(
+            "ALTER TABLE {db}.completion_samples UPDATE judged = 1 WHERE id IN ({ids})",
+            db = self.ch_db,
+            ids = id_list,
+        );
+
+        self.client
+            .post(&self.ch_url)
+            .body(query)
+            .send()
+            .await?
+            .error_for_status()?;
+
+        Ok(())
     }
 }
 
@@ -287,8 +317,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn samples_are_empty_on_no_clickhouse() {
-        // Unit test: verify the module compiles and the struct can be constructed.
-        let _ = std::mem::size_of::<LiveSample>();
+    fn live_sample_cost_per_1k_calculation() {
+        // 1000 tokens, cost $1.00 → $1.00/1k
+        let total_tokens: u32 = 1000;
+        let cost_usd: f64 = 1.0;
+        let cost_per_1k = cost_usd / (total_tokens as f64 / 1000.0);
+        assert!((cost_per_1k - 1.0).abs() < 1e-9);
+
+        // 500 tokens, cost $0.001 → $0.002/1k
+        let total_tokens: u32 = 500;
+        let cost_usd: f64 = 0.001;
+        let cost_per_1k = cost_usd / (total_tokens as f64 / 1000.0);
+        assert!((cost_per_1k - 0.002).abs() < 1e-9);
+    }
+
+    #[test]
+    fn live_sample_cost_per_1k_zero_tokens() {
+        let total_tokens: u32 = 0;
+        let cost_usd: f64 = 0.001;
+        let cost_per_1k = if total_tokens > 0 {
+            cost_usd / (total_tokens as f64 / 1000.0)
+        } else {
+            0.0
+        };
+        assert_eq!(cost_per_1k, 0.0);
+    }
+
+    #[test]
+    fn prompt_messages_json_roundtrip() {
+        use crate::types::MessageRole;
+        let messages = vec![Message {
+            role: MessageRole::User,
+            content: Some(serde_json::Value::String("hello".into())),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            extra: serde_json::Map::new(),
+        }];
+        let json = serde_json::to_string(&messages).unwrap();
+        let parsed: Vec<Message> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].role, MessageRole::User);
     }
 }

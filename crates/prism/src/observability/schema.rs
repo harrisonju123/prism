@@ -255,6 +255,30 @@ WHERE ie.task_type IS NOT NULL
 GROUP BY hour, ie.model, ie.task_type, fe.metric_name
 "#;
 
+/// ClickHouse table for storing sampled completions for live LLM-judge scoring.
+/// 7-day TTL keeps storage bounded. LZ4 on text columns.
+pub const COMPLETION_SAMPLES_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS completion_samples (
+    id UUID,
+    inference_id UUID,
+    timestamp DateTime64(3),
+    model LowCardinality(String),
+    task_type LowCardinality(Nullable(String)),
+    prompt_messages String CODEC(LZ4),
+    completion_text String CODEC(LZ4),
+    input_tokens UInt32,
+    output_tokens UInt32,
+    estimated_cost_usd Float64,
+    latency_ms UInt32,
+    prompt_hash String,
+    completion_hash String,
+    judged UInt8 DEFAULT 0
+) ENGINE = MergeTree()
+PARTITION BY toYYYYMM(timestamp)
+ORDER BY (timestamp, model, task_type)
+TTL toDateTime(timestamp) + INTERVAL 7 DAY
+"#;
+
 /// Versioned migrations: (version_name, ddl). Applied in order, skipping already-applied ones.
 pub const MIGRATIONS: &[(&str, &str)] = &[
     ("001_inference_events", INFERENCE_EVENTS_SCHEMA),
@@ -273,6 +297,7 @@ pub const MIGRATIONS: &[(&str, &str)] = &[
     ),
     ("012_daily_spend_by_thread", DAILY_SPEND_BY_THREAD_SCHEMA),
     ("013_hourly_quality_stats", HOURLY_QUALITY_STATS_SCHEMA),
+    ("014_completion_samples", COMPLETION_SAMPLES_SCHEMA),
 ];
 
 #[cfg(test)]

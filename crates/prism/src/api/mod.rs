@@ -4,6 +4,8 @@ pub mod models;
 pub mod openapi;
 
 #[cfg(feature = "full")]
+pub mod agents;
+#[cfg(feature = "full")]
 pub mod alerts;
 #[cfg(feature = "full")]
 pub mod aliases;
@@ -31,8 +33,6 @@ pub mod mcp;
 pub mod prompts;
 #[cfg(feature = "full")]
 pub mod routing;
-#[cfg(feature = "full")]
-pub mod agents;
 #[cfg(feature = "full")]
 pub mod sessions;
 #[cfg(feature = "full")]

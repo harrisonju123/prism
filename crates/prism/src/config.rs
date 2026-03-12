@@ -477,6 +477,12 @@ pub struct BenchmarkConfig {
     /// How far back to look in inference_events (seconds).
     #[serde(default = "default_live_judge_lookback_secs")]
     pub live_judge_lookback_secs: u64,
+    /// Sample rate for storing completions for live judge (0.0–1.0). Default 0.05.
+    #[serde(default = "default_live_judge_sample_rate")]
+    pub live_judge_sample_rate: f64,
+    /// Max chars per completion sample (prompt + completion). Default 8000.
+    #[serde(default = "default_live_judge_max_completion_chars")]
+    pub live_judge_max_completion_chars: usize,
 }
 
 impl Default for BenchmarkConfig {
@@ -496,6 +502,8 @@ impl Default for BenchmarkConfig {
             live_judge_interval_secs: default_live_judge_interval_secs(),
             live_judge_max_calls_per_minute: default_live_judge_max_calls_per_minute(),
             live_judge_lookback_secs: default_live_judge_lookback_secs(),
+            live_judge_sample_rate: default_live_judge_sample_rate(),
+            live_judge_max_completion_chars: default_live_judge_max_completion_chars(),
         }
     }
 }
@@ -535,6 +543,12 @@ fn default_live_judge_max_calls_per_minute() -> u32 {
 }
 fn default_live_judge_lookback_secs() -> u64 {
     3600
+}
+fn default_live_judge_sample_rate() -> f64 {
+    0.05
+}
+fn default_live_judge_max_completion_chars() -> usize {
+    8000
 }
 
 // --- Alerts ---
@@ -1331,6 +1345,8 @@ mod tests {
         assert_eq!(config.benchmark.max_concurrent_benchmarks, 5);
         assert_eq!(config.benchmark.fitness_refresh_interval_secs, 300);
         assert_eq!(config.benchmark.min_sample_size, 10);
+        assert!((config.benchmark.live_judge_sample_rate - 0.05).abs() < f64::EPSILON);
+        assert_eq!(config.benchmark.live_judge_max_completion_chars, 8000);
     }
 
     #[test]

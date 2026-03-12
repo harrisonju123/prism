@@ -306,6 +306,25 @@ pub struct TextCompletionChoice {
     pub finish_reason: Option<String>,
 }
 
+/// A sampled completion for live LLM-judge scoring, written to ClickHouse.
+#[derive(Debug, Clone)]
+pub struct CompletionSample {
+    pub id: Uuid,
+    pub inference_id: Uuid,
+    pub timestamp: DateTime<Utc>,
+    pub model: String,
+    pub task_type: Option<TaskType>,
+    /// JSON-serialized request messages (truncated per-message).
+    pub prompt_messages: String,
+    pub completion_text: String,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub estimated_cost_usd: f64,
+    pub latency_ms: u32,
+    pub prompt_hash: String,
+    pub completion_hash: String,
+}
+
 /// A captured inference event, written to ClickHouse.
 #[derive(Debug, Clone, Serialize)]
 pub struct InferenceEvent {

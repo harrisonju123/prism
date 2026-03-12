@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 use crate::benchmark::BenchmarkEvent;
 use crate::config::ClickHouseConfig;
 use crate::experiment::feedback::FeedbackEvent;
-use crate::types::{EventStatus, InferenceEvent};
+use crate::types::{CompletionSample, EventStatus, InferenceEvent};
 
 /// Async batch writer that drains InferenceEvents from a channel
 /// and inserts them into ClickHouse in batches.
@@ -388,6 +388,162 @@ impl BenchmarkWriter {
 
         insert.end().await?;
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CompletionSampleWriter — same pattern as BenchmarkWriter for completion_samples
+// ---------------------------------------------------------------------------
+
+pub struct CompletionSampleWriter {
+    rx: mpsc::Receiver<CompletionSample>,
+    client: clickhouse::Client,
+    batch_size: usize,
+    flush_interval: Duration,
+    cancel: CancellationToken,
+}
+
+impl CompletionSampleWriter {
+    pub fn new(
+        rx: mpsc::Receiver<CompletionSample>,
+        ch_config: &ClickHouseConfig,
+        batch_size: usize,
+        flush_interval_ms: u64,
+        cancel: CancellationToken,
+    ) -> Self {
+        let client = clickhouse::Client::default()
+            .with_url(&ch_config.url)
+            .with_database(&ch_config.database);
+
+        Self {
+            rx,
+            client,
+            batch_size,
+            flush_interval: Duration::from_millis(flush_interval_ms),
+            cancel,
+        }
+    }
+
+    pub async fn run(mut self) {
+        let mut batch: Vec<CompletionSample> = Vec::with_capacity(self.batch_size);
+        let mut interval = tokio::time::interval(self.flush_interval);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            tokio::select! {
+                _ = self.cancel.cancelled() => {
+                    self.rx.close();
+                    while let Ok(sample) = self.rx.try_recv() {
+                        batch.push(sample);
+                    }
+                    if !batch.is_empty() {
+                        self.flush(&mut batch).await;
+                    }
+                    tracing::info!("completion sample writer shut down");
+                    return;
+                }
+                Some(sample) = self.rx.recv() => {
+                    batch.push(sample);
+                    if batch.len() >= self.batch_size {
+                        self.flush(&mut batch).await;
+                    }
+                }
+                _ = interval.tick() => {
+                    if !batch.is_empty() {
+                        self.flush(&mut batch).await;
+                    }
+                }
+            }
+        }
+    }
+
+    async fn flush(&self, batch: &mut Vec<CompletionSample>) {
+        let count = batch.len();
+        if let Err(e) = self.flush_with_retry(batch).await {
+            tracing::error!(error = %e, count, "failed to flush completion samples after retries");
+        }
+        batch.clear();
+    }
+
+    async fn flush_with_retry(&self, batch: &[CompletionSample]) -> anyhow::Result<()> {
+        let mut last_err = None;
+
+        for attempt in 0..3 {
+            match self.insert_batch(batch).await {
+                Ok(()) => {
+                    tracing::debug!(
+                        count = batch.len(),
+                        "flushed completion samples to clickhouse"
+                    );
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        attempt,
+                        error = %e,
+                        count = batch.len(),
+                        "clickhouse completion sample insert failed, retrying"
+                    );
+                    last_err = Some(e);
+                    tokio::time::sleep(Duration::from_millis(500 * (attempt as u64 + 1))).await;
+                }
+            }
+        }
+
+        Err(last_err.unwrap())
+    }
+
+    async fn insert_batch(&self, batch: &[CompletionSample]) -> anyhow::Result<()> {
+        let mut insert = self.client.insert("completion_samples")?;
+
+        for sample in batch {
+            insert
+                .write(&ClickHouseCompletionSample::from(sample))
+                .await?;
+        }
+
+        insert.end().await?;
+        Ok(())
+    }
+}
+
+/// Row type for ClickHouse completion_samples table.
+#[derive(Debug, clickhouse::Row, serde::Serialize)]
+struct ClickHouseCompletionSample {
+    id: uuid::Uuid,
+    inference_id: uuid::Uuid,
+    #[serde(with = "clickhouse::serde::time::datetime64::millis")]
+    timestamp: time::OffsetDateTime,
+    model: String,
+    task_type: Option<String>,
+    prompt_messages: String,
+    completion_text: String,
+    input_tokens: u32,
+    output_tokens: u32,
+    estimated_cost_usd: f64,
+    latency_ms: u32,
+    prompt_hash: String,
+    completion_hash: String,
+}
+
+impl From<&CompletionSample> for ClickHouseCompletionSample {
+    fn from(s: &CompletionSample) -> Self {
+        Self {
+            id: s.id,
+            inference_id: s.inference_id,
+            timestamp: time::OffsetDateTime::from_unix_timestamp(s.timestamp.timestamp())
+                .unwrap_or(time::OffsetDateTime::UNIX_EPOCH),
+            model: s.model.clone(),
+            task_type: s.task_type.map(|t| t.to_string()),
+            prompt_messages: s.prompt_messages.clone(),
+            completion_text: s.completion_text.clone(),
+            input_tokens: s.input_tokens,
+            output_tokens: s.output_tokens,
+            estimated_cost_usd: s.estimated_cost_usd,
+            latency_ms: s.latency_ms,
+            prompt_hash: s.prompt_hash.clone(),
+            completion_hash: s.completion_hash.clone(),
+        }
     }
 }
 

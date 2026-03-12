@@ -93,6 +93,114 @@ impl Judge {
             judge_cost,
         })
     }
+
+    /// Score a single completion absolutely (0.0–1.0) without needing a comparison pair.
+    /// Used by the live judge to evaluate real completions from `completion_samples`.
+    pub async fn score_absolute(
+        &self,
+        providers: &Arc<ProviderRegistry>,
+        config: &Config,
+        task_type: Option<TaskType>,
+        messages: &[Message],
+        completion: &str,
+    ) -> anyhow::Result<f64> {
+        let rubric = task_rubric(task_type);
+
+        let context: String = messages
+            .iter()
+            .filter_map(|m| {
+                let content = m.content.as_ref()?.as_str()?;
+                Some(format!("[{}]: {}", m.role, content))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let system = "You are an expert evaluator. Rate the following completion on a scale \
+                      from 0.0 to 1.0. Respond ONLY with JSON: {\"score\": <float>}. No other text."
+            .to_string();
+
+        let user = format!(
+            "## Evaluation Criteria\n{rubric}\n\n\
+             ## Context\n{context}\n\n\
+             ## Completion\n{completion}\n\n\
+             Rate the completion. Respond with JSON only."
+        );
+
+        let judge_messages = vec![
+            Message {
+                role: MessageRole::System,
+                content: Some(serde_json::Value::String(system)),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                extra: serde_json::Map::new(),
+            },
+            Message {
+                role: MessageRole::User,
+                content: Some(serde_json::Value::String(user)),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                extra: serde_json::Map::new(),
+            },
+        ];
+
+        let (provider_name, model_id) =
+            crate::proxy::handler::resolve_model(config, &self.judge_model)?;
+        let provider = providers.get(&provider_name)?;
+
+        let judge_request = ChatCompletionRequest {
+            model: self.judge_model.clone(),
+            messages: judge_messages,
+            temperature: Some(0.0),
+            top_p: None,
+            max_tokens: Some(50),
+            stream: false,
+            stream_options: None,
+            stop: None,
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            user: None,
+            extra: serde_json::Map::new(),
+        };
+
+        let response = match provider.chat_completion(&judge_request, &model_id).await? {
+            crate::types::ProviderResponse::Complete(resp) => resp,
+            _ => anyhow::bail!("expected non-streaming response from judge model"),
+        };
+
+        let text: String = response
+            .choices
+            .iter()
+            .filter_map(|c| c.message.content.as_ref().and_then(|v| v.as_str()))
+            .collect();
+
+        Ok(parse_absolute_response(&text).unwrap_or(0.5))
+    }
+}
+
+pub fn parse_absolute_response(text: &str) -> Option<f64> {
+    let trimmed = text.trim();
+
+    if let Some(score) = try_parse_score_from_json(trimmed) {
+        return Some(score);
+    }
+
+    // Try to extract JSON object from surrounding text
+    if let Some(start) = trimmed.find('{')
+        && let Some(end) = trimmed[start..].find('}')
+    {
+        return try_parse_score_from_json(&trimmed[start..=start + end]);
+    }
+
+    None
+}
+
+fn try_parse_score_from_json(text: &str) -> Option<f64> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let score = v.get("score")?.as_f64()?;
+    Some(score.clamp(0.0, 1.0))
 }
 
 fn build_judge_prompt(
@@ -276,6 +384,35 @@ mod tests {
         assert!(user_content.contains("code correctness"));
         assert!(user_content.contains("Completion A"));
         assert!(user_content.contains("Completion B"));
+    }
+
+    #[test]
+    fn parse_absolute_valid() {
+        let score = parse_absolute_response(r#"{"score": 0.75}"#);
+        assert!(score.is_some());
+        assert!((score.unwrap() - 0.75).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn parse_absolute_invalid_falls_back() {
+        assert!(parse_absolute_response("not json at all").is_none());
+        assert!(parse_absolute_response("{}").is_none());
+    }
+
+    #[test]
+    fn parse_absolute_clamps_out_of_range() {
+        let score = parse_absolute_response(r#"{"score": 1.8}"#);
+        assert_eq!(score, Some(1.0));
+        let score = parse_absolute_response(r#"{"score": -0.5}"#);
+        assert_eq!(score, Some(0.0));
+    }
+
+    #[test]
+    fn parse_absolute_extracts_from_surrounding_text() {
+        let text = r#"Here is my evaluation: {"score": 0.9} That's my score."#;
+        let score = parse_absolute_response(text);
+        assert!(score.is_some());
+        assert!((score.unwrap() - 0.9).abs() < f64::EPSILON);
     }
 
     #[test]

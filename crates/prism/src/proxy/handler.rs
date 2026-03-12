@@ -36,8 +36,8 @@ use crate::proxy::streaming::StreamRelay;
 use crate::routing::FitnessCache;
 use crate::routing::types::RoutingPolicy;
 use crate::types::{
-    ChatCompletionRequest, ChatCompletionResponse, EmbeddingRequest, EventStatus, InferenceEvent,
-    MessageRole, ProviderResponse, TaskType, Usage,
+    ChatCompletionRequest, ChatCompletionResponse, CompletionSample, EmbeddingRequest, EventStatus,
+    InferenceEvent, MessageRole, ProviderResponse, TaskType, Usage,
 };
 
 /// POST /v1/chat/completions
@@ -915,12 +915,42 @@ pub async fn chat_completions(
                     request: request.clone(),
                     original_model: response.model.clone(),
                     original_completion: extract_completion_text(&response),
-                    original_cost: compute_cost(&response.model, &usage),
+                    original_cost: event_cost,
                     original_latency_ms: latency_ms,
                     task_type,
                     prompt_hash: prompt_hash.clone(),
                 };
                 let _ = benchmark_tx.try_send(bench_req);
+            }
+
+            // Live judge sampling hook (non-streaming): store real completions for scoring
+            if let Some(ref sample_tx) = state.completion_sample_tx
+                && should_sample(state.config.benchmark.live_judge_sample_rate)
+            {
+                let max_chars = state.config.benchmark.live_judge_max_completion_chars;
+                let prompt_json = serialize_messages_truncated(&request.messages, max_chars);
+                let completion_text = extract_completion_text(&response);
+                let completion_text = if completion_text.len() > max_chars {
+                    completion_text[..max_chars].to_string()
+                } else {
+                    completion_text
+                };
+                let sample = CompletionSample {
+                    id: Uuid::new_v4(),
+                    inference_id: event_id,
+                    timestamp: Utc::now(),
+                    model: response.model.clone(),
+                    task_type,
+                    prompt_messages: prompt_json,
+                    completion_text,
+                    input_tokens: usage.prompt_tokens,
+                    output_tokens: usage.completion_tokens,
+                    estimated_cost_usd: event_cost,
+                    latency_ms,
+                    prompt_hash: prompt_hash.clone(),
+                    completion_hash: completion_hash.clone(),
+                };
+                let _ = sample_tx.try_send(sample);
             }
 
             // JSON schema validation (non-streaming)
@@ -964,6 +994,10 @@ pub async fn chat_completions(
             let request_clone = request.clone();
             let benchmark_tx_clone = state.benchmark_tx.clone();
             let benchmark_sample_rate = state.config.benchmark.sample_rate;
+            let completion_sample_tx_clone = state.completion_sample_tx.clone();
+            let live_judge_sample_rate = state.config.benchmark.live_judge_sample_rate;
+            let live_judge_max_completion_chars =
+                state.config.benchmark.live_judge_max_completion_chars;
             let mcp_tx_clone = state.mcp_tx.clone();
             let trace_id_owned = trace_id.clone();
             let span_id_owned = span_id.clone();
@@ -1095,12 +1129,46 @@ pub async fn chat_completions(
                             request: request_clone.clone(),
                             original_model: model.clone(),
                             original_completion: result.completion_text.clone(),
-                            original_cost: compute_cost(&model, &usage),
+                            original_cost: event_cost,
                             original_latency_ms: latency_ms,
                             task_type,
                             prompt_hash: prompt_hash_owned.clone(),
                         };
                         let _ = benchmark_tx.try_send(bench_req);
+                    }
+
+                    // Live judge sampling hook (streaming)
+                    if let Some(ref sample_tx) = completion_sample_tx_clone
+                        && should_sample(live_judge_sample_rate)
+                    {
+                        let prompt_json = serialize_messages_truncated(
+                            &request_clone.messages,
+                            live_judge_max_completion_chars,
+                        );
+                        let completion_text = if result.completion_text.len()
+                            > live_judge_max_completion_chars
+                        {
+                            result.completion_text[..live_judge_max_completion_chars].to_string()
+                        } else {
+                            result.completion_text.clone()
+                        };
+                        let sample = CompletionSample {
+                            id: Uuid::new_v4(),
+                            inference_id: event_id,
+                            timestamp: Utc::now(),
+                            model: model.clone(),
+                            task_type,
+                            prompt_messages: prompt_json,
+                            completion_text,
+                            input_tokens: usage.prompt_tokens,
+                            output_tokens: usage.completion_tokens,
+                            estimated_cost_usd: event_cost,
+                            latency_ms,
+                            prompt_hash: prompt_hash_owned.clone(),
+                            // Reuse the hash already computed for the inference event
+                            completion_hash: completion_hash.clone(),
+                        };
+                        let _ = sample_tx.try_send(sample);
                     }
 
                     tracing::info!(
@@ -1130,11 +1198,9 @@ pub async fn chat_completions(
                                 while let Some(pos) = buf.find("\n\n") {
                                     let block = buf[..pos].to_string();
                                     buf.drain(..pos + 2);
-                                    if let Some(payload) =
-                                        block.lines().find_map(|line: &str| {
-                                            line.strip_prefix("data: ").map(str::to_string)
-                                        })
-                                    {
+                                    if let Some(payload) = block.lines().find_map(|line: &str| {
+                                        line.strip_prefix("data: ").map(str::to_string)
+                                    }) {
                                         events.push(Ok(Event::default().data(payload)));
                                     }
                                 }
@@ -1502,6 +1568,33 @@ fn should_sample(rate: f64) -> bool {
     sample < rate
 }
 
+/// Serialize request messages to JSON, truncating each message's text content to `max_chars`.
+fn serialize_messages_truncated(messages: &[crate::types::Message], max_chars: usize) -> String {
+    let truncated: Vec<serde_json::Value> = messages
+        .iter()
+        .map(|m| {
+            let mut obj = serde_json::json!({
+                "role": m.role.to_string(),
+            });
+            if let Some(content) = &m.content {
+                let truncated_content = if let Some(s) = content.as_str() {
+                    let s = if s.len() > max_chars {
+                        &s[..max_chars]
+                    } else {
+                        s
+                    };
+                    serde_json::Value::String(s.to_string())
+                } else {
+                    content.clone()
+                };
+                obj["content"] = truncated_content;
+            }
+            obj
+        })
+        .collect();
+    serde_json::to_string(&truncated).unwrap_or_else(|_| "[]".to_string())
+}
+
 fn extract_completion_text(response: &ChatCompletionResponse) -> String {
     response
         .choices
@@ -1762,6 +1855,7 @@ pub struct AppState {
     pub response_cache: Option<Arc<ResponseCache>>,
     pub feedback_tx: Option<tokio::sync::mpsc::Sender<FeedbackEvent>>,
     pub benchmark_tx: Option<tokio::sync::mpsc::Sender<crate::benchmark::BenchmarkRequest>>,
+    pub completion_sample_tx: Option<tokio::sync::mpsc::Sender<crate::types::CompletionSample>>,
     pub mcp_tx: Option<tokio::sync::mpsc::Sender<crate::mcp::types::McpCall>>,
     pub hot_config: Option<Arc<ArcSwap<Config>>>,
     pub hot_routing_policy: Option<Arc<ArcSwap<RoutingPolicy>>>,

@@ -52,6 +52,7 @@ pub struct AppStateBuilder {
     response_cache: Option<Arc<ResponseCache>>,
     feedback_tx: Option<tokio::sync::mpsc::Sender<FeedbackEvent>>,
     benchmark_tx: Option<tokio::sync::mpsc::Sender<BenchmarkRequest>>,
+    completion_sample_tx: Option<tokio::sync::mpsc::Sender<crate::types::CompletionSample>>,
     mcp_tx: Option<tokio::sync::mpsc::Sender<McpCall>>,
     hot_config: Option<Arc<ArcSwap<Config>>>,
     hot_routing_policy: Option<Arc<ArcSwap<RoutingPolicy>>>,
@@ -90,6 +91,7 @@ impl AppStateBuilder {
             response_cache: None,
             feedback_tx: None,
             benchmark_tx: None,
+            completion_sample_tx: None,
             mcp_tx: None,
             hot_config: None,
             hot_routing_policy: None,
@@ -215,6 +217,14 @@ impl AppStateBuilder {
         benchmark_tx: Option<tokio::sync::mpsc::Sender<BenchmarkRequest>>,
     ) -> Self {
         self.benchmark_tx = benchmark_tx;
+        self
+    }
+
+    pub fn with_completion_sample_tx_opt(
+        mut self,
+        completion_sample_tx: Option<tokio::sync::mpsc::Sender<crate::types::CompletionSample>>,
+    ) -> Self {
+        self.completion_sample_tx = completion_sample_tx;
         self
     }
 
@@ -400,6 +410,7 @@ impl AppStateBuilder {
             response_cache: self.response_cache,
             feedback_tx: self.feedback_tx,
             benchmark_tx: self.benchmark_tx,
+            completion_sample_tx: self.completion_sample_tx,
             mcp_tx: self.mcp_tx,
             hot_config: self.hot_config,
             hot_routing_policy: self.hot_routing_policy,

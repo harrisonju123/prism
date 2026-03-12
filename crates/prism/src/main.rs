@@ -47,8 +47,11 @@ use crate::keys::virtual_key::KeyRepository;
 use crate::mcp::types::McpCall;
 use crate::mcp::writer::McpWriter;
 use crate::models::alias::{AliasCache, AliasRepository};
-use crate::observability::writer::{BenchmarkWriter, FeedbackWriter, InferenceWriter};
+use crate::observability::writer::{
+    BenchmarkWriter, CompletionSampleWriter, FeedbackWriter, InferenceWriter,
+};
 use crate::providers::ProviderRegistry;
+use crate::types::CompletionSample;
 use crate::types::InferenceEvent;
 
 #[tokio::main]
@@ -464,14 +467,30 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // --- LLM-judge feedback loop on live traffic ---
+    // --- Live judge completion sampling pipeline ---
+    let mut completion_sample_tx_option: Option<tokio::sync::mpsc::Sender<CompletionSample>> = None;
+    let mut completion_sample_writer_handle: Option<tokio::task::JoinHandle<()>> = None;
+
     if config.benchmark.live_judge_enabled && !config.clickhouse.url.is_empty() {
         tracing::info!(
             interval_secs = config.benchmark.live_judge_interval_secs,
             max_calls_per_minute = config.benchmark.live_judge_max_calls_per_minute,
+            sample_rate = config.benchmark.live_judge_sample_rate,
             judge_model = %config.benchmark.judge_model,
             "live judge feedback loop enabled"
         );
+
+        let (sample_tx, sample_rx) = mpsc::channel::<CompletionSample>(config.pipeline.queue_size);
+
+        let csw = CompletionSampleWriter::new(
+            sample_rx,
+            &config.clickhouse,
+            config.pipeline.batch_size,
+            config.pipeline.flush_interval_ms,
+            cancel.clone(),
+        );
+        completion_sample_writer_handle = Some(tokio::spawn(csw.run()));
+        completion_sample_tx_option = Some(sample_tx);
 
         let live_judge = routing::live_judge::LiveJudgeTask::new(
             registry.clone(),
@@ -819,6 +838,7 @@ async fn main() -> anyhow::Result<()> {
             .with_response_cache_opt(response_cache)
             .with_feedback_tx(feedback_tx)
             .with_benchmark_tx_opt(benchmark_tx_option)
+            .with_completion_sample_tx_opt(completion_sample_tx_option)
             .with_mcp_tx(mcp_tx)
             .with_prompt_store(prompt_store)
             .with_hot_config(Arc::new(arc_swap::ArcSwap::from_pointee(config.clone())))
@@ -861,6 +881,9 @@ async fn main() -> anyhow::Result<()> {
             let _ = feedback_writer_handle.await;
             let _ = mcp_writer_handle.await;
             if let Some(handle) = benchmark_writer_handle {
+                let _ = handle.await;
+            }
+            if let Some(handle) = completion_sample_writer_handle {
                 let _ = handle.await;
             }
         } => {}

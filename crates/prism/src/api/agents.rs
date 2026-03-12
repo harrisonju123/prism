@@ -137,10 +137,7 @@ pub async fn list_handoffs(
 ) -> Result<impl IntoResponse> {
     let (store, ws_id) = uh_store(&state)?;
 
-    let status = params
-        .status
-        .as_deref()
-        .and_then(HandoffStatus::from_str);
+    let status = params.status.as_deref().and_then(HandoffStatus::from_str);
 
     let handoffs = store
         .list_handoffs(ws_id, params.agent.as_deref(), status)

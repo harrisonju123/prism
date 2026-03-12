@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
 use axum::Json;
+use axum::extract::{Path, State};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -205,10 +205,10 @@ pub async fn get_session(
         .fetch_all(pool),
     );
 
-    let hypotheses =
-        hypotheses_res.map_err(|e| PrismError::Internal(format!("debug hypothesis query failed: {e}")))?;
-    let experiments =
-        experiments_res.map_err(|e| PrismError::Internal(format!("debug experiment query failed: {e}")))?;
+    let hypotheses = hypotheses_res
+        .map_err(|e| PrismError::Internal(format!("debug hypothesis query failed: {e}")))?;
+    let experiments = experiments_res
+        .map_err(|e| PrismError::Internal(format!("debug experiment query failed: {e}")))?;
     let runs =
         runs_res.map_err(|e| PrismError::Internal(format!("debug run query failed: {e}")))?;
 
@@ -238,7 +238,9 @@ pub async fn create_hypothesis(
 
     let status = body.status.unwrap_or_else(|| "active".to_string());
     if !["active", "confirmed", "rejected"].contains(&status.as_str()) {
-        return Err(PrismError::BadRequest(format!("invalid hypothesis status: {status}")));
+        return Err(PrismError::BadRequest(format!(
+            "invalid hypothesis status: {status}"
+        )));
     }
 
     let row = sqlx::query_as::<_, DebugHypothesis>(
@@ -268,17 +270,23 @@ pub async fn create_experiment(
 
     let cost_level = body.cost_level.unwrap_or_else(|| "medium".to_string());
     if !["low", "medium", "high"].contains(&cost_level.as_str()) {
-        return Err(PrismError::BadRequest(format!("invalid cost_level: {cost_level}")));
+        return Err(PrismError::BadRequest(format!(
+            "invalid cost_level: {cost_level}"
+        )));
     }
 
     let impact_level = body.impact_level.unwrap_or_else(|| "medium".to_string());
     if !["low", "medium", "high"].contains(&impact_level.as_str()) {
-        return Err(PrismError::BadRequest(format!("invalid impact_level: {impact_level}")));
+        return Err(PrismError::BadRequest(format!(
+            "invalid impact_level: {impact_level}"
+        )));
     }
 
     let status = body.status.unwrap_or_else(|| "proposed".to_string());
     if !["proposed", "running", "completed", "cancelled"].contains(&status.as_str()) {
-        return Err(PrismError::BadRequest(format!("invalid experiment status: {status}")));
+        return Err(PrismError::BadRequest(format!(
+            "invalid experiment status: {status}"
+        )));
     }
 
     let row = sqlx::query_as::<_, DebugExperiment>(
@@ -310,7 +318,9 @@ pub async fn create_run(
 
     let status = body.status.unwrap_or_else(|| "queued".to_string());
     if !["queued", "running", "completed", "failed"].contains(&status.as_str()) {
-        return Err(PrismError::BadRequest(format!("invalid run status: {status}")));
+        return Err(PrismError::BadRequest(format!(
+            "invalid run status: {status}"
+        )));
     }
 
     let row = sqlx::query_as::<_, DebugRun>(
