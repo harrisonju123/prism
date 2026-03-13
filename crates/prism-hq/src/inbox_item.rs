@@ -1,6 +1,7 @@
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity, Window, actions,
+    KeyDownEvent, ParentElement, Render, SharedString, Styled, Subscription, Task, WeakEntity,
+    Window, actions,
 };
 use prism_context::model::{InboxEntry, InboxEntryType, InboxSeverity};
 use ui::{
@@ -11,7 +12,8 @@ use workspace::Workspace;
 use workspace::item::{Item, ItemEvent};
 
 use crate::approval_gate::{ApprovalDecision, ApprovalGate};
-use crate::context_service::{ContextHandle, ContextService};
+use crate::context_service::{ContextHandle, ContextService, get_context_handle};
+use crate::dispatch::slugify;
 use crate::hq_state::HqState;
 use crate::thread_view::open_thread_view;
 
@@ -25,6 +27,8 @@ enum InboxFilter {
     Unread,
     Approval,
     Blocked,
+    CostSpike,
+    Completed,
     Suggestion,
 }
 
@@ -35,6 +39,8 @@ impl InboxFilter {
             Self::Unread => "Unread",
             Self::Approval => "Approval",
             Self::Blocked => "Blocked",
+            Self::CostSpike => "Cost",
+            Self::Completed => "Done",
             Self::Suggestion => "Suggestion",
         }
     }
@@ -45,6 +51,8 @@ impl InboxFilter {
             Self::Unread => !entry.read,
             Self::Approval => entry.entry_type == InboxEntryType::Approval,
             Self::Blocked => entry.entry_type == InboxEntryType::Blocked,
+            Self::CostSpike => entry.entry_type == InboxEntryType::CostSpike,
+            Self::Completed => entry.entry_type == InboxEntryType::Completed,
             Self::Suggestion => {
                 matches!(
                     entry.entry_type,
@@ -63,6 +71,8 @@ pub struct InboxItem {
     /// Single in-flight store operation (dismiss or mark-read). Dropping cancels it.
     pending_op: Option<Task<()>>,
     workspace: Option<WeakEntity<Workspace>>,
+    /// Active unblock composer: (entry_id, message_buffer). None when closed.
+    unblock_state: Option<(uuid::Uuid, String)>,
 }
 
 impl InboxItem {
@@ -83,6 +93,7 @@ impl InboxItem {
             filter: InboxFilter::All,
             pending_op: None,
             workspace,
+            unblock_state: None,
         }
     }
 
@@ -187,6 +198,188 @@ impl InboxItem {
             });
         }
     }
+
+    fn unblock_agent(&mut self, entry: &InboxEntry, cx: &mut Context<Self>) {
+        use prism_context::model::AgentState;
+        use serde_json::json;
+
+        let is_open_for_entry = self
+            .unblock_state
+            .as_ref()
+            .map_or(false, |(id, _)| *id == entry.id);
+        let has_message = self
+            .unblock_state
+            .as_ref()
+            .map_or(false, |(id, msg)| *id == entry.id && !msg.is_empty());
+
+        if !has_message {
+            // Toggle composer open/closed.
+            self.unblock_state = if is_open_for_entry {
+                None
+            } else {
+                Some((entry.id, String::new()))
+            };
+            cx.notify();
+            return;
+        }
+
+        let id = entry.id;
+        let (_, message) = self.unblock_state.take().unwrap();
+        let agent_name = entry.source_agent.clone();
+
+        self.pending_op = Some(cx.spawn(async move |this, cx| {
+            if let Some(handle) = get_context_handle(&this, cx) {
+                let resolution = json!({"action": "unblocked", "message": message}).to_string();
+                let _ = cx
+                    .background_spawn(async move {
+                        let _ = handle.resolve_inbox_entry(id, &resolution);
+                        if let Some(name) = agent_name {
+                            let _ = handle.send_message("supervisor", &name, &message);
+                            let _ = handle.set_agent_state(&name, AgentState::Working);
+                        }
+                    })
+                    .await;
+            }
+
+            this.update(cx, |_, cx| cx.notify()).ok();
+        }));
+    }
+
+    fn kill_agent(&mut self, entry: &InboxEntry, cx: &mut Context<Self>) {
+        use prism_context::model::AgentState;
+        use serde_json::json;
+
+        let id = entry.id;
+        let agent_name = entry.source_agent.clone();
+
+        self.pending_op = Some(cx.spawn(async move |this, cx| {
+            if let Some(handle) = get_context_handle(&this, cx) {
+                let resolution = json!({"action": "killed"}).to_string();
+                let _ = cx
+                    .background_spawn(async move {
+                        let _ = handle.resolve_inbox_entry(id, &resolution);
+                        if let Some(name) = agent_name {
+                            let _ = handle.set_agent_state(&name, AgentState::Dead);
+                        }
+                    })
+                    .await;
+            }
+
+            this.update(cx, |_, cx| cx.notify()).ok();
+        }));
+    }
+
+    fn merge_completed(&mut self, entry: &InboxEntry, cx: &mut Context<Self>) {
+        use serde_json::json;
+
+        let id = entry.id;
+        let branch = {
+            let body_json: serde_json::Value =
+                serde_json::from_str(&entry.body).unwrap_or(json!({}));
+            body_json["branch"].as_str().unwrap_or("").to_string()
+        };
+
+        self.pending_op = Some(cx.spawn(async move |this, cx| {
+            if let Some(handle) = get_context_handle(&this, cx) {
+                let _ = cx
+                    .background_spawn(async move {
+                        let output = std::process::Command::new("git")
+                            .args(["merge", "--no-ff", &branch])
+                            .output();
+                        let resolution = match output {
+                            Ok(out) if out.status.success() => {
+                                json!({"action": "merged"}).to_string()
+                            }
+                            Ok(out) => {
+                                let err = String::from_utf8_lossy(&out.stderr).to_string();
+                                json!({"action": "merge_failed", "error": err}).to_string()
+                            }
+                            Err(e) => {
+                                json!({"action": "merge_failed", "error": e.to_string()})
+                                    .to_string()
+                            }
+                        };
+                        let _ = handle.resolve_inbox_entry(id, &resolution);
+                    })
+                    .await;
+            }
+
+            this.update(cx, |_, cx| cx.notify()).ok();
+        }));
+    }
+
+    fn create_thread_from_suggestion(&mut self, entry: &InboxEntry, cx: &mut Context<Self>) {
+        use serde_json::json;
+
+        let id = entry.id;
+        let body = entry.body.clone();
+        let thread_name = slugify(&entry.title);
+
+        self.pending_op = Some(cx.spawn(async move |this, cx| {
+            if let Some(handle) = get_context_handle(&this, cx) {
+                let _ = cx
+                    .background_spawn(async move {
+                        let _ = handle.create_thread(
+                            &thread_name,
+                            &body,
+                            vec!["from-suggestion".to_string()],
+                        );
+                        let resolution =
+                            json!({"action": "thread_created", "thread": thread_name}).to_string();
+                        let _ = handle.resolve_inbox_entry(id, &resolution);
+                    })
+                    .await;
+            }
+
+            this.update(cx, |_, cx| cx.notify()).ok();
+        }));
+    }
+
+    fn acknowledge_risk(&mut self, entry: &InboxEntry, cx: &mut Context<Self>) {
+        use serde_json::json;
+
+        let id = entry.id;
+
+        self.pending_op = Some(cx.spawn(async move |this, cx| {
+            if let Some(handle) = get_context_handle(&this, cx) {
+                let resolution = json!({"action": "acknowledged"}).to_string();
+                let _ = cx
+                    .background_spawn(async move { handle.resolve_inbox_entry(id, &resolution) })
+                    .await;
+            }
+
+            this.update(cx, |_, cx| cx.notify()).ok();
+        }));
+    }
+
+    fn escalate_risk(
+        &mut self,
+        entry: &InboxEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use serde_json::json;
+
+        let id = entry.id;
+        let thread_name = entry.title.clone();
+
+        if let Some(ws_ref) = self.workspace.as_ref().and_then(|w| w.upgrade()) {
+            ws_ref.update(cx, |workspace, cx| {
+                open_thread_view(workspace, thread_name, window, cx);
+            });
+        }
+
+        self.pending_op = Some(cx.spawn(async move |this, cx| {
+            if let Some(handle) = get_context_handle(&this, cx) {
+                let resolution = json!({"action": "escalated"}).to_string();
+                let _ = cx
+                    .background_spawn(async move { handle.resolve_inbox_entry(id, &resolution) })
+                    .await;
+            }
+
+            this.update(cx, |_, cx| cx.notify()).ok();
+        }));
+    }
 }
 
 impl EventEmitter<ItemEvent> for InboxItem {}
@@ -231,6 +424,8 @@ impl Render for InboxItem {
             InboxFilter::Unread,
             InboxFilter::Approval,
             InboxFilter::Blocked,
+            InboxFilter::CostSpike,
+            InboxFilter::Completed,
             InboxFilter::Suggestion,
         ];
 
@@ -275,6 +470,14 @@ impl Render for InboxItem {
 
         let is_empty = entries.is_empty();
 
+        // Capture unblock state for use in card closures.
+        let unblock_target = self.unblock_state.as_ref().map(|(id, _)| *id);
+        let unblock_message = self
+            .unblock_state
+            .as_ref()
+            .map(|(_, msg)| msg.clone())
+            .unwrap_or_default();
+
         let cards: Vec<_> = entries
             .into_iter()
             .enumerate()
@@ -300,13 +503,27 @@ impl Render for InboxItem {
                 let ref_id = entry.ref_id;
                 let ws = self.workspace.clone();
                 let is_approval = entry.entry_type == InboxEntryType::Approval;
+                let is_blocked = entry.entry_type == InboxEntryType::Blocked;
+                let is_cost_spike = entry.entry_type == InboxEntryType::CostSpike;
+                let is_completed = entry.entry_type == InboxEntryType::Completed;
+                let is_suggestion = entry.entry_type == InboxEntryType::Suggestion;
+                let is_risk = entry.entry_type == InboxEntryType::Risk;
                 let is_resolved = entry.resolved;
-                let resolution_label = if is_approval && is_resolved {
+                let show_unblock_form =
+                    is_blocked && !is_resolved && unblock_target == Some(id);
+
+                // Generalized resolution label: prefer "action", fall back to "decision".
+                let resolution_label = if is_resolved {
                     entry
                         .resolution
                         .as_deref()
                         .and_then(|r| serde_json::from_str::<serde_json::Value>(r).ok())
-                        .and_then(|v| v["decision"].as_str().map(|s| s.to_string()))
+                        .and_then(|v| {
+                            v["action"]
+                                .as_str()
+                                .or_else(|| v["decision"].as_str())
+                                .map(|s| s.to_string())
+                        })
                         .unwrap_or_else(|| "resolved".to_string())
                 } else {
                     String::new()
@@ -358,6 +575,34 @@ impl Render for InboxItem {
                                 .color(Color::Muted),
                         )
                     })
+                    // Unblock inline composer (visible when composer is open for this entry).
+                    .when(show_unblock_form, |this| {
+                        let display_text = if unblock_message.is_empty() {
+                            "Type a message… (Esc to cancel)".to_string()
+                        } else {
+                            format!("{}|", unblock_message)
+                        };
+                        let text_color = if unblock_message.is_empty() {
+                            Color::Muted
+                        } else {
+                            Color::Default
+                        };
+                        this.child(
+                            div()
+                                .mt_0p5()
+                                .px_2()
+                                .py_1()
+                                .rounded_sm()
+                                .bg(cx.theme().colors().editor_background)
+                                .border_1()
+                                .border_color(cx.theme().colors().border_focused)
+                                .child(
+                                    Label::new(display_text)
+                                        .size(LabelSize::XSmall)
+                                        .color(text_color),
+                                ),
+                        )
+                    })
                     .child(
                         h_flex()
                             .gap_1()
@@ -402,6 +647,7 @@ impl Render for InboxItem {
                                         })),
                                 )
                             })
+                            // Approval actions
                             .when(is_approval && !is_resolved, |this| {
                                 this.child(
                                     Button::new(("entry-review", ix), "Review")
@@ -411,15 +657,98 @@ impl Render for InboxItem {
                                             let entry_for_review = entry.clone();
                                             move |this, _, window, cx| {
                                                 this.mark_read(entry_for_review.id, cx);
-                                                this.open_approval_gate(&entry_for_review, window, cx);
+                                                this.open_approval_gate(
+                                                    &entry_for_review,
+                                                    window,
+                                                    cx,
+                                                );
                                             }
                                         })),
                                 )
                             })
-                            .when(is_approval && is_resolved, |this| {
+                            // Blocked actions
+                            .when(is_blocked && !is_resolved, |this| {
+                                let entry_clone = entry.clone();
+                                let has_msg = !unblock_message.is_empty()
+                                    && unblock_target == Some(id);
+                                let btn_label = if has_msg {
+                                    "Send & Unblock"
+                                } else {
+                                    "Unblock"
+                                };
+                                this.child(
+                                    Button::new(("entry-unblock", ix), btn_label)
+                                        .style(ButtonStyle::Filled)
+                                        .label_size(LabelSize::XSmall)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.unblock_agent(&entry_clone, cx);
+                                        })),
+                                )
+                            })
+                            // CostSpike actions
+                            .when(is_cost_spike && !is_resolved, |this| {
+                                let entry_clone = entry.clone();
+                                this.child(
+                                    Button::new(("entry-kill", ix), "Kill Agent")
+                                        .style(ButtonStyle::Filled)
+                                        .label_size(LabelSize::XSmall)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.kill_agent(&entry_clone, cx);
+                                        })),
+                                )
+                            })
+                            // Completed actions
+                            .when(is_completed && !is_resolved, |this| {
+                                let entry_clone = entry.clone();
+                                this.child(
+                                    Button::new(("entry-merge", ix), "Merge")
+                                        .style(ButtonStyle::Filled)
+                                        .label_size(LabelSize::XSmall)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.merge_completed(&entry_clone, cx);
+                                        })),
+                                )
+                            })
+                            // Suggestion actions
+                            .when(is_suggestion && !is_resolved, |this| {
+                                let entry_clone = entry.clone();
+                                this.child(
+                                    Button::new(("entry-thread", ix), "Create Thread")
+                                        .style(ButtonStyle::Filled)
+                                        .label_size(LabelSize::XSmall)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.create_thread_from_suggestion(&entry_clone, cx);
+                                        })),
+                                )
+                            })
+                            // Risk actions
+                            .when(is_risk && !is_resolved, |this| {
+                                let entry_ack = entry.clone();
+                                let entry_esc = entry.clone();
+                                this.child(
+                                    Button::new(("entry-ack", ix), "Acknowledge")
+                                        .style(ButtonStyle::Subtle)
+                                        .label_size(LabelSize::XSmall)
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.acknowledge_risk(&entry_ack, cx);
+                                        })),
+                                )
+                                .child(
+                                    Button::new(("entry-escalate", ix), "Escalate")
+                                        .style(ButtonStyle::Filled)
+                                        .label_size(LabelSize::XSmall)
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.escalate_risk(&entry_esc, window, cx);
+                                        })),
+                                )
+                            })
+                            // Resolved label for all types
+                            .when(is_resolved, |this| {
                                 let color = match resolution_label.as_str() {
-                                    "approve" => Color::Success,
-                                    "reject" => Color::Error,
+                                    "approve" | "merged" | "acknowledged" | "thread_created" => {
+                                        Color::Success
+                                    }
+                                    "reject" | "killed" => Color::Error,
                                     _ => Color::Warning,
                                 };
                                 this.child(
@@ -443,6 +772,30 @@ impl Render for InboxItem {
         v_flex()
             .key_context("Inbox")
             .track_focus(&self.focus_handle)
+            // Keyboard handler for unblock composer (active when any composer is open).
+            .when(self.unblock_state.is_some(), |this| {
+                this.on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                    let ks = &event.keystroke;
+                    if ks.key == "escape" {
+                        this.unblock_state = None;
+                        cx.notify();
+                    } else if ks.key == "backspace" {
+                        if let Some((_, msg)) = this.unblock_state.as_mut() {
+                            if !msg.is_empty() {
+                                msg.pop();
+                                cx.notify();
+                            }
+                        }
+                    } else if !ks.modifiers.platform && !ks.modifiers.control {
+                        if let Some(ch) = &ks.key_char {
+                            if let Some((_, msg)) = this.unblock_state.as_mut() {
+                                msg.push_str(ch);
+                                cx.notify();
+                            }
+                        }
+                    }
+                }))
+            })
             .size_full()
             .bg(cx.theme().colors().editor_background)
             .child(filter_row)
