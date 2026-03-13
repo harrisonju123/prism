@@ -103,24 +103,6 @@ impl SqliteStore {
         let rows = q.fetch_all(&self.pool).await?;
         let memories: Vec<Memory> = rows.iter().map(row_to_memory).collect::<Result<Vec<_>>>()?;
 
-        // Track access for returned memories (fire-and-forget)
-        if !memories.is_empty() {
-            let ids: Vec<String> = memories.iter().map(|m| m.id.to_string()).collect();
-            let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("${i}")).collect();
-            let update_sql = format!(
-                "UPDATE memories SET access_count = access_count + 1, last_accessed_at = ${} WHERE id IN ({})",
-                ids.len() + 1,
-                placeholders.join(", ")
-            );
-            let now = now_rfc3339();
-            let mut update_q = sqlx::query(&update_sql);
-            for id in &ids {
-                update_q = update_q.bind(id);
-            }
-            update_q = update_q.bind(&now);
-            let _ = update_q.execute(&self.pool).await;
-        }
-
         Ok(memories)
     }
 

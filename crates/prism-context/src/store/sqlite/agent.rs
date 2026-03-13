@@ -47,7 +47,9 @@ impl SqliteStore {
 
         // Close any open sessions from a previous run (agent re-checkin without checkout)
         sqlx::query(
-            "UPDATE agent_sessions SET ended_at = $1, summary = 'auto-closed: agent re-checkin'
+            "UPDATE agent_sessions SET ended_at = $1,
+               summary = CASE WHEN summary = '' THEN 'auto-closed: agent re-checkin'
+                         ELSE summary || ' [auto-closed: agent re-checkin]' END
              WHERE agent_id = (SELECT id FROM agents WHERE workspace_id = $2 AND name = $3)
                AND ended_at IS NULL",
         )
@@ -412,7 +414,9 @@ impl SqliteStore {
         if !names.is_empty() {
             // Close open sessions for reaped agents
             sqlx::query(
-                "UPDATE agent_sessions SET ended_at = $1, summary = 'auto-closed: agent reaped'
+                "UPDATE agent_sessions SET ended_at = $1,
+                   summary = CASE WHEN summary = '' THEN 'auto-closed: agent reaped'
+                             ELSE summary || ' [auto-closed: agent reaped]' END
                  WHERE agent_id IN (SELECT id FROM agents WHERE workspace_id = $2 AND state = 'dead')
                    AND ended_at IS NULL",
             )
