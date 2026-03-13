@@ -276,6 +276,66 @@ impl Renderer {
             eprintln!("[write coalesce nudge]");
         }
     }
+
+    // ── REPL polish ──────────────────────────────────────────────────
+
+    /// Print a thin separator line after each agent turn.
+    /// Format: `──── turn N · $cost ──────────` (60 chars total)
+    pub fn turn_separator(&self, turn: u32, cost: f64) {
+        const WIDTH: usize = 60;
+        let label = format!(" turn {turn} · ${cost:.4} ");
+        let prefix = "────";
+        let suffix_len = WIDTH.saturating_sub(prefix.len() + label.len());
+        let suffix: String = "─".repeat(suffix_len);
+        let line = format!("{prefix}{label}{suffix}");
+        if self.colored {
+            eprintln!("{}{line}{}", SetForegroundColor(Color::DarkGrey), ResetColor);
+        } else {
+            eprintln!("{line}");
+        }
+    }
+
+    /// Print a styled box containing inbox or message entries.
+    /// No-op if `entries` is empty.
+    pub fn inbox_box(&self, header: &str, entries: &[(String, String)]) {
+        if entries.is_empty() {
+            return;
+        }
+        const WIDTH: usize = 72;
+        // Top border: ┌─ header ─────...
+        let top_label = format!("─ {header} ");
+        let top_suffix_len = WIDTH.saturating_sub(1 + top_label.len());
+        let top = format!("┌{top_label}{}", "─".repeat(top_suffix_len));
+        let bottom: String = format!("└{}", "─".repeat(WIDTH - 1));
+        if self.colored {
+            let c = SetForegroundColor(Color::DarkYellow);
+            let r = ResetColor;
+            eprintln!("{c}{top}{r}");
+            for (label, body) in entries {
+                eprintln!("{c}│{r} [{label}] {body}");
+            }
+            eprintln!("{c}{bottom}{r}");
+        } else {
+            eprintln!("{top}");
+            for (label, body) in entries {
+                eprintln!("│ [{label}] {body}");
+            }
+            eprintln!("{bottom}");
+        }
+    }
+
+    /// Print a single-line notification with a `▸` prefix.
+    pub fn notification_line(&self, text: &str) {
+        if self.colored {
+            eprintln!(
+                "{}  ▸ {text}{}",
+                SetForegroundColor(Color::Cyan),
+                ResetColor,
+            );
+        } else {
+            eprintln!("  ▸ {text}");
+        }
+    }
 }
 
 #[cfg(test)]

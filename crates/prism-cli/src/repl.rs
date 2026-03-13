@@ -8,6 +8,7 @@ use std::sync::atomic::Ordering;
 
 use crate::agent::Agent;
 use crate::config::{Config, repl_history_path};
+use crate::render::Renderer;
 use crate::mcp::McpRegistry;
 use crate::memory::MemoryManager;
 use crate::permissions::PermissionMode;
@@ -17,6 +18,8 @@ use crate::skills::{SkillRegistry, parse_skill_invocation};
 use crate::tools::{is_tool_allowed, tool_definitions};
 use prism_context::model::DecisionScope;
 use prism_context::store::{InboxFilters, MemoryFilters, Store as ContextStore};
+
+const HUMAN_AGENT: &str = "human";
 
 /// Helper struct providing tab completion for the REPL.
 #[derive(rustyline::Helper, rustyline::Hinter, rustyline::Highlighter, rustyline::Validator)]
@@ -201,9 +204,9 @@ pub async fn run_interactive(
         }
     };
 
-    // Register "human" as a first-class agent so it appears in uh agents and can receive messages.
+    // Register HUMAN_AGENT as a first-class agent so it appears in uh agents and can receive messages.
     if let Some((store, ws_id)) = agent.store_context() {
-        let _ = store.checkin(ws_id, "human", vec![], None).await;
+        let _ = store.checkin(ws_id, HUMAN_AGENT, vec![], None).await;
     }
 
     // Install a ctrl-c handler that sets the shared flag. Fires during agent turns
@@ -288,6 +291,8 @@ pub async fn run_interactive(
     let rl_editor: Arc<std::sync::Mutex<rustyline::Editor<PrismHelper, rustyline::history::FileHistory>>> =
         Arc::new(std::sync::Mutex::new(rl_editor));
 
+    let renderer = Renderer::new();
+
     eprintln!("Interactive mode. Type /help for commands, Ctrl+C to exit.");
     eprintln!();
 
@@ -305,11 +310,11 @@ pub async fn run_interactive(
 
         // Show any background task completions before the prompt (non-consuming)
         for note in agent.poll_background_notifications() {
-            eprintln!("{note}");
+            renderer.notification_line(&note);
         }
 
         // Surface pending inbox entries (e.g. from subagents via ask_human)
-        // and direct messages addressed to "human" before each prompt.
+        // and direct messages addressed to HUMAN_AGENT before each prompt.
         if let Some((store, ws_id)) = agent.store_context() {
             let filters = InboxFilters {
                 unread_only: true,
@@ -319,21 +324,29 @@ pub async fn run_interactive(
             };
             let (inbox_result, msgs_result) = tokio::join!(
                 store.list_inbox_entries(ws_id, filters),
-                store.list_messages(ws_id, "human", true),
+                store.list_messages(ws_id, HUMAN_AGENT, true),
             );
             if let Ok(entries) = inbox_result {
+                let items: Vec<(String, String)> = entries
+                    .iter()
+                    .map(|e| {
+                        let from = e.source_agent.as_deref().unwrap_or("agent");
+                        (format!("{}/{}", e.severity, from), e.body.clone())
+                    })
+                    .collect();
+                renderer.inbox_box("inbox", &items);
                 for e in &entries {
-                    let from = e.source_agent.as_deref().unwrap_or("agent");
-                    eprintln!("[inbox/{}/{}] {}", e.severity, from, e.body);
                     let _ = store.mark_inbox_read(ws_id, e.id).await;
                 }
             }
             if let Ok(msgs) = msgs_result {
-                for m in &msgs {
-                    eprintln!("[message from {}] {}", m.from_agent, m.content);
-                }
+                let items: Vec<(String, String)> = msgs
+                    .iter()
+                    .map(|m| (m.from_agent.clone(), m.content.clone()))
+                    .collect();
+                renderer.inbox_box("messages", &items);
                 if !msgs.is_empty() {
-                    let _ = store.mark_messages_read(ws_id, "human").await;
+                    let _ = store.mark_messages_read(ws_id, HUMAN_AGENT).await;
                 }
             }
         }
@@ -362,7 +375,41 @@ pub async fn run_interactive(
             Err(_) => break,
         };
 
-        let input = line.trim();
+        // Multiline input: trailing `\` continues to next line.
+        let input: String = {
+            let first = line.trim_end();
+            if first.ends_with('\\') {
+                let mut buf = first[..first.len() - 1].to_string();
+                loop {
+                    let rl2 = rl_editor.clone();
+                    let cont_result: Result<String, rustyline::error::ReadlineError> =
+                        tokio::task::spawn_blocking(move || {
+                            let mut ed = rl2.lock().unwrap();
+                            ed.readline("... ")
+                        })
+                        .await
+                        .unwrap_or(Err(rustyline::error::ReadlineError::Eof));
+                    match cont_result {
+                        Ok(cont_line) => {
+                            let trimmed = cont_line.trim_end();
+                            if trimmed.ends_with('\\') {
+                                buf.push('\n');
+                                buf.push_str(&trimmed[..trimmed.len() - 1]);
+                            } else {
+                                buf.push('\n');
+                                buf.push_str(trimmed.trim_start());
+                                break;
+                            }
+                        }
+                        Err(_) => break, // Ctrl+C or EOF during continuation: submit what we have
+                    }
+                }
+                buf
+            } else {
+                first.to_string()
+            }
+        };
+        let input = input.trim();
         if input.is_empty() {
             continue;
         }
@@ -656,6 +703,9 @@ pub async fn run_interactive(
         // Reset interrupt so Ctrl+C during this turn only interrupts the turn
         agent.interrupted.store(false, Ordering::SeqCst);
 
+        let pre_cost = agent.session.total_cost_usd;
+        let pre_turns = agent.session.turns;
+
         let result = if first_turn {
             first_turn = false;
             agent.run(task_str).await
@@ -667,6 +717,10 @@ pub async fn run_interactive(
             eprintln!("[error] {e:#}");
         }
 
+        if agent.session.turns > pre_turns {
+            renderer.turn_separator(agent.session.turns, agent.session.total_cost_usd - pre_cost);
+        }
+
         // After each turn, ensure interrupt flag is clear so next prompt reads correctly
         agent.interrupted.store(false, Ordering::SeqCst);
 
@@ -675,6 +729,29 @@ pub async fn run_interactive(
             let _ = editor.save_history(&history_path);
         }
     }
+
+    // Exit cleanup: final history flush, checkout, session summary, session save.
+    if let Ok(mut editor) = rl_editor.lock() {
+        let _ = editor.save_history(&history_path);
+    }
+
+    let model = agent.session.model.clone();
+    let turns = agent.session.turns;
+    let tokens_in = agent.session.total_prompt_tokens;
+    let tokens_out = agent.session.total_completion_tokens;
+    let cost = agent.session.total_cost_usd;
+    let episode_id = agent.session.episode_id.to_string();
+
+    if let Some((store, ws_id)) = agent.store_context() {
+        let summary = format!("{turns} turns, ${cost:.4}");
+        let _ = store
+            .checkout(ws_id, HUMAN_AGENT, &summary, vec![], vec![], vec![])
+            .await;
+    }
+
+    renderer.session_summary(&model, turns, tokens_in, tokens_out, cost, &episode_id);
+
+    let _ = agent.session.save(&agent.config.session.sessions_dir);
 
     Ok(())
 }
