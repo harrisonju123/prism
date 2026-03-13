@@ -308,10 +308,14 @@ pub fn tool_definitions() -> Vec<Tool> {
             "request_review",
             "Post an approval request to the human operator's inbox and BLOCK until the human resolves it. Use when you need explicit human sign-off before proceeding — unlike ask_human (fire-and-forget), this tool parks the agent until the human runs `prism context inbox resolve <id>`.",
             json!({ "type": "object", "properties": {
-                "title":    { "type": "string", "description": "Short summary of what needs approval" },
-                "body":     { "type": "string", "description": "Detailed description of what you are about to do and why you need approval" },
-                "severity": { "type": "string", "enum": ["critical", "warning", "info"], "description": "Urgency level (default: warning)" },
-                "thread":   { "type": "string", "description": "Thread name to associate with (defaults to current thread)" }
+                "title":            { "type": "string", "description": "Short summary of what needs approval" },
+                "body":             { "type": "string", "description": "Detailed description of what you are about to do and why you need approval" },
+                "severity":         { "type": "string", "enum": ["critical", "warning", "info"], "description": "Urgency level (default: warning)" },
+                "thread":           { "type": "string", "description": "Thread name to associate with (defaults to current thread)" },
+                "diff_preview":     { "type": "string", "description": "Unified diff of the changes for human review" },
+                "branch":           { "type": "string", "description": "Git branch name where the work lives" },
+                "session_cost_usd": { "type": "number", "description": "Estimated session cost in USD" },
+                "test_summary":     { "type": "string", "description": "Test results summary (e.g. '27 passed, 0 failed')" }
             }, "required": ["title", "body"] }),
         ),
         make_tool(

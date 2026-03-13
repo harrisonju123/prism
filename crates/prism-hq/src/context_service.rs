@@ -327,6 +327,11 @@ impl ContextHandle {
         self.run(self.store.dismiss_inbox_entry(self.workspace_id, id))
     }
 
+    pub fn resolve_inbox_entry(&self, id: Uuid, resolution: &str) -> Result<()> {
+        self.run(self.store.resolve_inbox_entry(self.workspace_id, id, resolution))
+            .map(|_| ())
+    }
+
     pub fn send_message(
         &self,
         from_agent: &str,

@@ -2724,7 +2724,7 @@ If you have questions, ask them now. If you're confident, continue."
 
     /// Handle the `request_review` tool — creates an Approval inbox entry and blocks until resolved.
     async fn handle_request_review(&self, args: &serde_json::Value) -> String {
-        use prism_context::model::{InboxEntryType, InboxSeverity};
+        use prism_context::model::{AgentState, InboxEntryType, InboxSeverity};
 
         let Some((store, ws_id, agent_name)) = self.context_store() else {
             return json!({"error": "no context store available"}).to_string();
@@ -2748,12 +2748,22 @@ If you have questions, ask them now. If you're confident, continue."
         let thread_id = self.resolve_thread_id(&args["thread"], store, ws_id).await;
         let ref_type = thread_id.is_some().then_some("thread");
 
+        // Serialize body as structured JSON so the Zed modal can extract fields.
+        let body_json = json!({
+            "description": body,
+            "diff_preview": args["diff_preview"].as_str().unwrap_or(""),
+            "branch": args["branch"].as_str().unwrap_or(""),
+            "session_cost_usd": args["session_cost_usd"].as_f64(),
+            "test_summary": args["test_summary"].as_str(),
+        });
+        let body_str = body_json.to_string();
+
         let entry = match store
             .create_inbox_entry(
                 ws_id,
                 InboxEntryType::Approval,
                 &title,
-                &body,
+                &body_str,
                 severity,
                 Some(&agent_name),
                 ref_type,
@@ -2774,9 +2784,12 @@ If you have questions, ask them now. If you're confident, continue."
             "\n[request_review] Parked — waiting for human approval.\n  Inbox entry: {inbox_id_str}\n  Run: prism context inbox resolve {inbox_id_str} --response \"approved\"\n"
         );
 
+        let _ = store.set_agent_state(ws_id, &agent_name, AgentState::Blocked).await;
+
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(TIMEOUT_SECS);
         loop {
             if self.interrupted.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = store.set_agent_state(ws_id, &agent_name, AgentState::Idle).await;
                 return json!({
                     "status": "interrupted",
                     "inbox_id": inbox_id_str,
@@ -2786,6 +2799,7 @@ If you have questions, ask them now. If you're confident, continue."
             }
 
             if std::time::Instant::now() >= deadline {
+                let _ = store.set_agent_state(ws_id, &agent_name, AgentState::Idle).await;
                 return json!({
                     "status": "timeout",
                     "inbox_id": inbox_id_str,
@@ -2798,11 +2812,16 @@ If you have questions, ask them now. If you're confident, continue."
 
             match store.get_inbox_entry(ws_id, inbox_id).await {
                 Ok(e) if e.resolved => {
-                    let resolution = e.resolution.as_deref().unwrap_or("approved");
+                    let _ = store.set_agent_state(ws_id, &agent_name, AgentState::Working).await;
+                    let resolution_raw = e.resolution.as_deref().unwrap_or("{}");
+                    // Try to parse structured JSON; fall back to treating raw string as decision.
+                    let resolution_json: serde_json::Value = serde_json::from_str(resolution_raw)
+                        .unwrap_or_else(|_| json!({"decision": resolution_raw}));
                     return json!({
                         "status": "resolved",
                         "inbox_id": inbox_id_str,
-                        "resolution": resolution
+                        "decision": resolution_json.get("decision").and_then(|v| v.as_str()).unwrap_or("unknown"),
+                        "message": resolution_json.get("message").and_then(|v| v.as_str()),
                     })
                     .to_string();
                 }

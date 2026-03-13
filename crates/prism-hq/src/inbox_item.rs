@@ -10,9 +10,10 @@ use ui::{
 use workspace::Workspace;
 use workspace::item::{Item, ItemEvent};
 
+use crate::approval_gate::{ApprovalDecision, ApprovalGate};
+use crate::context_service::{ContextHandle, ContextService};
 use crate::hq_state::HqState;
 use crate::thread_view::open_thread_view;
-use crate::context_service::ContextService;
 
 actions!(prism_hq, [OpenInbox]);
 
@@ -123,6 +124,68 @@ impl InboxItem {
 
             this.update(cx, |_, cx| cx.notify()).ok();
         }));
+    }
+
+    fn open_approval_gate(&mut self, entry: &InboxEntry, window: &mut Window, cx: &mut Context<Self>) {
+        use prism_context::model::AgentState;
+        use serde_json::json;
+
+        let handle: Option<ContextHandle> = cx
+            .try_global::<ContextService>()
+            .and_then(|svc| svc.handle());
+        let Some(handle) = handle else { return };
+
+        let body_json: serde_json::Value = serde_json::from_str(&entry.body)
+            .unwrap_or_else(|_| json!({"description": entry.body.as_str()}));
+
+        let task_name = entry.title.clone();
+        let task_description = body_json["description"].as_str().unwrap_or("").to_string();
+        let diff_preview = body_json["diff_preview"]
+            .as_str()
+            .unwrap_or("(no diff available)")
+            .to_string();
+        let branch = body_json["branch"].as_str().unwrap_or("unknown").to_string();
+        let cost = body_json["session_cost_usd"].as_f64();
+        let tests = body_json["test_summary"].as_str().map(|s| s.to_string());
+        let entry_id = entry.id;
+        let agent_name = entry.source_agent.clone();
+
+        if let Some(ws_ref) = self.workspace.as_ref().and_then(|w| w.upgrade()) {
+            ws_ref.update(cx, |workspace, cx| {
+                ApprovalGate::open(
+                    task_name,
+                    task_description,
+                    branch,
+                    diff_preview,
+                    cost,
+                    tests,
+                    move |decision: ApprovalDecision| {
+                        let resolution = match &decision {
+                            ApprovalDecision::Approve => json!({"decision": "approve"}),
+                            ApprovalDecision::RequestChanges { message } => {
+                                json!({"decision": "request_changes", "message": message})
+                            }
+                            ApprovalDecision::Reject => json!({"decision": "reject"}),
+                        };
+                        let resolution_str = resolution.to_string();
+                        let agent = agent_name.clone();
+                        std::thread::spawn(move || {
+                            let _ = handle.resolve_inbox_entry(entry_id, &resolution_str);
+                            if let Some(name) = agent {
+                                let state = match &decision {
+                                    ApprovalDecision::Reject => AgentState::Idle,
+                                    _ => AgentState::Working,
+                                };
+                                let _ = handle.set_agent_state(&name, state);
+                            }
+                        });
+                    },
+                    workspace,
+                    window,
+                    cx,
+                );
+            });
+        }
     }
 }
 
@@ -236,6 +299,18 @@ impl Render for InboxItem {
                 let ref_type = entry.ref_type.clone();
                 let ref_id = entry.ref_id;
                 let ws = self.workspace.clone();
+                let is_approval = entry.entry_type == InboxEntryType::Approval;
+                let is_resolved = entry.resolved;
+                let resolution_label = if is_approval && is_resolved {
+                    entry
+                        .resolution
+                        .as_deref()
+                        .and_then(|r| serde_json::from_str::<serde_json::Value>(r).ok())
+                        .and_then(|v| v["decision"].as_str().map(|s| s.to_string()))
+                        .unwrap_or_else(|| "resolved".to_string())
+                } else {
+                    String::new()
+                };
 
                 v_flex()
                     .id(("inbox-entry", ix))
@@ -325,6 +400,32 @@ impl Render for InboxItem {
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.mark_read(id, cx);
                                         })),
+                                )
+                            })
+                            .when(is_approval && !is_resolved, |this| {
+                                this.child(
+                                    Button::new(("entry-review", ix), "Review")
+                                        .style(ButtonStyle::Filled)
+                                        .label_size(LabelSize::XSmall)
+                                        .on_click(cx.listener({
+                                            let entry_for_review = entry.clone();
+                                            move |this, _, window, cx| {
+                                                this.mark_read(entry_for_review.id, cx);
+                                                this.open_approval_gate(&entry_for_review, window, cx);
+                                            }
+                                        })),
+                                )
+                            })
+                            .when(is_approval && is_resolved, |this| {
+                                let color = match resolution_label.as_str() {
+                                    "approve" => Color::Success,
+                                    "reject" => Color::Error,
+                                    _ => Color::Warning,
+                                };
+                                this.child(
+                                    Label::new(resolution_label.clone())
+                                        .size(LabelSize::XSmall)
+                                        .color(color),
                                 )
                             })
                             .child(
