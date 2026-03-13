@@ -1987,30 +1987,36 @@ If you have questions, ask them now. If you're confident, continue."
         // Emit session-end inbox entries
         let thread_ref_id = self.current_thread_id().await;
         if stop_reason == Some(AgentStopReason::Stop) {
+            let last_assistant_summary = self
+                .session
+                .active_messages()
+                .iter()
+                .rev()
+                .find(|m| m.role == prism_types::MessageRole::Assistant)
+                .and_then(|m| m.content.as_ref().and_then(|c| c.as_str()))
+                .map(|s| crate::common::truncate_with_ellipsis(s, 300))
+                .unwrap_or_default();
+            let completed_title = format!(
+                "Session completed: {} turn{}, ${:.4}",
+                turns,
+                if turns == 1 { "" } else { "s" },
+                total_cost_usd,
+            );
+            let completed_body = serde_json::json!({
+                "task_name": &completed_title,
+                "description": "",
+                "branch": crate::config::agent_name_from_env(),
+                "diff_preview": "",
+                "session_cost_usd": total_cost_usd,
+                "test_summary": serde_json::Value::Null,
+                "files_touched": &files_vec,
+                "summary": last_assistant_summary,
+            })
+            .to_string();
             self.create_inbox_event(
                 prism_context::model::InboxEntryType::Completed,
-                &format!(
-                    "Session completed: {} turn{}, ${:.4}",
-                    turns,
-                    if turns == 1 { "" } else { "s" },
-                    total_cost_usd,
-                ),
-                &self
-                    .session
-                    .active_messages()
-                    .iter()
-                    .rev()
-                    .find(|m| m.role == prism_types::MessageRole::Assistant)
-                    .and_then(|m| m.content.as_ref().and_then(|c| c.as_str()))
-                    .map(|s| {
-                        // Truncate to a reasonable summary length
-                        if s.len() > 300 {
-                            format!("{}…", &s[..300])
-                        } else {
-                            s.to_string()
-                        }
-                    })
-                    .unwrap_or_default(),
+                &completed_title,
+                &completed_body,
                 prism_context::model::InboxSeverity::Info,
                 "thread",
                 thread_ref_id,

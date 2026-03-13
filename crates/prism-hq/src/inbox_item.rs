@@ -146,30 +146,44 @@ impl InboxItem {
             .and_then(|svc| svc.handle());
         let Some(handle) = handle else { return };
 
-        let body_json: serde_json::Value = serde_json::from_str(&entry.body)
-            .unwrap_or_else(|_| json!({"description": entry.body.as_str()}));
+        let mut packet =
+            crate::review_packet::ReviewPacket::from_inbox_body(&entry.title, &entry.body);
 
-        let task_name = entry.title.clone();
-        let task_description = body_json["description"].as_str().unwrap_or("").to_string();
-        let diff_preview = body_json["diff_preview"]
-            .as_str()
-            .unwrap_or("(no diff available)")
-            .to_string();
-        let branch = body_json["branch"].as_str().unwrap_or("unknown").to_string();
-        let cost = body_json["session_cost_usd"].as_f64();
-        let tests = body_json["test_summary"].as_str().map(|s| s.to_string());
+        // Infer branch from source_agent if not set by producer.
+        if packet.branch.is_empty() {
+            if let Some(ref agent) = entry.source_agent {
+                packet.branch = agent.clone();
+            }
+        }
+
+        // Clone once; reused for both enrich_from_context and enrich_diff.
+        let branch = packet.branch.clone();
+
+        // Enrich description from the thread (uses branch name as thread name).
+        packet.enrich_from_context(&handle, &branch);
+
+        // Enrich test summary from RunningAgents output for this agent.
+        let agent_output: Vec<String> = cx
+            .try_global::<crate::running_agents::RunningAgentsGlobal>()
+            .map(|g| g.0.read(cx).output_lines(&branch))
+            .unwrap_or_default();
+        packet.enrich_test_summary(&agent_output);
+
+        // Run git diff synchronously (typically fast < 1s for local repos).
+        packet.enrich_diff(&branch);
+
         let entry_id = entry.id;
         let agent_name = entry.source_agent.clone();
 
         if let Some(ws_ref) = self.workspace.as_ref().and_then(|w| w.upgrade()) {
             ws_ref.update(cx, |workspace, cx| {
                 ApprovalGate::open(
-                    task_name,
-                    task_description,
-                    branch,
-                    diff_preview,
-                    cost,
-                    tests,
+                    packet.task_name,
+                    packet.description,
+                    packet.branch,
+                    packet.diff_preview,
+                    packet.session_cost_usd,
+                    packet.test_summary,
                     move |decision: ApprovalDecision| {
                         let resolution = match &decision {
                             ApprovalDecision::Approve => json!({"decision": "approve"}),
@@ -179,10 +193,9 @@ impl InboxItem {
                             ApprovalDecision::Reject => json!({"decision": "reject"}),
                         };
                         let resolution_str = resolution.to_string();
-                        let agent = agent_name.clone();
                         std::thread::spawn(move || {
                             let _ = handle.resolve_inbox_entry(entry_id, &resolution_str);
-                            if let Some(name) = agent {
+                            if let Some(name) = agent_name {
                                 let state = match &decision {
                                     ApprovalDecision::Reject => AgentState::Idle,
                                     _ => AgentState::Working,

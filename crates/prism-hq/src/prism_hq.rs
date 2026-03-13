@@ -15,6 +15,7 @@ mod navigator_panel;
 mod panel_types;
 mod plan_dispatch;
 mod plan_view;
+mod review_packet;
 mod running_agents;
 mod session_history_panel;
 mod task_board;

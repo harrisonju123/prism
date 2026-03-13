@@ -242,17 +242,18 @@ impl SqliteStore {
         .await?;
 
         // Insert Completed inbox entry (atomic with checkout)
-        let mut body_parts: Vec<String> = Vec::new();
-        if !summary.is_empty() {
-            body_parts.push(summary.to_string());
-        }
-        if !files_touched.is_empty() {
-            body_parts.push(format!("Files: {}", files_touched.join(", ")));
-        }
-        if !findings.is_empty() {
-            body_parts.push(format!("Findings: {}", findings.join("; ")));
-        }
-        let body = body_parts.join("\n\n");
+        let body = serde_json::json!({
+            "task_name": name,
+            "description": "",
+            "branch": name,
+            "diff_preview": "",
+            "session_cost_usd": serde_json::Value::Null,
+            "test_summary": serde_json::Value::Null,
+            "files_touched": &files_touched,
+            "summary": summary,
+            "findings": &findings,
+        })
+        .to_string();
         let (ref_type, ref_id) = match session.thread_id {
             Some(tid) => (Some("thread"), Some(tid)),
             None => (None, None),

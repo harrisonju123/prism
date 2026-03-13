@@ -211,6 +211,10 @@ impl ContextHandle {
         })
     }
 
+    pub fn get_thread(&self, name: &str) -> Result<Thread> {
+        self.run(self.store.get_thread(self.workspace_id, name))
+    }
+
     pub fn list_threads(&self, status: Option<ThreadStatus>) -> Result<Vec<Thread>> {
         self.run(self.store.list_threads(self.workspace_id, status))
     }
