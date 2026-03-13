@@ -1,11 +1,12 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{App, AppContext as _, Context, Entity, Global, Task, WeakEntity};
 use prism_context::model::{
-    ActivityEntry, AgentStatus, Handoff, InboxEntry, Plan, PlanStatus, Thread, ThreadStatus,
-    WorkPackage, WorkspaceOverview,
+    ActivityEntry, AgentStatus, Handoff, InboxEntry, InboxEntryType, InboxSeverity, Plan,
+    PlanStatus, Thread, ThreadStatus, WorkPackage, WorkspaceOverview,
 };
 use prism_context::store::ActivityFilters;
+use uuid::Uuid;
 use crate::context_service::ContextService;
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(3);
@@ -31,6 +32,10 @@ pub struct HqState {
     pub work_packages: Vec<WorkPackage>,
     pub is_loading: bool,
     pub error: Option<String>,
+    /// Entry IDs already seen by the OS-notification logic (prevents re-firing on re-poll).
+    seen_entry_ids: std::collections::HashSet<Uuid>,
+    /// Rate-limit OS notifications to at most 1 per 10 seconds.
+    last_os_notification: Option<Instant>,
     refresh_task: Option<Task<()>>,
     _auto_refresh: Task<()>,
 }
@@ -58,6 +63,8 @@ impl HqState {
                 work_packages: Vec::new(),
                 is_loading: false,
                 error: None,
+                seen_entry_ids: std::collections::HashSet::new(),
+                last_os_notification: None,
                 refresh_task: None,
                 _auto_refresh: Task::ready(()),
             };
@@ -122,6 +129,8 @@ impl HqState {
                     let handoffs = handle.list_handoffs(None, None)?;
                     let agents = handle.list_agents()?;
                     let unread_by_agent = handle.count_all_unread_messages().unwrap_or_default();
+                    // Auto-dismiss stale Completed entries (older than 24 hours).
+                    let _ = handle.dismiss_expired_entries(InboxEntryType::Completed, 86400);
                     let inbox_entries = handle
                         .list_inbox_entries(Default::default())
                         .unwrap_or_default();
@@ -186,6 +195,29 @@ impl HqState {
                         // Derive unread count from the list rather than a separate DB query.
                         this.unread_inbox_count =
                             inbox_entries.iter().filter(|e| !e.read).count() as i64;
+
+                        // Fire OS notifications for new Critical unread entries.
+                        let now = Instant::now();
+                        let can_notify = this
+                            .last_os_notification
+                            .map(|t| now.duration_since(t) >= Duration::from_secs(10))
+                            .unwrap_or(true);
+                        for entry in &inbox_entries {
+                            if !this.seen_entry_ids.contains(&entry.id)
+                                && entry.severity == InboxSeverity::Critical
+                                && !entry.read
+                                && can_notify
+                            {
+                                crate::notification::notify_os("PrisM", &entry.title);
+                                this.last_os_notification = Some(now);
+                                break; // Rate-limit: at most 1 notification per poll cycle
+                            }
+                        }
+                        // Mark all current entries as seen.
+                        for entry in &inbox_entries {
+                            this.seen_entry_ids.insert(entry.id);
+                        }
+
                         this.inbox_entries = inbox_entries;
                         this.plans = plans;
                         this.work_packages = work_packages;

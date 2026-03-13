@@ -319,6 +319,17 @@ impl ContextHandle {
         self.run(self.store.list_inbox_entries(self.workspace_id, filters))
     }
 
+    pub fn dismiss_expired_entries(
+        &self,
+        entry_type: InboxEntryType,
+        max_age_secs: u64,
+    ) -> Result<u64> {
+        self.run(
+            self.store
+                .dismiss_expired_entries(self.workspace_id, entry_type, max_age_secs),
+        )
+    }
+
     pub fn mark_inbox_read(&self, id: Uuid) -> Result<()> {
         self.run(self.store.mark_inbox_read(self.workspace_id, id))
     }

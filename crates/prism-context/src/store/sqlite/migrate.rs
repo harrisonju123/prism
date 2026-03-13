@@ -135,6 +135,9 @@ const MIGRATIONS: &[&str] = &[
     // Migration 11: resolution fields on inbox_entries — supports blocking request_review pattern
     "ALTER TABLE inbox_entries ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0;
      ALTER TABLE inbox_entries ADD COLUMN resolution TEXT;",
+    // Migration 12: inbox deduplication — updated_at column + dedup index
+    "ALTER TABLE inbox_entries ADD COLUMN updated_at TEXT NOT NULL DEFAULT '';
+     CREATE INDEX IF NOT EXISTS idx_inbox_dedup ON inbox_entries(workspace_id, entry_type, source_agent, dismissed, resolved);",
 ];
 
 pub fn latest_version() -> i64 {

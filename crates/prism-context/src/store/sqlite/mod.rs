@@ -400,6 +400,32 @@ impl Store for SqliteStore {
         .await
     }
 
+    async fn create_or_update_inbox_entry(
+        &self,
+        workspace_id: Uuid,
+        entry_type: InboxEntryType,
+        title: &str,
+        body: &str,
+        severity: InboxSeverity,
+        source_agent: Option<&str>,
+        ref_type: Option<&str>,
+        ref_id: Option<Uuid>,
+        cooldown_secs: Option<u64>,
+    ) -> Result<InboxEntry> {
+        self.create_or_update_inbox_entry_impl(
+            workspace_id,
+            entry_type,
+            title,
+            body,
+            severity,
+            source_agent,
+            ref_type,
+            ref_id,
+            cooldown_secs,
+        )
+        .await
+    }
+
     async fn list_inbox_entries(
         &self,
         workspace_id: Uuid,
@@ -427,6 +453,16 @@ impl Store for SqliteStore {
         resolution: &str,
     ) -> Result<InboxEntry> {
         self.resolve_inbox_entry_impl(workspace_id, id, resolution).await
+    }
+
+    async fn dismiss_expired_entries(
+        &self,
+        workspace_id: Uuid,
+        entry_type: InboxEntryType,
+        max_age_secs: u64,
+    ) -> Result<u64> {
+        self.dismiss_expired_entries_impl(workspace_id, entry_type, max_age_secs)
+            .await
     }
 
     async fn send_message(

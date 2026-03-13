@@ -1,4 +1,5 @@
 mod agent_roster_panel;
+mod notification;
 mod agent_spawner;
 mod agent_view;
 mod approval_gate;

@@ -234,7 +234,7 @@ impl SqliteStore {
                         let body = format!(
                             "Thread '{thread_name}' has consumed {pct:.0}% of its cost budget."
                         );
-                        super::inbox::insert_inbox_entry_tx(
+                        super::inbox::insert_or_update_inbox_entry_tx(
                             &mut tx,
                             workspace_id,
                             InboxEntryType::CostSpike,
@@ -244,6 +244,7 @@ impl SqliteStore {
                             None,
                             Some("thread"),
                             Some(thread_id),
+                            Some(300),
                         )
                         .await?;
                     }

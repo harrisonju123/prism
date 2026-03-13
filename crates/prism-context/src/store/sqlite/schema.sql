@@ -177,9 +177,11 @@ CREATE TABLE IF NOT EXISTS inbox_entries (
     dismissed    INTEGER NOT NULL DEFAULT 0,
     resolved     INTEGER NOT NULL DEFAULT 0,
     resolution   TEXT,
-    created_at   TEXT NOT NULL
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_inbox_workspace ON inbox_entries(workspace_id, dismissed, read);
+CREATE INDEX IF NOT EXISTS idx_inbox_dedup ON inbox_entries(workspace_id, entry_type, source_agent, dismissed, resolved);
 
 -- Plans (groups of work packages from one intent)
 CREATE TABLE IF NOT EXISTS plans (

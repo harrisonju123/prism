@@ -529,6 +529,17 @@ impl Render for InboxItem {
                     String::new()
                 };
 
+                // Inline message from resolution JSON (shown on Blocked and Approval entries).
+                let resolution_message = if is_resolved {
+                    entry
+                        .resolution
+                        .as_deref()
+                        .and_then(|r| serde_json::from_str::<serde_json::Value>(r).ok())
+                        .and_then(|v| v["message"].as_str().map(|s| s.to_string()))
+                } else {
+                    None
+                };
+
                 v_flex()
                     .id(("inbox-entry", ix))
                     .w_full()
@@ -766,6 +777,21 @@ impl Render for InboxItem {
                                     })),
                             ),
                     )
+                    .when_some(resolution_message, |this, msg| {
+                        this.child(
+                            div()
+                                .mt_0p5()
+                                .px_2()
+                                .py_1()
+                                .rounded_sm()
+                                .bg(cx.theme().colors().editor_background)
+                                .child(
+                                    Label::new(format!("↩ {msg}"))
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Muted),
+                                ),
+                        )
+                    })
             })
             .collect();
 

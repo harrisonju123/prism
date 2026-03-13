@@ -1157,3 +1157,257 @@ async fn test_guardrail_cost_spike_at_95_percent() {
     assert_eq!(spikes[0].severity, InboxSeverity::Critical);
     assert!(spikes[0].title.contains("95%"));
 }
+
+// ── Inbox Deduplication Tests ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_inbox_dedup_within_cooldown() {
+    let (store, ws) = setup().await;
+
+    let e1 = store
+        .create_or_update_inbox_entry(
+            ws.id,
+            InboxEntryType::CostSpike,
+            "Turn cost spike: $0.0123 vs avg $0.0082",
+            "body v1",
+            InboxSeverity::Warning,
+            Some("agent-a"),
+            None,
+            None,
+            Some(300),
+        )
+        .await
+        .expect("create first entry");
+
+    // Second call within cooldown — should update, not insert
+    let e2 = store
+        .create_or_update_inbox_entry(
+            ws.id,
+            InboxEntryType::CostSpike,
+            "Turn cost spike: $0.0150 vs avg $0.0090",
+            "body v2",
+            InboxSeverity::Warning,
+            Some("agent-a"),
+            None,
+            None,
+            Some(300),
+        )
+        .await
+        .expect("upsert second entry");
+
+    assert_eq!(e1.id, e2.id, "should reuse same entry id");
+    assert_eq!(e2.body, "body v2", "body should be updated");
+
+    let entries = store
+        .list_inbox_entries(ws.id, crate::store::InboxFilters::default())
+        .await
+        .expect("list");
+    let spikes: Vec<_> = entries
+        .iter()
+        .filter(|e| e.entry_type == InboxEntryType::CostSpike)
+        .collect();
+    assert_eq!(spikes.len(), 1, "should have exactly 1 entry after dedup");
+}
+
+#[tokio::test]
+async fn test_inbox_dedup_after_cooldown() {
+    let (store, ws) = setup().await;
+
+    // Insert first entry
+    store
+        .create_or_update_inbox_entry(
+            ws.id,
+            InboxEntryType::CostSpike,
+            "Turn cost spike: $0.0123 vs avg $0.0082",
+            "body v1",
+            InboxSeverity::Warning,
+            Some("agent-a"),
+            None,
+            None,
+            Some(300),
+        )
+        .await
+        .expect("create entry");
+
+    // Manually backdate the created_at to simulate cooldown expiry
+    sqlx::query("UPDATE inbox_entries SET created_at = '2020-01-01T00:00:00+00:00', updated_at = '2020-01-01T00:00:00+00:00'")
+        .execute(&store.pool)
+        .await
+        .expect("backdate");
+
+    // Second call after cooldown — should create a new entry
+    store
+        .create_or_update_inbox_entry(
+            ws.id,
+            InboxEntryType::CostSpike,
+            "Turn cost spike: $0.0150 vs avg $0.0090",
+            "body v2",
+            InboxSeverity::Warning,
+            Some("agent-a"),
+            None,
+            None,
+            Some(300),
+        )
+        .await
+        .expect("create second entry after cooldown");
+
+    let entries = store
+        .list_inbox_entries(ws.id, crate::store::InboxFilters::default())
+        .await
+        .expect("list");
+    let spikes: Vec<_> = entries
+        .iter()
+        .filter(|e| e.entry_type == InboxEntryType::CostSpike)
+        .collect();
+    assert_eq!(spikes.len(), 2, "should have 2 entries after cooldown expired");
+}
+
+#[tokio::test]
+async fn test_inbox_dedup_different_type() {
+    let (store, ws) = setup().await;
+
+    store
+        .create_or_update_inbox_entry(
+            ws.id,
+            InboxEntryType::CostSpike,
+            "Turn cost spike: $0.0123 vs avg $0.0082",
+            "cost body",
+            InboxSeverity::Warning,
+            Some("agent-a"),
+            None,
+            None,
+            Some(300),
+        )
+        .await
+        .expect("cost spike entry");
+
+    // Same title prefix but different type — should NOT dedup
+    store
+        .create_or_update_inbox_entry(
+            ws.id,
+            InboxEntryType::Risk,
+            "Turn cost spike: $0.0150 vs avg $0.0090",
+            "risk body",
+            InboxSeverity::Warning,
+            Some("agent-a"),
+            None,
+            None,
+            Some(300),
+        )
+        .await
+        .expect("risk entry");
+
+    let entries = store
+        .list_inbox_entries(ws.id, crate::store::InboxFilters::default())
+        .await
+        .expect("list");
+    assert_eq!(entries.len(), 2, "different types should not merge");
+}
+
+// ── Entry Expiry Tests ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_dismiss_expired_entries() {
+    let (store, ws) = setup().await;
+
+    // Create a Completed entry and manually backdate it
+    let entry = store
+        .create_inbox_entry(
+            ws.id,
+            InboxEntryType::Completed,
+            "Agent finished",
+            "",
+            InboxSeverity::Info,
+            Some("agent-a"),
+            None,
+            None,
+        )
+        .await
+        .expect("create entry");
+
+    sqlx::query("UPDATE inbox_entries SET created_at = '2020-01-01T00:00:00+00:00' WHERE id = $1")
+        .bind(entry.id.to_string())
+        .execute(&store.pool)
+        .await
+        .expect("backdate");
+
+    let dismissed = store
+        .dismiss_expired_entries(ws.id, InboxEntryType::Completed, 86400)
+        .await
+        .expect("dismiss expired");
+    assert_eq!(dismissed, 1, "should dismiss 1 old entry");
+
+    let fetched = store.get_inbox_entry(ws.id, entry.id).await.expect("get");
+    assert!(fetched.dismissed, "entry should be dismissed");
+    assert!(fetched.read, "entry should be marked read");
+}
+
+#[tokio::test]
+async fn test_dismiss_expired_skips_read() {
+    let (store, ws) = setup().await;
+
+    // Create a Completed entry that has already been read, then backdate
+    let entry = store
+        .create_inbox_entry(
+            ws.id,
+            InboxEntryType::Completed,
+            "Already read",
+            "",
+            InboxSeverity::Info,
+            Some("agent-a"),
+            None,
+            None,
+        )
+        .await
+        .expect("create");
+
+    store.mark_inbox_read(ws.id, entry.id).await.expect("mark read");
+
+    sqlx::query("UPDATE inbox_entries SET created_at = '2020-01-01T00:00:00+00:00' WHERE id = $1")
+        .bind(entry.id.to_string())
+        .execute(&store.pool)
+        .await
+        .expect("backdate");
+
+    let dismissed = store
+        .dismiss_expired_entries(ws.id, InboxEntryType::Completed, 86400)
+        .await
+        .expect("dismiss expired");
+    assert_eq!(dismissed, 0, "already-read entries should not be auto-dismissed");
+}
+
+#[tokio::test]
+async fn test_dismiss_expired_skips_other_types() {
+    let (store, ws) = setup().await;
+
+    // Create an Approval entry (should never auto-dismiss) and backdate it
+    let entry = store
+        .create_inbox_entry(
+            ws.id,
+            InboxEntryType::Approval,
+            "Needs review",
+            "",
+            InboxSeverity::Warning,
+            Some("agent-a"),
+            None,
+            None,
+        )
+        .await
+        .expect("create approval");
+
+    sqlx::query("UPDATE inbox_entries SET created_at = '2020-01-01T00:00:00+00:00' WHERE id = $1")
+        .bind(entry.id.to_string())
+        .execute(&store.pool)
+        .await
+        .expect("backdate");
+
+    // Only dismiss Completed entries, not Approval
+    let dismissed = store
+        .dismiss_expired_entries(ws.id, InboxEntryType::Completed, 86400)
+        .await
+        .expect("dismiss expired");
+    assert_eq!(dismissed, 0, "approval entries should not be dismissed by Completed expiry");
+
+    let fetched = store.get_inbox_entry(ws.id, entry.id).await.expect("get");
+    assert!(!fetched.dismissed, "approval entry should remain undismissed");
+}

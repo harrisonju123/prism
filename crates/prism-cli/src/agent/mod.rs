@@ -2280,7 +2280,7 @@ If you have questions, ask them now. If you're confident, continue."
         };
 
         if let Err(e) = store
-            .create_inbox_entry(
+            .create_or_update_inbox_entry(
                 ws_id,
                 entry_type,
                 title,
@@ -2289,6 +2289,7 @@ If you have questions, ask them now. If you're confident, continue."
                 Some(&agent_name),
                 ref_type_opt,
                 ref_id,
+                None, // default 300s cooldown
             )
             .await
         {

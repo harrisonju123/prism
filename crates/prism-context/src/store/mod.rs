@@ -236,7 +236,7 @@ pub trait Store: Send + Sync {
     // --- Overview (1) ---
     async fn get_workspace_overview(&self, workspace_id: Uuid) -> Result<WorkspaceOverview>;
 
-    // --- Inbox (5) ---
+    // --- Inbox (7) ---
     async fn create_inbox_entry(
         &self,
         workspace_id: Uuid,
@@ -247,6 +247,21 @@ pub trait Store: Send + Sync {
         source_agent: Option<&str>,
         ref_type: Option<&str>,
         ref_id: Option<Uuid>,
+    ) -> Result<InboxEntry>;
+    /// Insert a new inbox entry or update the body of a recent matching entry (dedup).
+    /// "Similar" = same (entry_type, source_agent) + matching title prefix + not dismissed/resolved
+    /// + within cooldown_secs (default 300).
+    async fn create_or_update_inbox_entry(
+        &self,
+        workspace_id: Uuid,
+        entry_type: InboxEntryType,
+        title: &str,
+        body: &str,
+        severity: InboxSeverity,
+        source_agent: Option<&str>,
+        ref_type: Option<&str>,
+        ref_id: Option<Uuid>,
+        cooldown_secs: Option<u64>,
     ) -> Result<InboxEntry>;
     async fn list_inbox_entries(
         &self,
@@ -262,6 +277,14 @@ pub trait Store: Send + Sync {
         id: Uuid,
         resolution: &str,
     ) -> Result<InboxEntry>;
+    /// Auto-dismiss unread Completed (or other) entries older than max_age_secs.
+    /// Returns the count of dismissed entries.
+    async fn dismiss_expired_entries(
+        &self,
+        workspace_id: Uuid,
+        entry_type: InboxEntryType,
+        max_age_secs: u64,
+    ) -> Result<u64>;
 
     // --- Plan (4) ---
     async fn create_plan(&self, workspace_id: Uuid, intent: &str) -> Result<Plan>;

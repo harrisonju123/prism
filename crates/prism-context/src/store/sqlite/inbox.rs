@@ -1,3 +1,5 @@
+use chrono::Utc;
+use sqlx::Row as _;
 use uuid::Uuid;
 
 use super::SqliteStore;
@@ -23,10 +25,11 @@ impl SqliteStore {
         let row = sqlx::query(
             "INSERT INTO inbox_entries
                  (id, workspace_id, entry_type, title, body, severity,
-                  source_agent, ref_type, ref_id, read, dismissed, resolved, created_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0,0,0,$10)
+                  source_agent, ref_type, ref_id, read, dismissed, resolved, created_at, updated_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0,0,0,$10,$10)
              RETURNING id, workspace_id, entry_type, title, body, severity,
-                       source_agent, ref_type, ref_id, read, dismissed, resolved, resolution, created_at",
+                       source_agent, ref_type, ref_id, read, dismissed, resolved, resolution,
+                       created_at, updated_at",
         )
         .bind(id.to_string())
         .bind(workspace_id.to_string())
@@ -42,6 +45,90 @@ impl SqliteStore {
         .await?;
 
         row_to_inbox_entry(&row)
+    }
+
+    /// Find a recent entry matching entry_type + source_agent + title prefix within cooldown.
+    pub(crate) async fn find_recent_similar_impl(
+        &self,
+        workspace_id: Uuid,
+        entry_type: &InboxEntryType,
+        source_agent: Option<&str>,
+        title: &str,
+        cooldown_secs: u64,
+    ) -> Result<Option<String>> {
+        let cutoff = Utc::now() - chrono::Duration::seconds(cooldown_secs as i64);
+        let cutoff_str = cutoff.to_rfc3339();
+        let title_prefix: String = title.chars().take(20).collect();
+
+        let row = sqlx::query(
+            "SELECT id FROM inbox_entries
+             WHERE workspace_id = $1
+               AND entry_type = $2
+               AND (source_agent = $3 OR (source_agent IS NULL AND $3 IS NULL))
+               AND dismissed = 0
+               AND resolved = 0
+               AND SUBSTR(title, 1, 20) = $4
+               AND created_at > $5
+             ORDER BY created_at DESC
+             LIMIT 1",
+        )
+        .bind(workspace_id.to_string())
+        .bind(entry_type.to_string())
+        .bind(source_agent)
+        .bind(&title_prefix)
+        .bind(&cutoff_str)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| r.try_get::<String, _>("id").unwrap_or_default()))
+    }
+
+    /// Insert a new inbox entry or update the body/updated_at of a recent matching entry.
+    pub(crate) async fn create_or_update_inbox_entry_impl(
+        &self,
+        workspace_id: Uuid,
+        entry_type: InboxEntryType,
+        title: &str,
+        body: &str,
+        severity: InboxSeverity,
+        source_agent: Option<&str>,
+        ref_type: Option<&str>,
+        ref_id: Option<Uuid>,
+        cooldown_secs: Option<u64>,
+    ) -> Result<InboxEntry> {
+        let cooldown = cooldown_secs.unwrap_or(300);
+
+        if let Some(existing_id) =
+            self.find_recent_similar_impl(workspace_id, &entry_type, source_agent, title, cooldown)
+                .await?
+        {
+            let now = now_rfc3339();
+            let updated_row = sqlx::query(
+                "UPDATE inbox_entries SET body = $1, updated_at = $2
+                 WHERE id = $3
+                 RETURNING id, workspace_id, entry_type, title, body, severity,
+                           source_agent, ref_type, ref_id, read, dismissed, resolved, resolution,
+                           created_at, updated_at",
+            )
+            .bind(body)
+            .bind(&now)
+            .bind(&existing_id)
+            .fetch_one(&self.pool)
+            .await?;
+            row_to_inbox_entry(&updated_row)
+        } else {
+            self.create_inbox_entry_impl(
+                workspace_id,
+                entry_type,
+                title,
+                body,
+                severity,
+                source_agent,
+                ref_type,
+                ref_id,
+            )
+            .await
+        }
     }
 
     pub(crate) async fn list_inbox_entries_impl(
@@ -67,7 +154,8 @@ impl SqliteStore {
         let where_clause = clauses.join(" AND ");
         let sql = format!(
             "SELECT id, workspace_id, entry_type, title, body, severity,
-                    source_agent, ref_type, ref_id, read, dismissed, resolved, resolution, created_at
+                    source_agent, ref_type, ref_id, read, dismissed, resolved, resolution,
+                    created_at, updated_at
              FROM inbox_entries
              WHERE {where_clause}
              ORDER BY created_at DESC
@@ -128,7 +216,8 @@ impl SqliteStore {
     ) -> Result<InboxEntry> {
         let row = sqlx::query(
             "SELECT id, workspace_id, entry_type, title, body, severity,
-                    source_agent, ref_type, ref_id, read, dismissed, resolved, resolution, created_at
+                    source_agent, ref_type, ref_id, read, dismissed, resolved, resolution,
+                    created_at, updated_at
              FROM inbox_entries
              WHERE workspace_id = $1 AND id = $2",
         )
@@ -151,7 +240,8 @@ impl SqliteStore {
             "UPDATE inbox_entries SET resolved = 1, resolution = $1, read = 1
              WHERE workspace_id = $2 AND id = $3
              RETURNING id, workspace_id, entry_type, title, body, severity,
-                       source_agent, ref_type, ref_id, read, dismissed, resolved, resolution, created_at",
+                       source_agent, ref_type, ref_id, read, dismissed, resolved, resolution,
+                       created_at, updated_at",
         )
         .bind(resolution)
         .bind(workspace_id.to_string())
@@ -161,6 +251,33 @@ impl SqliteStore {
         .ok_or_else(|| Error::NotFound(format!("inbox entry {id} not found")))?;
 
         row_to_inbox_entry(&row)
+    }
+
+    /// Auto-dismiss unread, non-dismissed, non-resolved entries of `entry_type`
+    /// that are older than `max_age_secs`. Returns the number of entries dismissed.
+    pub(crate) async fn dismiss_expired_entries_impl(
+        &self,
+        workspace_id: Uuid,
+        entry_type: InboxEntryType,
+        max_age_secs: u64,
+    ) -> Result<u64> {
+        let cutoff = Utc::now() - chrono::Duration::seconds(max_age_secs as i64);
+        let cutoff_str = cutoff.to_rfc3339();
+
+        let affected = sqlx::query(
+            "UPDATE inbox_entries SET dismissed = 1, read = 1
+             WHERE workspace_id = $1 AND entry_type = $2
+               AND read = 0 AND dismissed = 0 AND resolved = 0
+               AND created_at < $3",
+        )
+        .bind(workspace_id.to_string())
+        .bind(entry_type.to_string())
+        .bind(&cutoff_str)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+
+        Ok(affected)
     }
 }
 
@@ -181,8 +298,8 @@ pub(super) async fn insert_inbox_entry_tx(
     sqlx::query(
         "INSERT INTO inbox_entries
              (id, workspace_id, entry_type, title, body, severity,
-              source_agent, ref_type, ref_id, read, dismissed, resolved, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0,0,0,$10)",
+              source_agent, ref_type, ref_id, read, dismissed, resolved, created_at, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0,0,0,$10,$10)",
     )
     .bind(id.to_string())
     .bind(workspace_id.to_string())
@@ -196,6 +313,72 @@ pub(super) async fn insert_inbox_entry_tx(
     .bind(&now)
     .execute(&mut **tx)
     .await?;
+    Ok(())
+}
+
+/// Insert a new inbox entry within a transaction, or update body/updated_at of a recent match.
+pub(super) async fn insert_or_update_inbox_entry_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    workspace_id: Uuid,
+    entry_type: InboxEntryType,
+    title: &str,
+    body: &str,
+    severity: InboxSeverity,
+    source_agent: Option<&str>,
+    ref_type: Option<&str>,
+    ref_id: Option<Uuid>,
+    cooldown_secs: Option<u64>,
+) -> crate::error::Result<()> {
+    let cooldown = cooldown_secs.unwrap_or(300);
+    let cutoff = Utc::now() - chrono::Duration::seconds(cooldown as i64);
+    let cutoff_str = cutoff.to_rfc3339();
+    let title_prefix: String = title.chars().take(20).collect();
+
+    let existing_id: Option<String> = sqlx::query_scalar(
+        "SELECT id FROM inbox_entries
+         WHERE workspace_id = $1
+           AND entry_type = $2
+           AND (source_agent = $3 OR (source_agent IS NULL AND $3 IS NULL))
+           AND dismissed = 0
+           AND resolved = 0
+           AND SUBSTR(title, 1, 20) = $4
+           AND created_at > $5
+         ORDER BY created_at DESC
+         LIMIT 1",
+    )
+    .bind(workspace_id.to_string())
+    .bind(entry_type.to_string())
+    .bind(source_agent)
+    .bind(&title_prefix)
+    .bind(&cutoff_str)
+    .fetch_optional(&mut **tx)
+    .await?;
+
+    if let Some(id) = existing_id {
+        let now = now_rfc3339();
+        sqlx::query(
+            "UPDATE inbox_entries SET body = $1, updated_at = $2 WHERE id = $3",
+        )
+        .bind(body)
+        .bind(&now)
+        .bind(&id)
+        .execute(&mut **tx)
+        .await?;
+    } else {
+        insert_inbox_entry_tx(
+            tx,
+            workspace_id,
+            entry_type,
+            title,
+            body,
+            severity,
+            source_agent,
+            ref_type,
+            ref_id,
+        )
+        .await?;
+    }
+
     Ok(())
 }
 
@@ -229,5 +412,15 @@ row_to_struct! {
             row.try_get::<Option<String>, _>("resolution")?
         },
         created_at: time "created_at",
+        updated_at: custom "updated_at" => {
+            let s: String = row.try_get::<String, _>("updated_at")?;
+            if s.is_empty() {
+                // Pre-migration rows: fall back to created_at
+                let created: String = row.try_get::<String, _>("created_at")?;
+                parse_time(&created)?
+            } else {
+                parse_time(&s)?
+            }
+        },
     }
 }
