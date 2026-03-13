@@ -983,6 +983,9 @@ fn tool_title(bt: Option<BuiltinTool>, name: &str, args: &serde_json::Value) -> 
             format!("Grep {}", args["pattern"].as_str().unwrap_or("pattern"))
         }
         Some(BuiltinTool::WebFetch) => format!("Fetch {}", args["url"].as_str().unwrap_or("url")),
+        Some(BuiltinTool::WebSearch) => {
+            format!("Search: {}", args["query"].as_str().unwrap_or("query"))
+        }
         Some(BuiltinTool::SaveMemory) => {
             format!("Save memory: {}", args["key"].as_str().unwrap_or("note"))
         }

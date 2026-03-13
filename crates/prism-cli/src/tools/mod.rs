@@ -41,6 +41,7 @@ pub enum BuiltinTool {
     GlobFiles,
     GrepFiles,
     WebFetch,
+    WebSearch,
     SaveMemory,
     SpawnAgent,
     Recall,
@@ -67,6 +68,7 @@ impl BuiltinTool {
             "glob_files" => Some(Self::GlobFiles),
             "grep_files" => Some(Self::GrepFiles),
             "web_fetch" => Some(Self::WebFetch),
+            "web_search" => Some(Self::WebSearch),
             "save_memory" => Some(Self::SaveMemory),
             "spawn_agent" => Some(Self::SpawnAgent),
             "recall" => Some(Self::Recall),
@@ -93,6 +95,7 @@ impl BuiltinTool {
             Self::GlobFiles => "glob_files",
             Self::GrepFiles => "grep_files",
             Self::WebFetch => "web_fetch",
+            Self::WebSearch => "web_search",
             Self::SaveMemory => "save_memory",
             Self::SpawnAgent => "spawn_agent",
             Self::Recall => "recall",
@@ -118,6 +121,7 @@ impl BuiltinTool {
             Self::GlobFiles,
             Self::GrepFiles,
             Self::WebFetch,
+            Self::WebSearch,
             Self::SaveMemory,
             Self::SpawnAgent,
             Self::Recall,
@@ -213,6 +217,14 @@ pub fn tool_definitions() -> Vec<Tool> {
             json!({ "type": "object", "properties": {
                 "url": { "type": "string", "description": "fully qualified URL to fetch" }
             }, "required": ["url"] }),
+        ),
+        make_tool(
+            "web_search",
+            "Search the web using Brave Search and return a numbered list of results (title, URL, description). Requires BRAVE_API_KEY env var.",
+            json!({ "type": "object", "properties": {
+                "query": { "type": "string", "description": "search query" },
+                "count": { "type": "integer", "description": "number of results to return (1-20, default 5)", "minimum": 1, "maximum": 20 }
+            }, "required": ["query"] }),
         ),
         make_tool(
             "save_memory",
@@ -764,6 +776,11 @@ async fn dispatch_inner(
             let url = args["url"].as_str().unwrap_or("");
             ToolResult::Text(web::web_fetch(url).await)
         }
+        Some(BuiltinTool::WebSearch) => {
+            let query = args["query"].as_str().unwrap_or("");
+            let count = args["count"].as_u64().map(|n| n as u32);
+            ToolResult::Text(web::web_search(query, count).await)
+        }
         Some(
             BuiltinTool::SaveMemory
             | BuiltinTool::SpawnAgent
@@ -824,6 +841,7 @@ mod tests {
                 max_sessions: 10,
                 compile_check_command: None,
                 compile_check_timeout: 30,
+                await_review: false,
             },
             compression: CompressionConfig {
                 model: None,
