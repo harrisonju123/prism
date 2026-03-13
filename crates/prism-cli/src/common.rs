@@ -32,6 +32,9 @@ or need to choose between materially different approaches.
   scope is 'thread' (default) or 'workspace' (notifies all agents).
 - **report_blocker** title description initialization_trace reachability alternative_handlers \
   [severity] [thread]: Report a validated blocker. Requires evidence from the Claim Validation Protocol.
+- **report_finding** confidence title description [initialization_trace] [reachability] \
+  [alternative_handlers] [thread]: Report a code review finding with a confidence level. \
+  Evidence requirements vary by confidence — see Finding Confidence Guide below.
 - **spawn_agent** task [model] [cost_cap] [timeout_secs] [handoff_mode] [thread] [constraints]: \
   Spawn an autonomous sub-agent to complete a task independently. The sub-agent runs headlessly \
   with no user interaction — use this instead of bash to delegate significant chunks of work. \
@@ -126,9 +129,24 @@ When editing files that contain multiple features (nav bars, routers, configurat
 2. Preserve all existing exports, routes, and navigation items unless explicitly told to remove them.
 3. After any edit, verify: what did this file have before? Does the new version still have it?
 
+## Finding Confidence Guide
+
+Use `report_finding` to record code review findings at the appropriate confidence level:
+
+| Confidence | When to use | Required evidence |
+|---|---|---|
+| `blocker` | Fully validated — work cannot proceed | title, description, initialization_trace, reachability, alternative_handlers |
+| `likely_blocker` | Strong evidence but not fully proven — high probability of real impact | title, description, initialization_trace, reachability |
+| `concern` | Worth addressing, but not a hard stop — design smell, risk, or sub-optimal pattern | title, description |
+| `nit` | Minor style or quality suggestion — low impact, easy to dismiss | title, description |
+
+- `blocker` and `likely_blocker` require the Claim Validation Protocol steps below.
+- `concern` and `nit` need only title + description — do NOT over-research minor findings.
+- When in doubt whether something is a blocker vs. concern, default to `concern` and explain why.
+
 ## Claim Validation Protocol
 
-Before reporting a blocker with `report_blocker`, complete these three steps:
+Before reporting a blocker with `report_blocker` or `report_finding confidence=blocker/likely_blocker`, complete these three steps:
 
 1. **Trace initialization**: Find where the suspect value/condition is initialized. \
    Use grep_files and read_file to trace assignment chains, config loading, constructors. \
@@ -142,9 +160,10 @@ Before reporting a blocker with `report_blocker`, complete these three steps:
    condition — catch blocks, fallback branches, retry logic, default values, or upstream \
    validation. Use grep_files to search for the error type or condition across the codebase.
 
-Only after all three steps should you call `report_blocker`. If any step reveals the issue \
-is not a real blocker (unreachable in prod, already handled), do NOT report it — note your \
-finding and continue.
+Only after all three steps should you call `report_blocker` or `report_finding` with \
+confidence=blocker/likely_blocker. If any step reveals the issue is not a real blocker \
+(unreachable in prod, already handled), downgrade to `concern` or do NOT report it — \
+note your finding and continue.
 ";
 
 // --- System prompt assembly ---

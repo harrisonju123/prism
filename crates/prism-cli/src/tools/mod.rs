@@ -50,6 +50,7 @@ pub enum BuiltinTool {
     AddDir,
     AskHuman,
     ReportBlocker,
+    ReportFinding,
 }
 
 impl BuiltinTool {
@@ -74,6 +75,7 @@ impl BuiltinTool {
             "add_dir" => Some(Self::AddDir),
             "ask_human" => Some(Self::AskHuman),
             "report_blocker" => Some(Self::ReportBlocker),
+            "report_finding" => Some(Self::ReportFinding),
             _ => None,
         }
     }
@@ -98,6 +100,7 @@ impl BuiltinTool {
             Self::AddDir => "add_dir",
             Self::AskHuman => "ask_human",
             Self::ReportBlocker => "report_blocker",
+            Self::ReportFinding => "report_finding",
         }
     }
 
@@ -121,6 +124,7 @@ impl BuiltinTool {
             Self::AddDir,
             Self::AskHuman,
             Self::ReportBlocker,
+            Self::ReportFinding,
         ]
     }
 }
@@ -295,6 +299,19 @@ pub fn tool_definitions() -> Vec<Tool> {
                 "severity": { "type": "string", "enum": ["critical", "warning"], "description": "critical = work cannot proceed; warning = degraded (default: warning)" },
                 "thread": { "type": "string", "description": "Thread name (defaults to current thread)" }
             }, "required": ["title", "description", "initialization_trace", "reachability", "alternative_handlers"] }),
+        ),
+        make_tool(
+            "report_finding",
+            "Report a code review finding with a confidence level. Lower confidence levels require less evidence. Use report_blocker for legacy compatibility; prefer report_finding for new review findings.",
+            json!({ "type": "object", "properties": {
+                "confidence": { "type": "string", "enum": ["blocker", "likely_blocker", "concern", "nit"], "description": "blocker: fully validated, critical stop; likely_blocker: strong evidence but not fully proven; concern: worth addressing, not a hard stop; nit: minor style/quality suggestion" },
+                "title": { "type": "string", "description": "Short finding summary" },
+                "description": { "type": "string", "description": "What the finding is and why it matters" },
+                "initialization_trace": { "type": "string", "description": "Required for blocker and likely_blocker: where the suspect value/condition originates — file paths, line numbers, assignment chain" },
+                "reachability": { "type": "string", "description": "Required for blocker and likely_blocker: whether this condition is reachable in prod/staging" },
+                "alternative_handlers": { "type": "string", "description": "Required for blocker only: other handlers that already cover this condition, or what you searched and why none exist" },
+                "thread": { "type": "string", "description": "Thread name (defaults to current thread)" }
+            }, "required": ["confidence", "title", "description"] }),
         ),
     ]
 }
@@ -738,7 +755,8 @@ async fn dispatch_inner(
             | BuiltinTool::CheckBackgroundTasks
             | BuiltinTool::AddDir
             | BuiltinTool::AskHuman
-            | BuiltinTool::ReportBlocker,
+            | BuiltinTool::ReportBlocker
+            | BuiltinTool::ReportFinding,
         ) => {
             // Intercepted before dispatch() in the agent loop; reaching here means
             // the caller invoked dispatch() directly without agent context.

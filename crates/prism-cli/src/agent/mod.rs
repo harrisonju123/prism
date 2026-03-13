@@ -1374,6 +1374,18 @@ If you have questions, ask them now. If you're confident, continue."
                                     elapsed_ms: t0.elapsed().as_millis(),
                                 });
                             }
+                            Some(BuiltinTool::ReportFinding) => {
+                                let t0 = std::time::Instant::now();
+                                let result = self.handle_report_finding(&ptc.args).await;
+                                outcomes.push(ToolOutcome::Result {
+                                    index: ptc.index,
+                                    id: ptc.id,
+                                    name: ptc.name,
+                                    args: ptc.args,
+                                    result,
+                                    elapsed_ms: t0.elapsed().as_millis(),
+                                });
+                            }
                             Some(BuiltinTool::AddDir) => {
                                 let t0 = std::time::Instant::now();
                                 let path_str = ptc.args["path"].as_str().unwrap_or("").to_string();
@@ -2496,6 +2508,99 @@ If you have questions, ask them now. If you're confident, continue."
             .create_inbox_entry(
                 ws_id,
                 InboxEntryType::Blocked,
+                &title,
+                &body,
+                severity,
+                Some(&agent_name),
+                ref_type,
+                thread_id,
+            )
+            .await
+        {
+            Ok(e) => json!({ "reported": true, "inbox_id": e.id.to_string() }).to_string(),
+            Err(e) => json!({ "error": e.to_string() }).to_string(),
+        }
+    }
+
+    /// Handle the `report_finding` tool — posts a code review finding with a graduated confidence level.
+    async fn handle_report_finding(&self, args: &serde_json::Value) -> String {
+        use prism_context::model::{InboxEntryType, InboxSeverity};
+
+        let Some((store, ws_id, agent_name)) = self.uh_context() else {
+            return json!({"error": "no uglyhat context store available"}).to_string();
+        };
+
+        let confidence = args["confidence"].as_str().unwrap_or("").to_string();
+        let title = args["title"].as_str().unwrap_or("").to_string();
+        let description = args["description"].as_str().unwrap_or("").to_string();
+
+        for (field, value) in [("confidence", &confidence), ("title", &title), ("description", &description)] {
+            if value.is_empty() {
+                return json!({"error": format!("{field} is required")}).to_string();
+            }
+        }
+
+        let initialization_trace = args["initialization_trace"].as_str().unwrap_or("").to_string();
+        let reachability = args["reachability"].as_str().unwrap_or("").to_string();
+        let alternative_handlers = args["alternative_handlers"].as_str().unwrap_or("").to_string();
+
+        // Validate graduated evidence requirements
+        let (entry_type, severity) = match confidence.as_str() {
+            "blocker" => {
+                for (field, value) in [
+                    ("initialization_trace", &initialization_trace),
+                    ("reachability", &reachability),
+                    ("alternative_handlers", &alternative_handlers),
+                ] {
+                    if value.is_empty() {
+                        return json!({"error": format!("{field} is required for confidence=blocker")}).to_string();
+                    }
+                }
+                (InboxEntryType::Blocked, InboxSeverity::Critical)
+            }
+            "likely_blocker" => {
+                for (field, value) in [
+                    ("initialization_trace", &initialization_trace),
+                    ("reachability", &reachability),
+                ] {
+                    if value.is_empty() {
+                        return json!({"error": format!("{field} is required for confidence=likely_blocker")}).to_string();
+                    }
+                }
+                (InboxEntryType::Blocked, InboxSeverity::Warning)
+            }
+            "concern" => (InboxEntryType::Risk, InboxSeverity::Warning),
+            "nit" => (InboxEntryType::Suggestion, InboxSeverity::Info),
+            other => return json!({"error": format!("unknown confidence level: {other}")}).to_string(),
+        };
+
+        let evidence: Option<serde_json::Value> = {
+            let mut m = serde_json::Map::new();
+            for (key, val) in [
+                ("initialization_trace", &initialization_trace),
+                ("reachability", &reachability),
+                ("alternative_handlers", &alternative_handlers),
+            ] {
+                if !val.is_empty() {
+                    m.insert(key.to_string(), json!(val));
+                }
+            }
+            if m.is_empty() { None } else { Some(serde_json::Value::Object(m)) }
+        };
+
+        let body = match evidence {
+            Some(ev) => json!({"confidence": confidence, "description": description, "evidence": ev}),
+            None => json!({"confidence": confidence, "description": description}),
+        }
+        .to_string();
+
+        let thread_id = self.resolve_thread_id(&args["thread"], store, ws_id).await;
+        let ref_type = thread_id.is_some().then_some("thread");
+
+        match store
+            .create_inbox_entry(
+                ws_id,
+                entry_type,
                 &title,
                 &body,
                 severity,

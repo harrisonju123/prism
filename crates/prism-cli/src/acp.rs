@@ -1014,6 +1014,11 @@ fn tool_title(bt: Option<BuiltinTool>, name: &str, args: &serde_json::Value) -> 
         Some(BuiltinTool::ReportBlocker) => {
             format!("Report blocker: {}", args["title"].as_str().unwrap_or("(no title)"))
         }
+        Some(BuiltinTool::ReportFinding) => {
+            let confidence = args["confidence"].as_str().unwrap_or("unknown");
+            let title = args["title"].as_str().unwrap_or("(no title)");
+            format!("Report finding [{confidence}]: {title}")
+        }
         None => name.to_string(),
     }
 }
