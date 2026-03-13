@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::ValueEnum;
 use prism_client::PrismClient;
 use rustyline::EditMode;
+use rustyline::completion::Completer;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -17,10 +18,61 @@ use crate::tools::{is_tool_allowed, tool_definitions};
 use prism_context::model::DecisionScope;
 use prism_context::store::{InboxFilters, MemoryFilters, Store as ContextStore};
 
-/// Minimal helper struct — all trait impls are no-ops for now.
-/// Provides the extension point for tab completion (Epic 4).
-#[derive(rustyline::Helper, rustyline::Completer, rustyline::Hinter, rustyline::Highlighter, rustyline::Validator)]
-struct PrismHelper;
+/// Helper struct providing tab completion for the REPL.
+#[derive(rustyline::Helper, rustyline::Hinter, rustyline::Highlighter, rustyline::Validator)]
+struct PrismHelper {
+    commands: Vec<String>,
+    personas: Vec<String>,
+    threads: Arc<std::sync::Mutex<Vec<String>>>,
+    models: Vec<String>,
+    skills: Vec<String>,
+    modes: Vec<String>,
+}
+
+fn filter(candidates: &[String], partial: &str) -> Vec<String> {
+    candidates
+        .iter()
+        .filter(|c| c.starts_with(partial))
+        .cloned()
+        .collect()
+}
+
+impl Completer for PrismHelper {
+    type Candidate = String;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &rustyline::Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<String>)> {
+        let input = &line[..pos];
+
+        // Only complete lines starting with /
+        if !input.starts_with('/') {
+            return Ok((0, vec![]));
+        }
+
+        // If no space yet → Level 1: command name completion
+        if !input.contains(' ') {
+            return Ok((0, filter(&self.commands, input)));
+        }
+
+        // Level 2: argument completion
+        let (cmd, partial_arg) = input.split_once(' ').unwrap();
+        let partial = partial_arg.trim();
+        let candidates = match cmd {
+            "/persona" => filter(&self.personas, partial),
+            "/mode" => filter(&self.modes, partial),
+            "/thread" => filter(&self.threads.lock().unwrap(), partial),
+            "/model" => filter(&self.models, partial),
+            "/skill" => filter(&self.skills, partial),
+            _ => vec![],
+        };
+        let arg_start = cmd.len() + 1;
+        Ok((arg_start, candidates))
+    }
+}
 
 enum MetaCommand {
     Clear,
@@ -113,6 +165,12 @@ pub async fn run_interactive(
     memory: MemoryManager,
     skill_registry: SkillRegistry,
 ) -> Result<()> {
+    // Fetch models before client is consumed by Agent.
+    let models: Vec<String> = match client.list_models().await {
+        Ok(resp) => resp.data.into_iter().map(|m| m.id).collect(),
+        Err(_) => vec![],
+    };
+
     let is_new_session = session.is_none();
     let mut agent = match session {
         Some(s) => {
@@ -158,6 +216,61 @@ pub async fn run_interactive(
         }
     });
 
+    // Build completion data for PrismHelper.
+    let mut commands: Vec<String> = vec![
+        "/clear", "/compact", "/help", "/mode", "/persona", "/thread",
+        "/model", "/who", "/cost", "/tools", "/skills", "/decide",
+        "/recall", "/memory", "/add-dir",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    // Single pass: collect user-invocable skills into both lists at once.
+    let mut skills: Vec<String> = Vec::new();
+    for name in skill_registry.names() {
+        if let Some(skill) = skill_registry.get(name) {
+            if skill.user_invocable {
+                commands.push(format!("/{name}"));
+                skills.push(name.to_string());
+            }
+        }
+    }
+
+    let personas: Vec<String> = crate::persona::list_personas()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+
+    let thread_names: Arc<std::sync::Mutex<Vec<String>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
+    if let Some((store, ws_id)) = agent.store_context() {
+        if let Ok(threads) = store.list_threads(ws_id, None).await {
+            *thread_names.lock().unwrap() =
+                threads.into_iter().map(|t| t.name).collect();
+        }
+    }
+
+    // Derive mode names from the canonical PermissionMode enum.
+    let modes: Vec<String> = [
+        PermissionMode::Default,
+        PermissionMode::AcceptEdits,
+        PermissionMode::Plan,
+        PermissionMode::DontAsk,
+        PermissionMode::BypassPermissions,
+    ]
+    .iter()
+    .map(|m| m.display_name().to_string())
+    .collect();
+
+    let helper = PrismHelper {
+        commands,
+        personas,
+        threads: thread_names.clone(),
+        models,
+        skills,
+        modes,
+    };
+
     // Set up rustyline editor with persistent per-project history.
     let rl_config = rustyline::Config::builder()
         .max_history_size(1000)
@@ -166,6 +279,7 @@ pub async fn run_interactive(
         .edit_mode(EditMode::Emacs)
         .build();
     let mut rl_editor = rustyline::Editor::<PrismHelper, rustyline::history::FileHistory>::with_config(rl_config)?;
+    rl_editor.set_helper(Some(helper));
     let history_path = repl_history_path(&std::env::current_dir().unwrap_or_default());
     if let Some(parent) = history_path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -312,6 +426,11 @@ pub async fn run_interactive(
                             Err(e) => {
                                 eprintln!("[error] {e}");
                             }
+                        }
+                        // Refresh completion cache after thread changes
+                        if let Ok(threads) = store.list_threads(ws_id, None).await {
+                            *thread_names.lock().unwrap() =
+                                threads.into_iter().map(|t| t.name).collect();
                         }
                     }
                     agent.current_thread = Some(name.clone());
