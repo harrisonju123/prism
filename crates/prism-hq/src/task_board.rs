@@ -80,18 +80,6 @@ impl TaskBoardItem {
         }
     }
 
-    fn is_blocked(thread: &Thread, all_threads: &[Thread]) -> bool {
-        // A thread is blocked if any of its dependencies is not yet archived.
-        // Unknown deps (not in workspace) are treated as non-blocking (conservative).
-        thread.depends_on.iter().any(|dep_id| {
-            all_threads
-                .iter()
-                .find(|t| t.id == *dep_id)
-                .map(|t| t.status != ThreadStatus::Archived)
-                .unwrap_or(false)
-        })
-    }
-
     fn classify_wp(wp: &WorkPackage) -> BoardFilter {
         match wp.status {
             WorkPackageStatus::Draft | WorkPackageStatus::Planned => BoardFilter::Backlog,
@@ -101,12 +89,9 @@ impl TaskBoardItem {
         }
     }
 
-    fn classify(thread: &Thread, handoffs: &[Handoff], all_threads: &[Thread]) -> BoardFilter {
+    fn classify(thread: &Thread, handoffs: &[Handoff]) -> BoardFilter {
         if thread.status == ThreadStatus::Archived {
             return BoardFilter::Done;
-        }
-        if Self::is_blocked(thread, all_threads) {
-            return BoardFilter::Backlog;
         }
         let handoff = handoffs.iter().find(|h| h.thread_id == Some(thread.id));
         match handoff {
@@ -228,7 +213,7 @@ impl Render for TaskBoardItem {
                     .enumerate()
                     .filter(|(_, t)| {
                         filter == BoardFilter::All
-                            || Self::classify(t, &handoffs, &all_threads) == filter
+                            || Self::classify(t, &handoffs) == filter
                     })
                     .collect();
 
@@ -239,9 +224,6 @@ impl Render for TaskBoardItem {
                         let desc = thread.description.clone();
                         let tags = thread.tags.clone();
                         let assigned = handoffs.iter().any(|h| h.thread_id == Some(thread.id));
-                        let is_blocked = Self::is_blocked(&thread, &all_threads);
-                        let cost = thread.cost_spent_usd;
-                        let confidence = thread.confidence;
                         let thread_name_for_click = thread.name.clone();
                         let ws = self.workspace.clone();
 
@@ -291,35 +273,6 @@ impl Render for TaskBoardItem {
                                     Label::new("assigned")
                                         .size(LabelSize::XSmall)
                                         .color(Color::Success),
-                                )
-                            })
-                            .when(is_blocked, |this| {
-                                this.child(
-                                    Label::new("blocked")
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Error),
-                                )
-                            })
-                            .when(cost > 0.001, |this| {
-                                this.child(
-                                    Label::new(format!("${cost:.2}"))
-                                        .size(LabelSize::XSmall)
-                                        .color(Color::Warning),
-                                )
-                            })
-                            .when_some(confidence, |this, conf| {
-                                let pct = (conf * 100.0).round() as u32;
-                                let color = if pct >= 80 {
-                                    Color::Success
-                                } else if pct >= 50 {
-                                    Color::Warning
-                                } else {
-                                    Color::Error
-                                };
-                                this.child(
-                                    Label::new(format!("{pct}%"))
-                                        .size(LabelSize::XSmall)
-                                        .color(color),
                                 )
                             })
                     })

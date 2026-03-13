@@ -160,6 +160,26 @@ impl SqliteStore {
         row.map(|r| row_to_file_claim(&r)).transpose()
     }
 
+    pub(crate) async fn release_all_claims_for_agent_impl(
+        &self,
+        workspace_id: Uuid,
+        agent_name: &str,
+    ) -> Result<u64> {
+        let result = sqlx::query(
+            "DELETE FROM file_claims WHERE workspace_id = $1 AND agent_name = $2",
+        )
+        .bind(workspace_id.to_string())
+        .bind(agent_name)
+        .execute(&self.pool)
+        .await?;
+
+        let count = result.rows_affected();
+        if count > 0 {
+            tracing::info!(%workspace_id, %agent_name, count, "released all file claims for agent");
+        }
+        Ok(count)
+    }
+
     pub(crate) async fn list_file_claims_impl(
         &self,
         workspace_id: Uuid,

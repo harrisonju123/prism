@@ -1552,3 +1552,37 @@ async fn test_dismiss_expired_skips_other_types() {
     let fetched = store.get_inbox_entry(ws.id, entry.id).await.expect("get");
     assert!(!fetched.dismissed, "approval entry should remain undismissed");
 }
+
+#[tokio::test]
+async fn test_release_all_claims_for_agent() {
+    let (store, ws) = setup().await;
+
+    // Claim 3 files for agent-a
+    store.claim_file(ws.id, "agent-a", "src/foo.rs", None).await.expect("claim 1");
+    store.claim_file(ws.id, "agent-a", "src/bar.rs", None).await.expect("claim 2");
+    store.claim_file(ws.id, "agent-a", "src/baz.rs", None).await.expect("claim 3");
+
+    let claims = store.list_file_claims(ws.id, Some("agent-a")).await.expect("list");
+    assert_eq!(claims.len(), 3);
+
+    // Release all claims for agent-a
+    let released = store.release_all_claims_for_agent(ws.id, "agent-a").await.expect("release all");
+    assert_eq!(released, 3);
+
+    let remaining = store.list_file_claims(ws.id, None).await.expect("list after release");
+    assert!(remaining.is_empty(), "all claims should be released");
+}
+
+#[tokio::test]
+async fn test_release_all_claims_for_agent_only_own() {
+    let (store, ws) = setup().await;
+
+    store.claim_file(ws.id, "agent-a", "src/foo.rs", None).await.expect("claim a");
+    store.claim_file(ws.id, "agent-b", "src/bar.rs", None).await.expect("claim b");
+
+    store.release_all_claims_for_agent(ws.id, "agent-a").await.expect("release agent-a");
+
+    let remaining = store.list_file_claims(ws.id, None).await.expect("list");
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].agent_name, "agent-b");
+}

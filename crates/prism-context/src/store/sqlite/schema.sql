@@ -16,10 +16,6 @@ CREATE TABLE IF NOT EXISTS threads (
     status          TEXT NOT NULL DEFAULT 'active'
         CHECK(status IN ('active','archived')),
     tags            TEXT NOT NULL DEFAULT '[]',
-    -- Phase 1 additions
-    depends_on      TEXT NOT NULL DEFAULT '[]',
-    confidence      REAL,
-    cost_spent_usd  REAL NOT NULL DEFAULT 0.0,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL,
     UNIQUE(workspace_id, name)

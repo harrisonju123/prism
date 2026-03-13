@@ -6,6 +6,13 @@ use crate::hooks::HookRunner;
 use crate::hooks::config::HooksConfig;
 use crate::permissions::PermissionMode;
 
+/// Parse a boolean env var. Treats "0" and "false" (case-insensitive) as false; anything else as true.
+fn parse_bool_env(var: &str, default: bool) -> bool {
+    std::env::var(var)
+        .map(|s| s != "0" && s.to_lowercase() != "false")
+        .unwrap_or(default)
+}
+
 /// Returns the agent name from the environment.
 /// Reads `PRISM_AGENT_NAME`, falling back to `UH_AGENT_NAME` (backward compat), then `"claude"`.
 pub fn agent_name_from_env() -> String {
@@ -85,6 +92,8 @@ pub struct SessionConfig {
     pub compile_check_timeout: u64,
     /// When true, agent pauses after clean completion and waits for human review.
     pub await_review: bool,
+    /// When true, pre-write claim checking and auto-claiming are active.
+    pub file_claim_enforcement: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -152,9 +161,7 @@ impl Config {
             .map(PathBuf::from)
             .unwrap_or_else(|_| prism_home().join("sessions"));
 
-        let show_cost = std::env::var("PRISM_SHOW_COST")
-            .map(|s| s != "0" && s.to_lowercase() != "false")
-            .unwrap_or(true);
+        let show_cost = parse_bool_env("PRISM_SHOW_COST", true);
 
         let persona = std::env::var("PRISM_PERSONA").ok();
 
@@ -252,9 +259,8 @@ impl Config {
                     .ok()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(30),
-                await_review: std::env::var("PRISM_AWAIT_REVIEW")
-                    .map(|s| s != "0" && s.to_lowercase() != "false")
-                    .unwrap_or(false),
+                await_review: parse_bool_env("PRISM_AWAIT_REVIEW", false),
+                file_claim_enforcement: parse_bool_env("PRISM_FILE_CLAIM_ENFORCEMENT", true),
             },
             compression: CompressionConfig {
                 model: compression_model,

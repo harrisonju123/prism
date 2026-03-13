@@ -87,8 +87,7 @@ impl SqliteStore {
 
         // Get active threads
         let thread_rows = sqlx::query(
-            "SELECT id, workspace_id, name, description, status, tags,
-                    depends_on, confidence, cost_spent_usd, created_at, updated_at
+            "SELECT id, workspace_id, name, description, status, tags, created_at, updated_at
              FROM threads WHERE workspace_id = $1 AND status = 'active'
              ORDER BY updated_at DESC",
         )
@@ -284,6 +283,9 @@ impl SqliteStore {
 
         tx.commit().await?;
 
+        // Release any file claims held by this agent on checkout
+        let _ = self.release_all_claims_for_agent_impl(workspace_id, name).await;
+
         self.log_activity_fire_and_forget(
             workspace_id,
             name,
@@ -438,6 +440,11 @@ impl SqliteStore {
         }
 
         tx.commit().await?;
+
+        // Release file claims for all reaped agents
+        for (_, agent_name) in &reaped {
+            let _ = self.release_all_claims_for_agent_impl(workspace_id, agent_name).await;
+        }
 
         for (id_str, agent_name) in &reaped {
             if let Ok(agent_id) = parse_uuid(id_str) {

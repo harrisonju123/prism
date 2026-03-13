@@ -398,4 +398,9 @@ pub trait Store: Send + Sync {
         workspace_id: Uuid,
         agent_name: Option<&str>,
     ) -> Result<Vec<FileClaim>>;
+    async fn release_all_claims_for_agent(
+        &self,
+        workspace_id: Uuid,
+        agent_name: &str,
+    ) -> Result<u64>;
 }

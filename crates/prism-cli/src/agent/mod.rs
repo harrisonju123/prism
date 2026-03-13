@@ -161,6 +161,7 @@ fn has_completion_signals(text: &str) -> bool {
 
 const DECISION_CHECKPOINT_THRESHOLD_DEFAULT: u32 = 8;
 const QUESTION_CHECKPOINT_INTERVAL_DEFAULT: u32 = 5;
+const FILE_CLAIM_TTL_SECS: i64 = 3600; // 1 hour
 
 fn decision_checkpoint_threshold() -> u32 {
     std::env::var("PRISM_DECISION_CHECKPOINT_THRESHOLD")
@@ -1202,9 +1203,43 @@ If you have questions, ask them now. If you're confident, continue."
                             }
                         }
 
+                        let builtin_tool = BuiltinTool::from_str(&name);
+
+                        // File claim enforcement: deny write/edit if another agent holds the claim
+                        if self.config.session.file_claim_enforcement
+                            && matches!(
+                                builtin_tool,
+                                Some(BuiltinTool::WriteFile | BuiltinTool::EditFile)
+                            )
+                        {
+                            if let Some(fp) = args["path"].as_str() {
+                                let normed = normalize_path(fp);
+                                if let Some((store, ws_id, agent_name)) = self.context_store() {
+                                    match store.check_file_claim(ws_id, &normed).await {
+                                        Ok(Some(claim)) if claim.agent_name != agent_name => {
+                                            self.permission_gate.renderer().tool_denied(&name);
+                                            outcomes.push(ToolOutcome::Denied {
+                                                index,
+                                                id,
+                                                message: format!(
+                                                    "File '{normed}' is claimed by agent '{}' \
+                                                     — release the claim or coordinate before editing.",
+                                                    claim.agent_name
+                                                ),
+                                            });
+                                            continue;
+                                        }
+                                        Err(e) => {
+                                            tracing::warn!(path = %normed, "file claim check failed: {e}");
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+
                         // Write discipline guards (skipped in BypassPermissions mode)
                         let skip_guards = self.permission_gate.skip_write_guards();
-                        let builtin_tool = BuiltinTool::from_str(&name);
                         if !skip_guards && matches!(builtin_tool, Some(BuiltinTool::WriteFile)) {
                             if let Some(path) = args["path"].as_str() {
                                 let normed = normalize_path(path);
@@ -1894,7 +1929,28 @@ If you have questions, ask them now. If you're confident, continue."
                                         self.permission_gate.renderer().write_coalesce_nudge();
                                         self.session.push_message(common::user_message(nudge));
                                     }
-                                    turn_files.push(normed);
+                                    turn_files.push(normed.clone());
+
+                                    // Auto-claim the file on successful write/edit (fire-and-forget)
+                                    if self.config.session.file_claim_enforcement {
+                                        if let Some((store, ws_id)) = self.store_context() {
+                                            let agent_name = crate::config::agent_name_from_env();
+                                            tokio::spawn(async move {
+                                                use prism_context::store::Store as _;
+                                                match store
+                                                    .claim_file(ws_id, &agent_name, &normed, Some(FILE_CLAIM_TTL_SECS))
+                                                    .await
+                                                {
+                                                    Ok(_) => {}
+                                                    Err(prism_context::error::Error::Conflict(_)) => {}
+                                                    Err(e) => tracing::warn!(
+                                                        path = %normed,
+                                                        "auto-claim after write failed: {e}"
+                                                    ),
+                                                }
+                                            });
+                                        }
+                                    }
                                 }
 
                                 // Record mtime on successful read_file for later staleness checks

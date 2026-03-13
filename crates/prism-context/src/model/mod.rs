@@ -282,15 +282,6 @@ pub struct Thread {
     pub status: ThreadStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
-    /// UUIDs of threads that must be archived before this one can start.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub depends_on: Vec<Uuid>,
-    /// Agent-reported confidence [0.0, 1.0]. None = not yet assessed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub confidence: Option<f64>,
-    /// Running cost charged to this thread in USD.
-    #[serde(default)]
-    pub cost_spent_usd: f64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

@@ -140,6 +140,10 @@ const MIGRATIONS: &[&str] = &[
      CREATE INDEX IF NOT EXISTS idx_inbox_dedup ON inbox_entries(workspace_id, entry_type, source_agent, dismissed, resolved);",
     // Migration 13: started_at on handoffs for timeout tracking
     "ALTER TABLE handoffs ADD COLUMN started_at TEXT;",
+    // Migration 14: remove dead Thread fields (never written after creation)
+    "ALTER TABLE threads DROP COLUMN depends_on;
+     ALTER TABLE threads DROP COLUMN confidence;
+     ALTER TABLE threads DROP COLUMN cost_spent_usd;",
 ];
 
 pub fn latest_version() -> i64 {

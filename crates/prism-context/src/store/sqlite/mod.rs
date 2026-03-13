@@ -664,4 +664,13 @@ impl Store for SqliteStore {
     ) -> Result<Vec<FileClaim>> {
         self.list_file_claims_impl(workspace_id, agent_name).await
     }
+
+    async fn release_all_claims_for_agent(
+        &self,
+        workspace_id: Uuid,
+        agent_name: &str,
+    ) -> Result<u64> {
+        self.release_all_claims_for_agent_impl(workspace_id, agent_name)
+            .await
+    }
 }
