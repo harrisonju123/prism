@@ -552,6 +552,8 @@ pub struct Handoff {
     pub status: HandoffStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

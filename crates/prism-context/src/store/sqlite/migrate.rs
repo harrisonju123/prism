@@ -138,6 +138,8 @@ const MIGRATIONS: &[&str] = &[
     // Migration 12: inbox deduplication — updated_at column + dedup index
     "ALTER TABLE inbox_entries ADD COLUMN updated_at TEXT NOT NULL DEFAULT '';
      CREATE INDEX IF NOT EXISTS idx_inbox_dedup ON inbox_entries(workspace_id, entry_type, source_agent, dismissed, resolved);",
+    // Migration 13: started_at on handoffs for timeout tracking
+    "ALTER TABLE handoffs ADD COLUMN started_at TEXT;",
 ];
 
 pub fn latest_version() -> i64 {

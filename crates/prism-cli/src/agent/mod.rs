@@ -398,6 +398,8 @@ pub struct Agent {
     last_checkpoint_file_count: usize,
     /// Guardrail cost accumulated since last 5-turn flush (avoids per-turn DB writes).
     accumulated_guardrail_cost: f64,
+    /// Constraints from the active handoff — enforced in the tool dispatch loop.
+    handoff_constraints: Option<prism_context::model::HandoffConstraints>,
 }
 
 const PRISM_THREAD_ENV: &str = "PRISM_THREAD";
@@ -454,6 +456,7 @@ impl Agent {
             pricing_cache_populated: false,
             last_checkpoint_file_count: 0,
             accumulated_guardrail_cost: 0.0,
+            handoff_constraints: None,
         }
     }
 
@@ -506,6 +509,7 @@ impl Agent {
             pricing_cache_populated: false,
             last_checkpoint_file_count: 0,
             accumulated_guardrail_cost: 0.0,
+            handoff_constraints: None,
         }
     }
 
@@ -603,7 +607,11 @@ impl Agent {
                 if let (Some(store), Some(ws_id)) =
                     (self.memory.store().cloned(), self.memory.workspace_id())
                 {
-                    let _ = store.accept_handoff(ws_id, hid, &agent_name).await;
+                    if let Ok(accepted) = store.accept_handoff(ws_id, hid, &agent_name).await {
+                        self.handoff_constraints = Some(accepted.constraints);
+                        // Transition Accepted → Running immediately
+                        let _ = store.start_handoff(ws_id, hid).await;
+                    }
                 }
             }
         }
@@ -1158,6 +1166,40 @@ If you have questions, ask them now. If you're confident, continue."
                                 message: permissions::PERMISSION_DENIED_MSG.to_string(),
                             });
                             continue;
+                        }
+
+                        // Handoff constraint enforcement
+                        if let Some(ref constraints) = self.handoff_constraints {
+                            if !constraints.allowed_tools.is_empty()
+                                && !constraints.allowed_tools.iter().any(|t| t == &name)
+                            {
+                                outcomes.push(ToolOutcome::Denied {
+                                    index,
+                                    id,
+                                    message: format!(
+                                        "tool '{name}' not allowed by handoff constraints (allowed: {})",
+                                        constraints.allowed_tools.join(", ")
+                                    ),
+                                });
+                                continue;
+                            }
+                            let file_path_arg = args["path"]
+                                .as_str()
+                                .or_else(|| args["file_path"].as_str());
+                            if let Some(fp) = file_path_arg {
+                                if !constraints.allowed_files.is_empty()
+                                    && !constraints.allowed_files.iter().any(|f| f == fp)
+                                {
+                                    outcomes.push(ToolOutcome::Denied {
+                                        index,
+                                        id,
+                                        message: format!(
+                                            "file '{fp}' not allowed by handoff constraints"
+                                        ),
+                                    });
+                                    continue;
+                                }
+                            }
                         }
 
                         // Write discipline guards (skipped in BypassPermissions mode)

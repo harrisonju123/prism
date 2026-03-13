@@ -308,6 +308,16 @@ pub enum HandoffAction {
         #[arg(long)]
         status: Option<String>,
     },
+    /// Start a handoff (Accepted → Running)
+    Start { id: String },
+    /// Fail a handoff
+    Fail {
+        id: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Cancel a handoff
+    Cancel { id: String },
 }
 
 #[derive(Subcommand)]
@@ -886,6 +896,37 @@ pub async fn run(cmd: ContextCmd) -> Result<()> {
                     .await
                     .map_err(|e| anyhow!("{e}"))?;
                 print_json(&handoffs);
+            }
+            HandoffAction::Start { id } => {
+                let handoff_id: Uuid =
+                    id.parse().map_err(|e| anyhow!("invalid handoff id: {e}"))?;
+                let h = store
+                    .start_handoff(workspace_id, handoff_id)
+                    .await
+                    .map_err(|e| anyhow!("{e}"))?;
+                print_json(&h);
+            }
+            HandoffAction::Fail { id, reason } => {
+                let handoff_id: Uuid =
+                    id.parse().map_err(|e| anyhow!("invalid handoff id: {e}"))?;
+                let h = store
+                    .fail_handoff(
+                        workspace_id,
+                        handoff_id,
+                        reason.as_deref().unwrap_or("manually failed"),
+                    )
+                    .await
+                    .map_err(|e| anyhow!("{e}"))?;
+                print_json(&h);
+            }
+            HandoffAction::Cancel { id } => {
+                let handoff_id: Uuid =
+                    id.parse().map_err(|e| anyhow!("invalid handoff id: {e}"))?;
+                let h = store
+                    .cancel_handoff(workspace_id, handoff_id)
+                    .await
+                    .map_err(|e| anyhow!("{e}"))?;
+                print_json(&h);
             }
         },
         ContextCmd::Activity {

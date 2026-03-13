@@ -439,6 +439,147 @@ async fn test_handoff_lifecycle() {
 }
 
 #[tokio::test]
+async fn test_handoff_start_and_fail() {
+    let (store, ws) = setup().await;
+
+    store.checkin(ws.id, "parent", vec![], None).await.unwrap();
+    store.checkin(ws.id, "child", vec![], None).await.unwrap();
+
+    let h = store
+        .create_handoff(
+            ws.id,
+            "parent",
+            "some task",
+            None,
+            HandoffConstraints::default(),
+            HandoffMode::DelegateAndAwait,
+        )
+        .await
+        .unwrap();
+    assert_eq!(h.status, HandoffStatus::Pending);
+
+    // Accept → Running
+    let h2 = store.accept_handoff(ws.id, h.id, "child").await.unwrap();
+    assert_eq!(h2.status, HandoffStatus::Accepted);
+
+    let h3 = store.start_handoff(ws.id, h.id).await.unwrap();
+    assert_eq!(h3.status, HandoffStatus::Running);
+    assert!(h3.started_at.is_some());
+
+    // Fail
+    let h4 = store
+        .fail_handoff(ws.id, h.id, "something went wrong")
+        .await
+        .unwrap();
+    assert_eq!(h4.status, HandoffStatus::Failed);
+    let reason = h4.result.as_ref().and_then(|r| r["reason"].as_str());
+    assert_eq!(reason, Some("something went wrong"));
+}
+
+#[tokio::test]
+async fn test_handoff_cancel() {
+    let (store, ws) = setup().await;
+
+    store.checkin(ws.id, "parent", vec![], None).await.unwrap();
+
+    let h = store
+        .create_handoff(
+            ws.id,
+            "parent",
+            "cancel me",
+            None,
+            HandoffConstraints::default(),
+            HandoffMode::DelegateAndAwait,
+        )
+        .await
+        .unwrap();
+
+    let h2 = store.cancel_handoff(ws.id, h.id).await.unwrap();
+    assert_eq!(h2.status, HandoffStatus::Cancelled);
+}
+
+#[tokio::test]
+async fn test_handoff_timeout_reap() {
+    use crate::scheduler::reap_timed_out_handoffs;
+    use chrono::Duration;
+
+    let (store, ws) = setup().await;
+
+    store.checkin(ws.id, "parent", vec![], None).await.unwrap();
+    store.checkin(ws.id, "child", vec![], None).await.unwrap();
+
+    // Create handoff with 1-second timeout
+    let constraints = HandoffConstraints {
+        timeout_secs: Some(1),
+        ..Default::default()
+    };
+    let h = store
+        .create_handoff(
+            ws.id,
+            "parent",
+            "timed task",
+            None,
+            constraints,
+            HandoffMode::DelegateAndAwait,
+        )
+        .await
+        .unwrap();
+
+    store.accept_handoff(ws.id, h.id, "child").await.unwrap();
+    store.start_handoff(ws.id, h.id).await.unwrap();
+
+    // Manually backdate started_at by 10 seconds so it appears timed out
+    let past = (chrono::Utc::now() - Duration::seconds(10)).to_rfc3339();
+    sqlx::query("UPDATE handoffs SET started_at = $1 WHERE id = $2")
+        .bind(&past)
+        .bind(h.id.to_string())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+    let reaped = reap_timed_out_handoffs(&store, ws.id).await.unwrap();
+    assert_eq!(reaped.len(), 1);
+    assert_eq!(reaped[0].id, h.id);
+    assert_eq!(reaped[0].status, HandoffStatus::Failed);
+}
+
+#[tokio::test]
+async fn test_handoff_constraint_enforcement() {
+    let (store, ws) = setup().await;
+
+    store.checkin(ws.id, "parent", vec![], None).await.unwrap();
+
+    let constraints = HandoffConstraints {
+        allowed_tools: vec!["read_file".to_string()],
+        ..Default::default()
+    };
+    let h = store
+        .create_handoff(
+            ws.id,
+            "parent",
+            "constrained task",
+            None,
+            constraints,
+            HandoffMode::DelegateAndAwait,
+        )
+        .await
+        .unwrap();
+
+    // Allowed tool should pass
+    store
+        .check_handoff_constraints(ws.id, h.id, "read_file", None)
+        .await
+        .expect("read_file should be allowed");
+
+    // Disallowed tool should fail
+    let err = store
+        .check_handoff_constraints(ws.id, h.id, "write_file", None)
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("not allowed"));
+}
+
+#[tokio::test]
 async fn test_guardrails() {
     let (store, ws) = setup().await;
 

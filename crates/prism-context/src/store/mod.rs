@@ -205,6 +205,21 @@ pub trait Store: Send + Sync {
         agent_name: Option<&str>,
         status: Option<HandoffStatus>,
     ) -> Result<Vec<Handoff>>;
+    async fn start_handoff(&self, workspace_id: Uuid, handoff_id: Uuid) -> Result<Handoff>;
+    async fn fail_handoff(
+        &self,
+        workspace_id: Uuid,
+        handoff_id: Uuid,
+        reason: &str,
+    ) -> Result<Handoff>;
+    async fn cancel_handoff(&self, workspace_id: Uuid, handoff_id: Uuid) -> Result<Handoff>;
+    async fn check_handoff_constraints(
+        &self,
+        workspace_id: Uuid,
+        handoff_id: Uuid,
+        tool_name: &str,
+        file_path: Option<&str>,
+    ) -> Result<()>;
 
     // --- Guardrails (4) ---
     async fn set_guardrails(

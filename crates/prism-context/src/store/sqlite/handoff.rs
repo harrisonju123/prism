@@ -13,6 +13,7 @@ pub(super) fn row_to_handoff(row: &sqlx::sqlite::SqliteRow) -> Result<Handoff> {
     let mode_str: String = row.try_get("mode")?;
     let status_str: String = row.try_get("status")?;
     let result_str: Option<String> = row.try_get("result")?;
+    let started_at_str: Option<String> = row.try_get("started_at").unwrap_or(None);
     Ok(Handoff {
         id: parse_uuid(&row.try_get::<String, _>("id")?)?,
         workspace_id: parse_uuid(&row.try_get::<String, _>("workspace_id")?)?,
@@ -24,6 +25,9 @@ pub(super) fn row_to_handoff(row: &sqlx::sqlite::SqliteRow) -> Result<Handoff> {
         mode: HandoffMode::from_str(&mode_str).unwrap_or(HandoffMode::DelegateAndAwait),
         status: HandoffStatus::from_str(&status_str).unwrap_or(HandoffStatus::Pending),
         result: result_str.and_then(|s| serde_json::from_str(&s).ok()),
+        started_at: started_at_str
+            .as_deref()
+            .and_then(|s| parse_time(s).ok()),
         created_at: parse_time(&row.try_get::<String, _>("created_at")?)?,
         updated_at: parse_time(&row.try_get::<String, _>("updated_at")?)?,
     })
@@ -57,7 +61,7 @@ impl SqliteStore {
         let row = sqlx::query(
             "INSERT INTO handoffs (id, workspace_id, from_agent_id, to_agent_id, thread_id, task, constraints, mode, status, created_at, updated_at)
              VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, 'pending', $8, $9)
-             RETURNING id, workspace_id, from_agent_id, to_agent_id, thread_id, task, constraints, mode, status, result, created_at, updated_at",
+             RETURNING id, workspace_id, from_agent_id, to_agent_id, thread_id, task, constraints, mode, status, result, started_at, created_at, updated_at",
         )
         .bind(id.to_string())
         .bind(workspace_id.to_string())
@@ -107,7 +111,7 @@ impl SqliteStore {
         let row = sqlx::query(
             "UPDATE handoffs SET to_agent_id = $1, status = 'accepted', updated_at = $2
              WHERE id = $3 AND workspace_id = $4 AND status = 'pending'
-             RETURNING id, workspace_id, from_agent_id, to_agent_id, thread_id, task, constraints, mode, status, result, created_at, updated_at",
+             RETURNING id, workspace_id, from_agent_id, to_agent_id, thread_id, task, constraints, mode, status, result, started_at, created_at, updated_at",
         )
         .bind(&agent_id)
         .bind(&now)
@@ -145,7 +149,7 @@ impl SqliteStore {
         let row = sqlx::query(
             "UPDATE handoffs SET status = 'completed', result = $1, updated_at = $2
              WHERE id = $3 AND workspace_id = $4 AND status IN ('accepted', 'running', 'pending')
-             RETURNING id, workspace_id, from_agent_id, to_agent_id, thread_id, task, constraints, mode, status, result, created_at, updated_at",
+             RETURNING id, workspace_id, from_agent_id, to_agent_id, thread_id, task, constraints, mode, status, result, started_at, created_at, updated_at",
         )
         .bind(&result_json)
         .bind(&now)
@@ -195,7 +199,7 @@ impl SqliteStore {
 
         let query = format!(
             "SELECT h.id, h.workspace_id, h.from_agent_id, h.to_agent_id, h.thread_id,
-                    h.task, h.constraints, h.mode, h.status, h.result, h.created_at, h.updated_at
+                    h.task, h.constraints, h.mode, h.status, h.result, h.started_at, h.created_at, h.updated_at
              FROM handoffs h
              LEFT JOIN agents fa ON fa.id = h.from_agent_id
              LEFT JOIN agents ta ON ta.id = h.to_agent_id
@@ -212,5 +216,161 @@ impl SqliteStore {
 
         let rows = q.fetch_all(&self.pool).await?;
         rows.iter().map(row_to_handoff).collect()
+    }
+
+    pub(crate) async fn start_handoff_impl(
+        &self,
+        workspace_id: Uuid,
+        handoff_id: Uuid,
+    ) -> Result<Handoff> {
+        let now = now_rfc3339();
+
+        let row = sqlx::query(
+            "UPDATE handoffs SET status = 'running', started_at = $1, updated_at = $2
+             WHERE id = $3 AND workspace_id = $4 AND status = 'accepted'
+             RETURNING id, workspace_id, from_agent_id, to_agent_id, thread_id, task, constraints, mode, status, result, started_at, created_at, updated_at",
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(handoff_id.to_string())
+        .bind(workspace_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| Error::NotFound(format!("accepted handoff {handoff_id} not found")))?;
+
+        let handoff = row_to_handoff(&row)?;
+
+        self.log_activity_fire_and_forget(
+            workspace_id,
+            "system",
+            "handoff_started",
+            "handoff",
+            handoff.id,
+            &format!("Started handoff {handoff_id}"),
+            None,
+        )
+        .await;
+
+        Ok(handoff)
+    }
+
+    pub(crate) async fn fail_handoff_impl(
+        &self,
+        workspace_id: Uuid,
+        handoff_id: Uuid,
+        reason: &str,
+    ) -> Result<Handoff> {
+        let now = now_rfc3339();
+        let result_json =
+            serde_json::to_string(&serde_json::json!({"reason": reason})).unwrap_or_default();
+
+        let row = sqlx::query(
+            "UPDATE handoffs SET status = 'failed', result = $1, updated_at = $2
+             WHERE id = $3 AND workspace_id = $4 AND status IN ('accepted', 'running', 'pending')
+             RETURNING id, workspace_id, from_agent_id, to_agent_id, thread_id, task, constraints, mode, status, result, started_at, created_at, updated_at",
+        )
+        .bind(&result_json)
+        .bind(&now)
+        .bind(handoff_id.to_string())
+        .bind(workspace_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| Error::NotFound(format!("active handoff {handoff_id} not found")))?;
+
+        let handoff = row_to_handoff(&row)?;
+
+        self.log_activity_fire_and_forget(
+            workspace_id,
+            "system",
+            "handoff_failed",
+            "handoff",
+            handoff.id,
+            &format!("Failed handoff {handoff_id}: {reason}"),
+            None,
+        )
+        .await;
+
+        Ok(handoff)
+    }
+
+    pub(crate) async fn cancel_handoff_impl(
+        &self,
+        workspace_id: Uuid,
+        handoff_id: Uuid,
+    ) -> Result<Handoff> {
+        let now = now_rfc3339();
+
+        let row = sqlx::query(
+            "UPDATE handoffs SET status = 'cancelled', updated_at = $1
+             WHERE id = $2 AND workspace_id = $3 AND status IN ('pending', 'accepted', 'running')
+             RETURNING id, workspace_id, from_agent_id, to_agent_id, thread_id, task, constraints, mode, status, result, started_at, created_at, updated_at",
+        )
+        .bind(&now)
+        .bind(handoff_id.to_string())
+        .bind(workspace_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| Error::NotFound(format!("cancellable handoff {handoff_id} not found")))?;
+
+        let handoff = row_to_handoff(&row)?;
+
+        self.log_activity_fire_and_forget(
+            workspace_id,
+            "system",
+            "handoff_cancelled",
+            "handoff",
+            handoff.id,
+            &format!("Cancelled handoff {handoff_id}"),
+            None,
+        )
+        .await;
+
+        Ok(handoff)
+    }
+
+    pub(crate) async fn check_handoff_constraints_impl(
+        &self,
+        workspace_id: Uuid,
+        handoff_id: Uuid,
+        tool_name: &str,
+        file_path: Option<&str>,
+    ) -> Result<()> {
+        let constraints_str: String =
+            sqlx::query_scalar("SELECT constraints FROM handoffs WHERE id = $1 AND workspace_id = $2")
+                .bind(handoff_id.to_string())
+                .bind(workspace_id.to_string())
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or_else(|| Error::NotFound(format!("handoff {handoff_id} not found")))?;
+
+        let constraints: HandoffConstraints =
+            serde_json::from_str(&constraints_str).unwrap_or_default();
+
+        if !constraints.allowed_tools.is_empty()
+            && !constraints.allowed_tools.iter().any(|t| t == tool_name)
+        {
+            return Err(Error::BadRequest(format!(
+                "tool '{tool_name}' not allowed by handoff constraints"
+            )));
+        }
+
+        if let Some(fp) = file_path {
+            if !constraints.allowed_files.is_empty()
+                && !constraints.allowed_files.iter().any(|f| f == fp)
+            {
+                return Err(Error::BadRequest(format!(
+                    "file '{fp}' not allowed by handoff constraints"
+                )));
+            }
+        }
+
+        if constraints.cost_cap.is_some() {
+            tracing::warn!(
+                handoff_id = %handoff_id,
+                "handoff has cost_cap constraint but cost tracking is not yet implemented"
+            );
+        }
+
+        Ok(())
     }
 }

@@ -332,6 +332,35 @@ impl Store for SqliteStore {
             .await
     }
 
+    async fn start_handoff(&self, workspace_id: Uuid, handoff_id: Uuid) -> Result<Handoff> {
+        self.start_handoff_impl(workspace_id, handoff_id).await
+    }
+
+    async fn fail_handoff(
+        &self,
+        workspace_id: Uuid,
+        handoff_id: Uuid,
+        reason: &str,
+    ) -> Result<Handoff> {
+        self.fail_handoff_impl(workspace_id, handoff_id, reason)
+            .await
+    }
+
+    async fn cancel_handoff(&self, workspace_id: Uuid, handoff_id: Uuid) -> Result<Handoff> {
+        self.cancel_handoff_impl(workspace_id, handoff_id).await
+    }
+
+    async fn check_handoff_constraints(
+        &self,
+        workspace_id: Uuid,
+        handoff_id: Uuid,
+        tool_name: &str,
+        file_path: Option<&str>,
+    ) -> Result<()> {
+        self.check_handoff_constraints_impl(workspace_id, handoff_id, tool_name, file_path)
+            .await
+    }
+
     async fn set_guardrails(
         &self,
         workspace_id: Uuid,

@@ -139,6 +139,7 @@ CREATE TABLE IF NOT EXISTS handoffs (
     mode            TEXT NOT NULL DEFAULT 'delegate_and_await',
     status          TEXT NOT NULL DEFAULT 'pending',
     result          TEXT,
+    started_at      TEXT,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
 );

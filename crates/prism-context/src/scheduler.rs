@@ -1,7 +1,8 @@
+use chrono::Utc;
 use uuid::Uuid;
 
 use crate::error::Result;
-use crate::model::{AgentState, PlanStatus, WorkPackage, WorkPackageStatus};
+use crate::model::{AgentState, Handoff, HandoffStatus, PlanStatus, WorkPackage, WorkPackageStatus};
 use crate::store::Store;
 
 pub struct SchedulerConfig {
@@ -90,6 +91,48 @@ pub async fn compute_assignments(
     }
 
     Ok(assignments)
+}
+
+/// Reap timed-out handoffs by transitioning them to `Failed`.
+///
+/// Checks both `Running` handoffs (using `started_at`) and `Accepted` handoffs
+/// (using `updated_at` as the acceptance time).
+pub async fn reap_timed_out_handoffs(
+    store: &dyn Store,
+    workspace_id: Uuid,
+) -> Result<Vec<Handoff>> {
+    let now = Utc::now();
+    let mut reaped = Vec::new();
+
+    let (running, accepted) = tokio::try_join!(
+        store.list_handoffs(workspace_id, None, Some(HandoffStatus::Running)),
+        store.list_handoffs(workspace_id, None, Some(HandoffStatus::Accepted)),
+    )?;
+
+    // Running handoffs: time from started_at
+    for h in running {
+        if let Some(timeout_secs) = h.constraints.timeout_secs {
+            let start = h.started_at.unwrap_or(h.updated_at);
+            if (now - start).num_seconds() >= timeout_secs as i64 {
+                if let Ok(failed) = store.fail_handoff(workspace_id, h.id, "timed out").await {
+                    reaped.push(failed);
+                }
+            }
+        }
+    }
+
+    // Accepted handoffs: time from updated_at (acceptance time)
+    for h in accepted {
+        if let Some(timeout_secs) = h.constraints.timeout_secs {
+            if (now - h.updated_at).num_seconds() >= timeout_secs as i64 {
+                if let Ok(failed) = store.fail_handoff(workspace_id, h.id, "timed out").await {
+                    reaped.push(failed);
+                }
+            }
+        }
+    }
+
+    Ok(reaped)
 }
 
 /// Convert free-form text to a URL-safe slug (max 60 chars).
