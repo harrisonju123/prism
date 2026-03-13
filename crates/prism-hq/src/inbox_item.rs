@@ -138,9 +138,6 @@ impl InboxItem {
     }
 
     fn open_approval_gate(&mut self, entry: &InboxEntry, window: &mut Window, cx: &mut Context<Self>) {
-        use prism_context::model::AgentState;
-        use serde_json::json;
-
         let handle: Option<ContextHandle> = cx
             .try_global::<ContextService>()
             .and_then(|svc| svc.handle());
@@ -185,22 +182,27 @@ impl InboxItem {
                     packet.session_cost_usd,
                     packet.test_summary,
                     move |decision: ApprovalDecision| {
-                        let resolution = match &decision {
-                            ApprovalDecision::Approve => json!({"decision": "approve"}),
-                            ApprovalDecision::RequestChanges { message } => {
-                                json!({"decision": "request_changes", "message": message})
-                            }
-                            ApprovalDecision::Reject => json!({"decision": "reject"}),
-                        };
-                        let resolution_str = resolution.to_string();
+                        let branch = branch.clone();
                         std::thread::spawn(move || {
-                            let _ = handle.resolve_inbox_entry(entry_id, &resolution_str);
-                            if let Some(name) = agent_name {
-                                let state = match &decision {
-                                    ApprovalDecision::Reject => AgentState::Idle,
-                                    _ => AgentState::Working,
-                                };
-                                let _ = handle.set_agent_state(&name, state);
+                            // repo_root discovered here (background thread) to avoid blocking UI.
+                            let result = crate::decision_executor::execute_decision(
+                                decision,
+                                handle,
+                                branch.clone(),
+                                Some(entry_id),
+                                agent_name,
+                                None,
+                            );
+                            match result {
+                                crate::decision_executor::DecisionResult::MergeConflict {
+                                    details,
+                                } => {
+                                    log::warn!("Merge conflict on {}: {}", branch, details);
+                                }
+                                crate::decision_executor::DecisionResult::Error { message } => {
+                                    log::error!("Decision execution failed: {}", message);
+                                }
+                                crate::decision_executor::DecisionResult::Ok => {}
                             }
                         });
                     },

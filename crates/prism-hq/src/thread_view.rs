@@ -540,6 +540,7 @@ impl Render for ThreadViewItem {
                                         AgentState::Idle => Color::Success,
                                         AgentState::Blocked => Color::Warning,
                                         AgentState::Dead => Color::Muted,
+                                        AgentState::AwaitingReview => Color::Warning,
                                     };
                                     let agent_name_pause = agent.name.clone();
                                     let agent_name_kill = agent.name.clone();

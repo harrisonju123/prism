@@ -559,6 +559,7 @@ impl Render for NavigatorPanel {
                             prism_context::model::AgentState::Idle => Color::Success,
                             prism_context::model::AgentState::Blocked => Color::Warning,
                             prism_context::model::AgentState::Dead => Color::Muted,
+                            prism_context::model::AgentState::AwaitingReview => Color::Warning,
                         };
                         let (is_running, is_completed) = RunningAgents::global(cx)
                             .map(|ra| {

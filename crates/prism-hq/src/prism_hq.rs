@@ -7,6 +7,7 @@ mod command_center;
 pub mod context_service;
 mod dashboard_panel;
 mod dashboard_types;
+pub mod decision_executor;
 mod dispatch;
 mod hq_state;
 mod inbox_item;

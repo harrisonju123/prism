@@ -178,8 +178,6 @@ impl AgentViewItem {
     }
 
     fn review_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        use prism_context::model::AgentState;
-
         let agent_name = self.agent_name.clone();
 
         let handle = cx
@@ -213,12 +211,16 @@ impl AgentViewItem {
                     packet.test_summary,
                     move |decision: ApprovalDecision| {
                         if let Some(h) = handle {
-                            let state = match decision {
-                                ApprovalDecision::Reject => AgentState::Idle,
-                                _ => AgentState::Working,
-                            };
+                            let name = agent_name.clone();
                             std::thread::spawn(move || {
-                                let _ = h.set_agent_state(&agent_name, state);
+                                let _ = crate::decision_executor::execute_decision(
+                                    decision,
+                                    h,
+                                    name.clone(),
+                                    None,
+                                    Some(name),
+                                    None,
+                                );
                             });
                         }
                     },
@@ -273,6 +275,7 @@ impl Render for AgentViewItem {
                 AgentState::Idle => Color::Success,
                 AgentState::Blocked => Color::Warning,
                 AgentState::Dead => Color::Muted,
+                AgentState::AwaitingReview => Color::Warning,
             };
             (
                 status.state.to_string(),

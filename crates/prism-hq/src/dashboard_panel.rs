@@ -1130,12 +1130,14 @@ impl PrismDashboardPanel {
                         AgentState::Idle => Color::Success,
                         AgentState::Blocked => Color::Warning,
                         AgentState::Dead => Color::Muted,
+                        AgentState::AwaitingReview => Color::Warning,
                     };
                     let state_label = match agent.state {
                         AgentState::Working => "working",
                         AgentState::Idle => "idle",
                         AgentState::Blocked => "blocked",
                         AgentState::Dead => "dead",
+                        AgentState::AwaitingReview => "awaiting review",
                     };
                     let thread_label = agent.current_thread.as_deref().unwrap_or("—").to_string();
                     children = children.child(
