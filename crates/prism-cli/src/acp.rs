@@ -806,20 +806,30 @@ impl PrismAgent {
                                         &self.config,
                                         Some(&session_cwd),
                                         None,
+                                        &[],
                                     )
                                     .await
                                     .into_text()
                                 }
                             }
-                            _ => tools::dispatch(
-                                name,
-                                &args,
-                                &self.config,
-                                Some(&session_cwd),
-                                self.mcp_registry.as_deref(),
-                            )
-                            .await
-                            .into_text(),
+                            _ => {
+                                let additional_dirs = self
+                                    .sessions
+                                    .borrow()
+                                    .get(session_id)
+                                    .map(|s| s.additional_dirs.clone())
+                                    .unwrap_or_default();
+                                tools::dispatch(
+                                    name,
+                                    &args,
+                                    &self.config,
+                                    Some(&session_cwd),
+                                    self.mcp_registry.as_deref(),
+                                    &additional_dirs,
+                                )
+                                .await
+                                .into_text()
+                            }
                         };
                         let result =
                             truncate_tool_output(name, &result, self.config.model.max_tool_output);

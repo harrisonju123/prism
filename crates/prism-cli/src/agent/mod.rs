@@ -1389,6 +1389,7 @@ If you have questions, ask them now. If you're confident, continue."
                                         &self.config,
                                         None,
                                         None,
+                                        &[],
                                     )
                                     .await
                                     .into_text()
@@ -1593,6 +1594,7 @@ If you have questions, ask them now. If you're confident, continue."
                                 let mcp = mcp_arc.clone();
                                 let cfg = task_config.clone();
                                 let cwd = run_cwd.clone();
+                                let extra_dirs = self.additional_dirs.clone();
                                 joinset_pending.push((index, id.clone()));
                                 joinset.spawn(async move {
                                     let t0 = std::time::Instant::now();
@@ -1602,6 +1604,7 @@ If you have questions, ask them now. If you're confident, continue."
                                         &cfg,
                                         Some(&cwd),
                                         mcp.as_deref(),
+                                        &extra_dirs,
                                     )
                                     .await;
                                     let result = match tool_result {

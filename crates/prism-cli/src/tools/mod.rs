@@ -4,7 +4,7 @@ mod search;
 mod shell;
 mod web;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::config::{Config, SandboxMode};
 use prism_types::{Tool, ToolFunction};
@@ -419,12 +419,61 @@ pub fn all_tool_definitions_filtered(config: &Config, mcp: Option<&McpRegistry>)
         .collect()
 }
 
+/// Try to resolve a relative path against each additional workspace directory.
+/// Returns the first existing, non-denied absolute path, or None.
+fn resolve_path_with_fallback(
+    relative_path: &str,
+    additional_dirs: &[PathBuf],
+    config: &Config,
+) -> Option<String> {
+    for dir in additional_dirs {
+        let candidate = dir.join(relative_path);
+        if candidate.exists() {
+            let s = candidate.to_string_lossy().into_owned();
+            if !is_path_denied(&s, config) {
+                return Some(s);
+            }
+        }
+    }
+    None
+}
+
+fn format_dir_list(dirs: &[PathBuf]) -> String {
+    dirs.iter()
+        .map(|d| d.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Append a hint about additional directories when a file is not found.
+fn format_not_found_hint(error: &str, additional_dirs: &[PathBuf]) -> String {
+    if additional_dirs.is_empty() {
+        return error.to_string();
+    }
+    format!(
+        "{error}\nHint: Try using an absolute path, or search in these additional directories: {}",
+        format_dir_list(additional_dirs)
+    )
+}
+
+/// Append a hint about additional directories when a search returns empty results.
+fn format_empty_search_hint(result: &str, additional_dirs: &[PathBuf]) -> String {
+    if additional_dirs.is_empty() || result != "[]" {
+        return result.to_string();
+    }
+    format!(
+        "[]\nHint: You may also want to search in these additional directories: {}",
+        format_dir_list(additional_dirs)
+    )
+}
+
 pub async fn dispatch(
     name: &str,
     args: &serde_json::Value,
     config: &Config,
     session_cwd: Option<&Path>,
     mcp: Option<&McpRegistry>,
+    additional_dirs: &[PathBuf],
 ) -> ToolResult {
     // Route MCP-namespaced tools to the registry
     if McpRegistry::is_mcp_tool(name) {
@@ -486,13 +535,15 @@ pub async fn dispatch(
         }
     }
 
-    dispatch_inner(name, args, session_cwd).await
+    dispatch_inner(name, args, config, session_cwd, additional_dirs).await
 }
 
 async fn dispatch_inner(
     name: &str,
     args: &serde_json::Value,
+    config: &Config,
     session_cwd: Option<&Path>,
+    additional_dirs: &[PathBuf],
 ) -> ToolResult {
     // Computer tools are not in BuiltinTool — handle them first
     match name {
@@ -528,11 +579,25 @@ async fn dispatch_inner(
         Some(BuiltinTool::ReadFile) => {
             let raw = args["path"].as_str().filter(|s| !s.is_empty());
             match raw {
-                Some(_) => {
+                Some(raw_path) => {
                     let offset = args["offset"].as_u64().map(|n| n as usize);
                     let limit = args["limit"].as_u64().map(|n| n as usize);
                     let path = resolve_path(raw, session_cwd);
-                    ToolResult::Text(files::read_file(&path, offset, limit).await)
+                    let result = files::read_file(&path, offset, limit).await;
+                    // Fallback: if not found and path was relative, try additional dirs
+                    if result.contains("No such file or directory")
+                        && !Path::new(raw_path).is_absolute()
+                    {
+                        if let Some(fallback) =
+                            resolve_path_with_fallback(raw_path, additional_dirs, config)
+                        {
+                            return ToolResult::Text(
+                                files::read_file(&fallback, offset, limit).await,
+                            );
+                        }
+                        return ToolResult::Text(format_not_found_hint(&result, additional_dirs));
+                    }
+                    ToolResult::Text(result)
                 }
                 None => ToolResult::Text("error: path is required".to_string()),
             }
@@ -550,8 +615,22 @@ async fn dispatch_inner(
             }
         }
         Some(BuiltinTool::ListDir) => {
-            let path = resolve_path(args["path"].as_str(), session_cwd);
-            ToolResult::Text(files::list_dir(&path).await)
+            let raw = args["path"].as_str();
+            let path = resolve_path(raw, session_cwd);
+            let result = files::list_dir(&path).await;
+            // Fallback: if not found and path was relative, try additional dirs
+            if result.contains("No such file or directory") {
+                if let Some(raw_path) = raw.filter(|p| !p.is_empty() && !Path::new(p).is_absolute())
+                {
+                    if let Some(fallback) =
+                        resolve_path_with_fallback(raw_path, additional_dirs, config)
+                    {
+                        return ToolResult::Text(files::list_dir(&fallback).await);
+                    }
+                    return ToolResult::Text(format_not_found_hint(&result, additional_dirs));
+                }
+            }
+            ToolResult::Text(result)
         }
         Some(BuiltinTool::RunCommand) => {
             let cmd = args["command"].as_str().unwrap_or("");
@@ -569,11 +648,25 @@ async fn dispatch_inner(
         Some(BuiltinTool::EditFile) => {
             let raw = args["path"].as_str().filter(|s| !s.is_empty());
             match raw {
-                Some(_) => {
+                Some(raw_path) => {
                     let path = resolve_path(raw, session_cwd);
                     let old_string = args["old_string"].as_str().unwrap_or("");
                     let new_string = args["new_string"].as_str().unwrap_or("");
-                    ToolResult::Text(files::edit_file(&path, old_string, new_string).await)
+                    let result = files::edit_file(&path, old_string, new_string).await;
+                    // Fallback: if not found and path was relative, try additional dirs
+                    if result.contains("No such file or directory")
+                        && !Path::new(raw_path).is_absolute()
+                    {
+                        if let Some(fallback) =
+                            resolve_path_with_fallback(raw_path, additional_dirs, config)
+                        {
+                            return ToolResult::Text(
+                                files::edit_file(&fallback, old_string, new_string).await,
+                            );
+                        }
+                        return ToolResult::Text(format_not_found_hint(&result, additional_dirs));
+                    }
+                    ToolResult::Text(result)
                 }
                 None => ToolResult::Text("error: path is required".to_string()),
             }
@@ -583,7 +676,14 @@ async fn dispatch_inner(
             let dir = resolve_path(args["dir"].as_str(), session_cwd);
             let max_results = args["max_results"].as_u64().unwrap_or(100) as usize;
             let sort_by = args["sort_by"].as_str();
-            ToolResult::Text(search::glob_files(pattern, &dir, max_results, sort_by))
+            let result = search::glob_files(pattern, &dir, max_results, sort_by);
+            // Hint: if dir was not explicitly given (defaulted to session_cwd) and results are
+            // empty, suggest searching additional dirs.
+            if args["dir"].as_str().map_or(true, |s| s.is_empty()) {
+                ToolResult::Text(format_empty_search_hint(&result, additional_dirs))
+            } else {
+                ToolResult::Text(result)
+            }
         }
         Some(BuiltinTool::GrepFiles) => {
             let pattern = args["pattern"].as_str().unwrap_or("");
@@ -592,14 +692,20 @@ async fn dispatch_inner(
             let max_results = args["max_results"].as_u64().unwrap_or(50) as usize;
             let output_mode = args["output_mode"].as_str();
             let context_lines = args["context"].as_u64().map(|n| n as usize);
-            ToolResult::Text(search::grep_files(
+            let result = search::grep_files(
                 pattern,
                 &dir,
                 file_glob,
                 max_results,
                 output_mode,
                 context_lines,
-            ))
+            );
+            // Hint: if dir was not explicitly given and results are empty, suggest additional dirs.
+            if args["dir"].as_str().map_or(true, |s| s.is_empty()) {
+                ToolResult::Text(format_empty_search_hint(&result, additional_dirs))
+            } else {
+                ToolResult::Text(result)
+            }
         }
         Some(BuiltinTool::WebFetch) => {
             let url = args["url"].as_str().unwrap_or("");
@@ -622,6 +728,172 @@ async fn dispatch_inner(
             ))
         }
         None => ToolResult::Text(format!("unknown tool: {name}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{
+        CompressionConfig, Config, ExtensionConfig, GatewayConfig, ModelConfig, SessionConfig,
+        SandboxMode,
+    };
+    use tempfile::TempDir;
+
+    fn default_config() -> Config {
+        Config {
+            gateway: GatewayConfig {
+                url: "http://localhost:9100".to_string(),
+                api_key: String::new(),
+                max_retries: 0,
+            },
+            model: ModelConfig {
+                model: "test".to_string(),
+                max_turns: 10,
+                max_cost_usd: None,
+                max_tool_output: 32_768,
+                system_prompt: None,
+                exploration_nudge_turns: 0,
+            },
+            session: SessionConfig {
+                sessions_dir: PathBuf::from("/tmp"),
+                show_cost: false,
+                persona: None,
+                allowed_tools: None,
+                denied_tools: Vec::new(),
+                denied_paths: Vec::new(),
+                denied_commands: Vec::new(),
+                sandbox_mode: SandboxMode::None,
+                max_session_messages: 100,
+                max_sessions: 10,
+                compile_check_command: None,
+                compile_check_timeout: 30,
+            },
+            compression: CompressionConfig {
+                model: None,
+                threshold: 0.8,
+                preserve_recent: 5,
+            },
+            extensions: ExtensionConfig {
+                mcp_config_path: PathBuf::from("/tmp"),
+                hooks_config_path: PathBuf::from("/tmp"),
+                permission_mode: None,
+                plan_file: None,
+            },
+        }
+    }
+
+    #[test]
+    fn fallback_finds_file_in_additional_dir() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("foo.txt");
+        std::fs::write(&file_path, "content").unwrap();
+
+        let additional_dirs = vec![dir.path().to_path_buf()];
+        let config = default_config();
+
+        let result = resolve_path_with_fallback("foo.txt", &additional_dirs, &config);
+        assert_eq!(result, Some(file_path.to_string_lossy().into_owned()));
+    }
+
+    #[test]
+    fn fallback_returns_none_when_absent() {
+        let dir = TempDir::new().unwrap();
+        let additional_dirs = vec![dir.path().to_path_buf()];
+        let config = default_config();
+
+        let result = resolve_path_with_fallback("nonexistent.txt", &additional_dirs, &config);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn fallback_skips_denied_paths() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("secret.txt");
+        std::fs::write(&file_path, "secret").unwrap();
+
+        let additional_dirs = vec![dir.path().to_path_buf()];
+        let mut config = default_config();
+        // Deny everything in the temp dir
+        config.session.denied_paths = vec![format!("{}/**", dir.path().display())];
+
+        let result = resolve_path_with_fallback("secret.txt", &additional_dirs, &config);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn not_found_hint_includes_dirs() {
+        let dirs = vec![PathBuf::from("/workspace/b"), PathBuf::from("/workspace/c")];
+        let hint = format_not_found_hint("error reading foo: No such file or directory (os error 2)", &dirs);
+        assert!(hint.contains("Hint:"));
+        assert!(hint.contains("/workspace/b"));
+        assert!(hint.contains("/workspace/c"));
+    }
+
+    #[test]
+    fn not_found_hint_no_dirs_unchanged() {
+        let err = "error reading foo: No such file or directory (os error 2)";
+        let hint = format_not_found_hint(err, &[]);
+        assert_eq!(hint, err);
+    }
+
+    #[test]
+    fn empty_search_hint_appended_for_empty_results() {
+        let dirs = vec![PathBuf::from("/workspace/b")];
+        let hint = format_empty_search_hint("[]", &dirs);
+        assert!(hint.contains("Hint:"));
+        assert!(hint.contains("/workspace/b"));
+    }
+
+    #[test]
+    fn empty_search_hint_not_appended_for_non_empty() {
+        let dirs = vec![PathBuf::from("/workspace/b")];
+        let result = r#"["file.rs"]"#;
+        let hint = format_empty_search_hint(result, &dirs);
+        assert_eq!(hint, result);
+    }
+
+    #[tokio::test]
+    async fn dispatch_read_file_resolves_via_fallback() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("bar.txt");
+        std::fs::write(&file_path, "hello from fallback").unwrap();
+
+        let additional_dirs = vec![dir.path().to_path_buf()];
+        let config = default_config();
+        let args = serde_json::json!({"path": "bar.txt"});
+
+        // Session cwd is some other directory where bar.txt does not exist
+        let other_dir = TempDir::new().unwrap();
+        let result = dispatch("read_file", &args, &config, Some(other_dir.path()), None, &additional_dirs).await;
+        let text = result.into_text();
+        assert!(text.contains("hello from fallback"), "got: {text}");
+    }
+
+    #[tokio::test]
+    async fn dispatch_read_file_hint_when_not_found_anywhere() {
+        let dir = TempDir::new().unwrap();
+        let additional_dirs = vec![dir.path().to_path_buf()];
+        let config = default_config();
+        let args = serde_json::json!({"path": "missing.txt"});
+
+        let other_dir = TempDir::new().unwrap();
+        let result = dispatch("read_file", &args, &config, Some(other_dir.path()), None, &additional_dirs).await;
+        let text = result.into_text();
+        assert!(text.contains("Hint:"), "expected hint, got: {text}");
+    }
+
+    #[tokio::test]
+    async fn dispatch_glob_empty_result_hint() {
+        let dir = TempDir::new().unwrap();
+        let additional_dirs = vec![dir.path().to_path_buf()];
+        let config = default_config();
+        let args = serde_json::json!({"pattern": "*.nonexistent"});
+
+        let other_dir = TempDir::new().unwrap();
+        let result = dispatch("glob_files", &args, &config, Some(other_dir.path()), None, &additional_dirs).await;
+        let text = result.into_text();
+        assert!(text.contains("Hint:"), "expected hint, got: {text}");
     }
 }
 
