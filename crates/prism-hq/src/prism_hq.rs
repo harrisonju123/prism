@@ -2,7 +2,7 @@ mod agent_roster_panel;
 mod notification;
 mod agent_spawner;
 mod agent_view;
-mod approval_gate;
+pub mod approval_gate;
 mod command_center;
 pub mod context_service;
 mod dashboard_panel;
@@ -15,7 +15,7 @@ mod navigator_panel;
 mod panel_types;
 mod plan_dispatch;
 mod plan_view;
-mod review_packet;
+pub mod review_packet;
 mod running_agents;
 mod session_history_panel;
 mod task_board;
@@ -23,6 +23,8 @@ mod task_board_panel;
 mod thread_view;
 mod types;
 
+pub use approval_gate::{ApprovalDecision, ApprovalGate};
+pub use review_packet::ReviewPacket;
 pub use agent_roster_panel::AgentRosterPanel;
 pub use agent_view::{AgentViewItem, OpenAgentView, open_agent_view};
 pub use command_center::{CommandCenterItem, OpenCommandCenter, open_command_center};
@@ -42,6 +44,9 @@ pub use task_board_panel::TaskBoardPanel;
 pub use thread_view::{OpenThreadView, ThreadViewItem, open_thread_view};
 
 use gpui::{App, Window};
+use notifications::status_toast::{StatusToast, ToastIcon};
+use running_agents::RunningAgentsEvent;
+use ui::{Color, IconName};
 use workspace::Workspace;
 
 pub fn init(cx: &mut App) {
@@ -118,6 +123,27 @@ pub fn init(cx: &mut App) {
                     workspace.close_panel::<PrismDashboardPanel>(window, cx);
                 }
             });
+
+            // Show a toast when an agent exits with a "Review" action to open the Inbox.
+            if let Some(ra) = RunningAgents::global(cx) {
+                cx.subscribe(&ra, |workspace, _ra, event, cx| {
+                    let RunningAgentsEvent::AgentExited { agent_name } = event;
+                    let name = agent_name.clone();
+                    let toast = StatusToast::new(
+                        format!("{name} finished — ready for review"),
+                        cx,
+                        |this: StatusToast, _cx| {
+                            this.icon(ToastIcon::new(IconName::Check).color(Color::Success))
+                                .action("Review", move |window: &mut Window, cx| {
+                                    window.dispatch_action(Box::new(OpenInbox), cx);
+                                })
+                                .dismiss_button(true)
+                        },
+                    );
+                    workspace.toggle_status_toast(toast, cx);
+                })
+                .detach();
+            }
 
             // Open Inbox as the default center tab on startup.
             if let (Some(hq_state), Some(window)) = (HqState::global(cx), window) {

@@ -7,9 +7,12 @@ use ui::{
     Button, ButtonStyle, Color, Icon, IconName, Label, LabelSize, TintColor, h_flex, prelude::*,
     v_flex,
 };
+use workspace::Workspace;
 use workspace::item::{Item, ItemEvent};
 
+use crate::approval_gate::{ApprovalDecision, ApprovalGate};
 use crate::context_service::ContextService;
+use crate::review_packet::ReviewPacket;
 
 use crate::running_agents::RunningAgents;
 
@@ -24,10 +27,16 @@ pub struct AgentViewItem {
     error: Option<String>,
     refresh_task: Option<Task<()>>,
     _auto_refresh: Task<()>,
+    workspace: Option<WeakEntity<Workspace>>,
 }
 
 impl AgentViewItem {
-    pub fn new(agent_name: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        agent_name: String,
+        workspace: Option<WeakEntity<Workspace>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         cx.on_focus(&focus_handle, window, |_, _, cx| cx.notify())
             .detach();
@@ -62,6 +71,7 @@ impl AgentViewItem {
             error: None,
             refresh_task: None,
             _auto_refresh: auto_refresh,
+            workspace,
         };
         item.refresh(cx);
         item
@@ -166,6 +176,59 @@ impl AgentViewItem {
             .ok();
         }));
     }
+
+    fn review_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use prism_context::model::AgentState;
+
+        let agent_name = self.agent_name.clone();
+
+        let handle = cx
+            .try_global::<ContextService>()
+            .and_then(|svc| svc.handle());
+
+        let mut packet = ReviewPacket {
+            task_name: agent_name.clone(),
+            branch: agent_name.clone(),
+            ..Default::default()
+        };
+
+        if let Some(ref h) = handle {
+            packet.enrich_from_context(h, &agent_name);
+        }
+
+        let agent_output = RunningAgents::global(cx)
+            .map(|ra| ra.read(cx).output_lines(&agent_name))
+            .unwrap_or_default();
+        packet.enrich_test_summary(&agent_output);
+        packet.enrich_diff(&agent_name);
+
+        if let Some(ws_ref) = self.workspace.as_ref().and_then(|w| w.upgrade()) {
+            ws_ref.update(cx, |workspace, cx| {
+                ApprovalGate::open(
+                    packet.task_name,
+                    packet.description,
+                    packet.branch,
+                    packet.diff_preview,
+                    packet.session_cost_usd,
+                    packet.test_summary,
+                    move |decision: ApprovalDecision| {
+                        if let Some(h) = handle {
+                            let state = match decision {
+                                ApprovalDecision::Reject => AgentState::Idle,
+                                _ => AgentState::Working,
+                            };
+                            std::thread::spawn(move || {
+                                let _ = h.set_agent_state(&agent_name, state);
+                            });
+                        }
+                    },
+                    workspace,
+                    window,
+                    cx,
+                );
+            });
+        }
+    }
 }
 
 impl EventEmitter<ItemEvent> for AgentViewItem {}
@@ -261,6 +324,14 @@ impl Render for AgentViewItem {
                                 Label::new("Agent has finished its work")
                                     .size(LabelSize::XSmall)
                                     .color(Color::Muted),
+                            )
+                            .child(
+                                Button::new("review-agent", "Review")
+                                    .style(ButtonStyle::Filled)
+                                    .label_size(LabelSize::Small)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.review_agent(window, cx);
+                                    })),
                             ),
                     )
                 })
@@ -450,7 +521,10 @@ pub fn open_agent_view(
         workspace.activate_item(&existing, true, true, window, cx);
     } else {
         let name = agent_name.clone();
-        let item = cx.new(|cx: &mut Context<AgentViewItem>| AgentViewItem::new(name, window, cx));
+        let ws_weak = cx.weak_entity();
+        let item = cx.new(|cx: &mut Context<AgentViewItem>| {
+            AgentViewItem::new(name, Some(ws_weak), window, cx)
+        });
         workspace.add_item_to_center(Box::new(item), window, cx);
     }
 }

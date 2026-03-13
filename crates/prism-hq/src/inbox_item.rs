@@ -723,13 +723,29 @@ impl Render for InboxItem {
                             })
                             // Completed actions
                             .when(is_completed && !is_resolved, |this| {
-                                let entry_clone = entry.clone();
+                                let entry_review = entry.clone();
+                                let entry_merge = entry.clone();
                                 this.child(
-                                    Button::new(("entry-merge", ix), "Merge")
+                                    Button::new(("entry-review-completed", ix), "Review")
                                         .style(ButtonStyle::Filled)
                                         .label_size(LabelSize::XSmall)
+                                        .on_click(cx.listener({
+                                            move |this, _, window, cx| {
+                                                this.mark_read(entry_review.id, cx);
+                                                this.open_approval_gate(
+                                                    &entry_review,
+                                                    window,
+                                                    cx,
+                                                );
+                                            }
+                                        })),
+                                )
+                                .child(
+                                    Button::new(("entry-merge", ix), "Merge")
+                                        .style(ButtonStyle::Subtle)
+                                        .label_size(LabelSize::XSmall)
                                         .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.merge_completed(&entry_clone, cx);
+                                            this.merge_completed(&entry_merge, cx);
                                         })),
                                 )
                             })

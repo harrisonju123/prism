@@ -14131,6 +14131,7 @@ dependencies = [
  "language_models",
  "log",
  "menu",
+ "notifications",
  "prism-client",
  "prism-context",
  "prism-types",

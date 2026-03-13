@@ -22,6 +22,7 @@ http_client.workspace = true
 language_models.workspace = true
 log.workspace = true
 menu.workspace = true
+notifications.workspace = true
 prism-client = { workspace = true }
 prism-context.workspace = true
 prism-types.workspace = true
