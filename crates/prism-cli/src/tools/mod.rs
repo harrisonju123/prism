@@ -49,6 +49,7 @@ pub enum BuiltinTool {
     CheckBackgroundTasks,
     AddDir,
     AskHuman,
+    ReportBlocker,
 }
 
 impl BuiltinTool {
@@ -72,6 +73,7 @@ impl BuiltinTool {
             "check_background_tasks" => Some(Self::CheckBackgroundTasks),
             "add_dir" => Some(Self::AddDir),
             "ask_human" => Some(Self::AskHuman),
+            "report_blocker" => Some(Self::ReportBlocker),
             _ => None,
         }
     }
@@ -95,6 +97,7 @@ impl BuiltinTool {
             Self::CheckBackgroundTasks => "check_background_tasks",
             Self::AddDir => "add_dir",
             Self::AskHuman => "ask_human",
+            Self::ReportBlocker => "report_blocker",
         }
     }
 
@@ -116,6 +119,8 @@ impl BuiltinTool {
             Self::Skill,
             Self::CheckBackgroundTasks,
             Self::AddDir,
+            Self::AskHuman,
+            Self::ReportBlocker,
         ]
     }
 }
@@ -277,6 +282,19 @@ pub fn tool_definitions() -> Vec<Tool> {
                 "question": { "type": "string", "description": "The question or request to send to the human" },
                 "severity": { "type": "string", "enum": ["critical", "warning", "info"], "description": "Urgency level (default: info)" }
             }, "required": ["question"] }),
+        ),
+        make_tool(
+            "report_blocker",
+            "Report a validated blocker. You MUST complete the Claim Validation Protocol before calling this: (1) trace initialization, (2) check reachability, (3) check alternative handlers. All evidence fields are required.",
+            json!({ "type": "object", "properties": {
+                "title": { "type": "string", "description": "Short blocker summary" },
+                "description": { "type": "string", "description": "What is blocked and why" },
+                "initialization_trace": { "type": "string", "description": "Where the suspect value/condition originates — file paths, line numbers, assignment chain" },
+                "reachability": { "type": "string", "description": "Whether this condition is reachable in prod/staging — code path, feature flags, config gates" },
+                "alternative_handlers": { "type": "string", "description": "Other handlers that already cover this condition — or what you searched and why none exist" },
+                "severity": { "type": "string", "enum": ["critical", "warning"], "description": "critical = work cannot proceed; warning = degraded (default: warning)" },
+                "thread": { "type": "string", "description": "Thread name (defaults to current thread)" }
+            }, "required": ["title", "description", "initialization_trace", "reachability", "alternative_handlers"] }),
         ),
     ]
 }
@@ -719,7 +737,8 @@ async fn dispatch_inner(
             | BuiltinTool::Skill
             | BuiltinTool::CheckBackgroundTasks
             | BuiltinTool::AddDir
-            | BuiltinTool::AskHuman,
+            | BuiltinTool::AskHuman
+            | BuiltinTool::ReportBlocker,
         ) => {
             // Intercepted before dispatch() in the agent loop; reaching here means
             // the caller invoked dispatch() directly without agent context.

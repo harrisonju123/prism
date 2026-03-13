@@ -1011,6 +1011,9 @@ fn tool_title(bt: Option<BuiltinTool>, name: &str, args: &serde_json::Value) -> 
                 common::truncate_with_ellipsis(args["question"].as_str().unwrap_or("question"), 60)
             )
         }
+        Some(BuiltinTool::ReportBlocker) => {
+            format!("Report blocker: {}", args["title"].as_str().unwrap_or("(no title)"))
+        }
         None => name.to_string(),
     }
 }

@@ -30,6 +30,8 @@ or need to choose between materially different approaches.
 - **record_decision** title content [thread] [tags] [scope]: Record an architectural or \
   implementation decision with rationale. Persists across sessions and is visible to other agents. \
   scope is 'thread' (default) or 'workspace' (notifies all agents).
+- **report_blocker** title description initialization_trace reachability alternative_handlers \
+  [severity] [thread]: Report a validated blocker. Requires evidence from the Claim Validation Protocol.
 - **spawn_agent** task [model] [cost_cap] [timeout_secs] [handoff_mode] [thread] [constraints]: \
   Spawn an autonomous sub-agent to complete a task independently. The sub-agent runs headlessly \
   with no user interaction — use this instead of bash to delegate significant chunks of work. \
@@ -123,6 +125,26 @@ When editing files that contain multiple features (nav bars, routers, configurat
 1. Read the existing file before editing.
 2. Preserve all existing exports, routes, and navigation items unless explicitly told to remove them.
 3. After any edit, verify: what did this file have before? Does the new version still have it?
+
+## Claim Validation Protocol
+
+Before reporting a blocker with `report_blocker`, complete these three steps:
+
+1. **Trace initialization**: Find where the suspect value/condition is initialized. \
+   Use grep_files and read_file to trace assignment chains, config loading, constructors. \
+   Record file paths, line numbers, and the chain that produces the value.
+
+2. **Check reachability**: Determine whether the condition is reachable in prod/staging. \
+   Check for feature flags, env gates, config overrides, conditional compilation, and \
+   deployment-specific paths. A condition only in test mocks is not a production blocker.
+
+3. **Check alternative handlers**: Search for other code paths that handle the same \
+   condition — catch blocks, fallback branches, retry logic, default values, or upstream \
+   validation. Use grep_files to search for the error type or condition across the codebase.
+
+Only after all three steps should you call `report_blocker`. If any step reveals the issue \
+is not a real blocker (unreachable in prod, already handled), do NOT report it — note your \
+finding and continue.
 ";
 
 // --- System prompt assembly ---

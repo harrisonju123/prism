@@ -1362,6 +1362,18 @@ If you have questions, ask them now. If you're confident, continue."
                                     elapsed_ms: t0.elapsed().as_millis(),
                                 });
                             }
+                            Some(BuiltinTool::ReportBlocker) => {
+                                let t0 = std::time::Instant::now();
+                                let result = self.handle_report_blocker(&ptc.args).await;
+                                outcomes.push(ToolOutcome::Result {
+                                    index: ptc.index,
+                                    id: ptc.id,
+                                    name: ptc.name,
+                                    args: ptc.args,
+                                    result,
+                                    elapsed_ms: t0.elapsed().as_millis(),
+                                });
+                            }
                             Some(BuiltinTool::AddDir) => {
                                 let t0 = std::time::Instant::now();
                                 let path_str = ptc.args["path"].as_str().unwrap_or("").to_string();
@@ -1982,6 +1994,21 @@ If you have questions, ask them now. If you're confident, continue."
         Some((store, ws_id))
     }
 
+    /// Resolve a thread UUID from an explicit arg or the current thread fallback.
+    /// Returns `None` if no thread name is available or the lookup fails.
+    async fn resolve_thread_id(
+        &self,
+        thread_arg: &serde_json::Value,
+        store: &dyn prism_context::store::Store,
+        ws_id: uuid::Uuid,
+    ) -> Option<uuid::Uuid> {
+        let name = thread_arg
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .or(self.current_thread.as_deref())?;
+        store.get_thread(ws_id, name).await.ok().map(|t| t.id)
+    }
+
     /// Returns (store, workspace_id, agent_name) if uglyhat is configured.
     fn uh_context(&self) -> Option<(&dyn prism_context::store::Store, uuid::Uuid, String)> {
         let store = self.memory.store()?;
@@ -2421,6 +2448,68 @@ If you have questions, ask them now. If you're confident, continue."
         }
     }
 
+    /// Handle the `report_blocker` tool — posts a validated blocker to the inbox with evidence.
+    async fn handle_report_blocker(&self, args: &serde_json::Value) -> String {
+        use prism_context::model::{InboxEntryType, InboxSeverity};
+
+        let Some((store, ws_id, agent_name)) = self.uh_context() else {
+            return json!({"error": "no uglyhat context store available"}).to_string();
+        };
+
+        let title = args["title"].as_str().unwrap_or("").to_string();
+        let description = args["description"].as_str().unwrap_or("").to_string();
+        let initialization_trace = args["initialization_trace"].as_str().unwrap_or("").to_string();
+        let reachability = args["reachability"].as_str().unwrap_or("").to_string();
+        let alternative_handlers = args["alternative_handlers"].as_str().unwrap_or("").to_string();
+
+        for (field, value) in [
+            ("title", &title),
+            ("description", &description),
+            ("initialization_trace", &initialization_trace),
+            ("reachability", &reachability),
+            ("alternative_handlers", &alternative_handlers),
+        ] {
+            if value.is_empty() {
+                return json!({"error": format!("{field} is required")}).to_string();
+            }
+        }
+
+        let severity = match args["severity"].as_str() {
+            Some("critical") => InboxSeverity::Critical,
+            _ => InboxSeverity::Warning,
+        };
+
+        let body = json!({
+            "description": description,
+            "evidence": {
+                "initialization_trace": initialization_trace,
+                "reachability": reachability,
+                "alternative_handlers": alternative_handlers,
+            }
+        })
+        .to_string();
+
+        let thread_id = self.resolve_thread_id(&args["thread"], store, ws_id).await;
+        let ref_type = thread_id.is_some().then_some("thread");
+
+        match store
+            .create_inbox_entry(
+                ws_id,
+                InboxEntryType::Blocked,
+                &title,
+                &body,
+                severity,
+                Some(&agent_name),
+                ref_type,
+                thread_id,
+            )
+            .await
+        {
+            Ok(e) => json!({ "reported": true, "inbox_id": e.id.to_string() }).to_string(),
+            Err(e) => json!({ "error": e.to_string() }).to_string(),
+        }
+    }
+
     /// Handle the `record_decision` tool — persists a decision with rationale to uglyhat.
     async fn handle_record_decision(&self, args: &serde_json::Value) -> String {
         use prism_context::model::DecisionScope;
@@ -2435,20 +2524,7 @@ If you have questions, ask them now. If you're confident, continue."
             return json!({"error": "title is required"}).to_string();
         }
 
-        // Resolve thread: explicit arg takes precedence, then current_thread
-        let thread_name = args["thread"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .or(self.current_thread.as_deref());
-
-        let thread_id = if let Some(name) = thread_name {
-            match store.get_thread(ws_id, name).await {
-                Ok(t) => Some(t.id),
-                Err(_) => None,
-            }
-        } else {
-            None
-        };
+        let thread_id = self.resolve_thread_id(&args["thread"], store, ws_id).await;
 
         let tags = common::parse_str_array(&args["tags"]);
 
