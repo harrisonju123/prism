@@ -74,6 +74,10 @@ pub struct ModelInfo {
     pub object: String,
     #[serde(default)]
     pub owned_by: String,
+    #[serde(default)]
+    pub prism_input_cost_per_1m: Option<f64>,
+    #[serde(default)]
+    pub prism_output_cost_per_1m: Option<f64>,
 }
 
 // --- SSE parsing ---

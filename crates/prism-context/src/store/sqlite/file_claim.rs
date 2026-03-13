@@ -31,6 +31,14 @@ impl SqliteStore {
     ) -> Result<FileClaim> {
         self.prune_expired_claims(workspace_id).await;
 
+        let id = Uuid::new_v4();
+        let now = now_rfc3339();
+        let expires_at =
+            ttl_secs.map(|s| (chrono::Utc::now() + chrono::Duration::seconds(s)).to_rfc3339());
+
+        // Wrap in a transaction so the SELECT-then-INSERT is atomic under SQLite WAL.
+        let mut tx = self.pool.begin().await?;
+
         // Check for an existing live claim before attempting insert.
         let existing = sqlx::query(
             "SELECT id, workspace_id, file_path, agent_name, claimed_at, expires_at
@@ -38,10 +46,11 @@ impl SqliteStore {
         )
         .bind(workspace_id.to_string())
         .bind(file_path)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?;
 
         if let Some(row) = existing {
+            tx.rollback().await?;
             let claim = row_to_file_claim(&row)?;
             if claim.agent_name != agent_name {
                 return Err(Error::Conflict(
@@ -52,12 +61,7 @@ impl SqliteStore {
             return Ok(claim);
         }
 
-        let id = Uuid::new_v4();
-        let now = now_rfc3339();
-        let expires_at =
-            ttl_secs.map(|s| (chrono::Utc::now() + chrono::Duration::seconds(s)).to_rfc3339());
-
-        sqlx::query(
+        let insert_result = sqlx::query(
             "INSERT INTO file_claims (id, workspace_id, file_path, agent_name, claimed_at, expires_at)
              VALUES ($1, $2, $3, $4, $5, $6)",
         )
@@ -67,8 +71,21 @@ impl SqliteStore {
         .bind(agent_name)
         .bind(&now)
         .bind(&expires_at)
-        .execute(&self.pool)
-        .await?;
+        .execute(&mut *tx)
+        .await;
+
+        match insert_result {
+            Ok(_) => {}
+            Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+                tx.rollback().await?;
+                return Err(Error::Conflict(format!(
+                    "file '{file_path}' already claimed by another agent"
+                )));
+            }
+            Err(e) => return Err(e.into()),
+        }
+
+        tx.commit().await?;
 
         self.log_activity_fire_and_forget(
             workspace_id,

@@ -241,7 +241,7 @@ pub fn tool_definitions() -> Vec<Tool> {
         ),
         make_tool(
             "recall",
-            "Load context from the uglyhat context store. Recall a thread by name or search by tags. Returns memories, decisions, and recent activity.",
+            "Load context from the PrisM context store. Recall a thread by name or search by tags. Returns memories, decisions, and recent activity.",
             json!({ "type": "object", "properties": {
                 "thread": { "type": "string", "description": "Thread name to recall (e.g. 'auth-refactor')" },
                 "tags":   { "type": "array", "items": { "type": "string" }, "description": "Tags to search for (returns matching memories + decisions)" },

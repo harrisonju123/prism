@@ -45,6 +45,18 @@ impl SqliteStore {
         .execute(&mut *tx)
         .await?;
 
+        // Close any open sessions from a previous run (agent re-checkin without checkout)
+        sqlx::query(
+            "UPDATE agent_sessions SET ended_at = $1, summary = 'auto-closed: agent re-checkin'
+             WHERE agent_id = (SELECT id FROM agents WHERE workspace_id = $2 AND name = $3)
+               AND ended_at IS NULL",
+        )
+        .bind(&now)
+        .bind(workspace_id.to_string())
+        .bind(name)
+        .execute(&mut *tx)
+        .await?;
+
         // Read back agent
         let a_row = sqlx::query(
             "SELECT id, workspace_id, name, state, capabilities, current_thread_id, last_checkin, last_heartbeat, parent_agent_id, created_at, updated_at
@@ -321,7 +333,42 @@ impl SqliteStore {
             .map(|r| r.try_get::<String, _>("name"))
             .collect::<std::result::Result<_, _>>()?;
 
+        if !names.is_empty() {
+            // Close open sessions for reaped agents
+            let now_close = now_rfc3339();
+            sqlx::query(
+                "UPDATE agent_sessions SET ended_at = $1, summary = 'auto-closed: agent reaped'
+                 WHERE agent_id IN (SELECT id FROM agents WHERE workspace_id = $2 AND state = 'dead')
+                   AND ended_at IS NULL",
+            )
+            .bind(&now_close)
+            .bind(workspace_id.to_string())
+            .execute(&self.pool)
+            .await?;
+        }
+
         Ok(names)
+    }
+
+    pub(crate) async fn update_session_impl(
+        &self,
+        workspace_id: Uuid,
+        agent_name: &str,
+        summary: &str,
+        files_touched: Vec<String>,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE agent_sessions SET summary = $1, files_touched = $2
+             WHERE agent_id = (SELECT id FROM agents WHERE workspace_id = $3 AND name = $4)
+               AND ended_at IS NULL",
+        )
+        .bind(summary)
+        .bind(json_array_to_str(&files_touched))
+        .bind(workspace_id.to_string())
+        .bind(agent_name)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// Helper: fetch pending decision notifications inside a transaction.

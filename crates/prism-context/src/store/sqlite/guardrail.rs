@@ -184,6 +184,27 @@ impl SqliteStore {
             reason: None,
         })
     }
+
+    pub(crate) async fn increment_guardrail_cost_impl(
+        &self,
+        workspace_id: Uuid,
+        thread_name: &str,
+        amount_usd: f64,
+    ) -> Result<()> {
+        let thread = self.get_thread_impl(workspace_id, thread_name).await?;
+        let now = now_rfc3339();
+        sqlx::query(
+            "UPDATE thread_guardrails SET cost_spent_usd = cost_spent_usd + $1, updated_at = $2
+             WHERE thread_id = $3 AND workspace_id = $4",
+        )
+        .bind(amount_usd)
+        .bind(&now)
+        .bind(thread.id.to_string())
+        .bind(workspace_id.to_string())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 /// Simple path-pattern matching: supports prefix matching and glob-style `*` suffix.

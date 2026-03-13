@@ -82,12 +82,12 @@ pub async fn spawn_agent(
 
     // Forward thread and handoff context to the child
     if let Some(ref thread) = config.thread {
-        cmd.env(super::UH_THREAD_ENV, thread);
+        cmd.env(super::PRISM_THREAD_ENV, thread);
     }
     if let Some(ref constraints) = config.constraints
         && let Ok(json) = serde_json::to_string(constraints)
     {
-        cmd.env("UH_CONSTRAINTS", json);
+        cmd.env("PRISM_CONSTRAINTS", json);
     }
     // Forward handoff id so the child can accept it on startup
     if let Some(hid) = config.handoff_id {

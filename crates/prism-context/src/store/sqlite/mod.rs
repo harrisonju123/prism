@@ -253,6 +253,17 @@ impl Store for SqliteStore {
         self.reap_dead_agents_impl(workspace_id, timeout_secs).await
     }
 
+    async fn update_session(
+        &self,
+        workspace_id: Uuid,
+        agent_name: &str,
+        summary: &str,
+        files_touched: Vec<String>,
+    ) -> Result<()> {
+        self.update_session_impl(workspace_id, agent_name, summary, files_touched)
+            .await
+    }
+
     async fn recall_thread(&self, workspace_id: Uuid, thread_name: &str) -> Result<ThreadContext> {
         self.recall_thread_impl(workspace_id, thread_name).await
     }
@@ -348,6 +359,16 @@ impl Store for SqliteStore {
         file_path: Option<&str>,
     ) -> Result<GuardrailCheck> {
         self.check_guardrail_impl(workspace_id, thread_name, agent_name, tool_name, file_path)
+            .await
+    }
+
+    async fn increment_guardrail_cost(
+        &self,
+        workspace_id: Uuid,
+        thread_name: &str,
+        amount_usd: f64,
+    ) -> Result<()> {
+        self.increment_guardrail_cost_impl(workspace_id, thread_name, amount_usd)
             .await
     }
 

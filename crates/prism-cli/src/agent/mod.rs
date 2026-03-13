@@ -349,7 +349,7 @@ pub struct Agent {
     // Counts ctrl-c presses within a single run; shared with the spawned signal task.
     // Kept as a field so two-press kill logic persists correctly across REPL turns.
     interrupt_count: Arc<AtomicU32>,
-    /// Current thread name (from UH_THREAD env or handoff)
+    /// Current thread name (from PRISM_THREAD env or handoff)
     current_thread: Option<String>,
     /// Count of write-tool denials while in plan mode
     plan_mode_violations: u32,
@@ -383,9 +383,17 @@ pub struct Agent {
     guard_c_warned: HashSet<String>,
     /// When Some, inject a self-review prompt at the start of the next turn.
     pending_self_review: Option<Vec<String>>,
+    /// Model pricing cache: model name → (input_per_1m_usd, output_per_1m_usd).
+    pricing_cache: HashMap<String, (f64, f64)>,
+    /// True after first populate attempt (success or failure) — prevents retry loops.
+    pricing_cache_populated: bool,
+    /// files_touched.len() at last session checkpoint — for change-detection.
+    last_checkpoint_file_count: usize,
+    /// Guardrail cost accumulated since last 5-turn flush (avoids per-turn DB writes).
+    accumulated_guardrail_cost: f64,
 }
 
-const UH_THREAD_ENV: &str = "UH_THREAD";
+const PRISM_THREAD_ENV: &str = "PRISM_THREAD";
 
 impl Agent {
     pub fn new(
@@ -401,7 +409,9 @@ impl Agent {
         let permission_gate = ToolPermissionGate::resolve(config.extensions.permission_mode);
         let hook_runner = config.build_hook_runner();
         let compressor = config.build_compressor();
-        let current_thread = std::env::var(UH_THREAD_ENV).ok();
+        let current_thread = std::env::var(PRISM_THREAD_ENV)
+            .ok()
+            .or_else(|| std::env::var("UH_THREAD").ok());
         let plan_file = config.extensions.plan_file.clone();
         Self {
             client,
@@ -433,6 +443,10 @@ impl Agent {
             new_feature_plan_triggered: false,
             guard_c_warned: HashSet::new(),
             pending_self_review: None,
+            pricing_cache: HashMap::new(),
+            pricing_cache_populated: false,
+            last_checkpoint_file_count: 0,
+            accumulated_guardrail_cost: 0.0,
         }
     }
 
@@ -447,7 +461,9 @@ impl Agent {
         let permission_gate = ToolPermissionGate::resolve(config.extensions.permission_mode);
         let hook_runner = config.build_hook_runner();
         let compressor = config.build_compressor();
-        let current_thread = std::env::var(UH_THREAD_ENV).ok();
+        let current_thread = std::env::var(PRISM_THREAD_ENV)
+            .ok()
+            .or_else(|| std::env::var("UH_THREAD").ok());
         let plan_file = config.extensions.plan_file.clone();
         Self {
             client,
@@ -479,6 +495,10 @@ impl Agent {
             new_feature_plan_triggered: false,
             guard_c_warned: HashSet::new(),
             pending_self_review: None,
+            pricing_cache: HashMap::new(),
+            pricing_cache_populated: false,
+            last_checkpoint_file_count: 0,
+            accumulated_guardrail_cost: 0.0,
         }
     }
 
@@ -638,6 +658,11 @@ impl Agent {
     }
 
     async fn inner_run_impl(&mut self) -> Result<()> {
+        // Populate pricing cache from gateway on first run (one attempt; fall back to hardcoded).
+        if !self.pricing_cache_populated {
+            self.populate_pricing_cache().await;
+        }
+
         // Reset per-run state
         self.interrupted.store(false, Ordering::SeqCst);
         self.plan_mode_violations = 0;
@@ -699,7 +724,7 @@ impl Agent {
             }
 
             // Heartbeat + state transition to Working
-            self.send_heartbeat_and_set_working().await;
+            self.send_heartbeat_and_set_working(turns).await;
 
             // Poll for workspace-scoped decisions from other agents
             self.poll_and_inject_decisions().await;
@@ -851,29 +876,28 @@ If you have questions, ask them now. If you're confident, continue."
                     total_prompt += u.prompt_tokens;
                     total_completion += u.completion_tokens;
 
-                    let (in_rate, out_rate): (f64, f64) = match model_name.as_str() {
-                        m if m.contains("claude-opus-4") => (5.50, 27.50),
-                        m if m.contains("claude-sonnet-4") => (3.30, 16.50),
-                        m if m.contains("claude-haiku-4") => (1.00, 5.00),
-                        m if m.contains("gpt-5") && m.contains("codex") => (1.75, 14.0),
-                        m if m.contains("gpt-5") => (1.75, 14.0),
-                        m if m.contains("gpt-4o-mini") => (0.15, 0.6),
-                        m if m.contains("gpt-4o") => (2.5, 10.0),
-                        m if m.contains("qwen3") => (0.15, 1.20),
-                        m if m.contains("kimi") => (0.60, 3.00),
-                        m if m.contains("gpt-oss") => (0.15, 0.60),
-                        m if m.contains("minimax") => (0.30, 1.20),
-                        m if m.contains("gemma") => (0.23, 0.38),
-                        m if m.contains("ministral") => (0.20, 0.20),
-                        m if m.contains("nova") => (0.33, 2.75),
-                        m if m.contains("gemini-1.5-pro") => (1.25, 5.0),
-                        m if m.contains("gemini-1.5-flash") => (0.075, 0.3),
-                        _ => (0.0, 0.0),
-                    };
+                    let (in_rate, out_rate): (f64, f64) =
+                        self.pricing_cache.get(model_name.as_str())
+                            .copied()
+                            .unwrap_or_else(|| fallback_cost_rate(&model_name));
                     turn_cost = (u.prompt_tokens as f64 * in_rate
                         + u.completion_tokens as f64 * out_rate)
                         / 1_000_000.0;
                     total_cost_usd += turn_cost;
+                }
+            }
+
+            // Accumulate guardrail cost — flushed to DB every 5 turns to batch writes.
+            if turn_cost > 0.0 {
+                self.accumulated_guardrail_cost += turn_cost;
+            }
+            if turns > 0 && turns % 5 == 0 && self.accumulated_guardrail_cost > 0.0 {
+                let thread = self.current_thread.clone();
+                let cost = std::mem::replace(&mut self.accumulated_guardrail_cost, 0.0);
+                if let Some(thread) = thread
+                    && let Some((store, ws_id, _)) = self.context_store()
+                {
+                    let _ = store.increment_guardrail_cost(ws_id, &thread, cost).await;
                 }
             }
 
@@ -1893,7 +1917,7 @@ If you have questions, ask them now. If you're confident, continue."
         }
 
         // Auto-extract memories from session signals (resolution patterns)
-        if let Some((store, ws_id, agent_name)) = self.uh_context() {
+        if let Some((store, ws_id, agent_name)) = self.context_store() {
             let thread_name = self.current_thread.as_deref();
 
             let mut session_findings: Vec<String> = Vec::new();
@@ -1995,7 +2019,7 @@ If you have questions, ask them now. If you're confident, continue."
     }
 
     /// Returns cloned (store, workspace_id) for use by callers outside the agent loop (e.g. REPL).
-    pub fn uh_store_context(
+    pub fn store_context(
         &self,
     ) -> Option<(
         std::sync::Arc<prism_context::store::sqlite::SqliteStore>,
@@ -2018,29 +2042,75 @@ If you have questions, ask them now. If you're confident, continue."
             .as_str()
             .filter(|s| !s.is_empty())
             .or(self.current_thread.as_deref())?;
-        store.get_thread(ws_id, name).await.ok().map(|t| t.id)
+        match store.get_thread(ws_id, name).await {
+            Ok(t) => Some(t.id),
+            Err(e) => {
+                tracing::warn!(thread = %name, "thread lookup failed: {e}");
+                None
+            }
+        }
     }
 
-    /// Returns (store, workspace_id, agent_name) if uglyhat is configured.
-    fn uh_context(&self) -> Option<(&dyn prism_context::store::Store, uuid::Uuid, String)> {
+    /// Returns (store, workspace_id, agent_name) if context store is configured.
+    fn context_store(&self) -> Option<(&dyn prism_context::store::Store, uuid::Uuid, String)> {
         let store = self.memory.store()?;
         let ws_id = self.memory.workspace_id()?;
         let agent_name = crate::config::agent_name_from_env();
         Some((store.as_ref(), ws_id, agent_name))
     }
 
-    /// Send heartbeat and set agent state to Working via uglyhat store.
-    async fn send_heartbeat_and_set_working(&self) {
-        use prism_context::model::AgentState;
+    /// Fetch model pricing from the gateway `/v1/models` endpoint and populate the cache.
+    /// Always marks `pricing_cache_populated = true` so we never retry on failure.
+    async fn populate_pricing_cache(&mut self) {
+        self.pricing_cache_populated = true;
+        match self.client.list_models().await {
+            Ok(resp) => {
+                for m in resp.data {
+                    let input = m.prism_input_cost_per_1m.unwrap_or(0.0);
+                    let output = m.prism_output_cost_per_1m.unwrap_or(0.0);
+                    if input > 0.0 || output > 0.0 {
+                        self.pricing_cache.insert(m.id, (input, output));
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::debug!("pricing cache: gateway unavailable, using fallback rates: {e}");
+            }
+        }
+    }
 
-        let Some((store, ws_id, agent_name)) = self.uh_context() else {
-            return;
+    /// Send heartbeat and set agent state to Working via context store.
+    async fn send_heartbeat_and_set_working(&mut self, turn: u32) {
+        use prism_context::model::AgentState;
+        use prism_context::store::Store as _;
+
+        // Clone the Arc so we hold no borrow on self — allows mutation below.
+        let ws_id = match self.memory.workspace_id() {
+            Some(id) => id,
+            None => return,
         };
+        let store = match self.memory.store().cloned() {
+            Some(s) => s,
+            None => return,
+        };
+        let agent_name = crate::config::agent_name_from_env();
 
         let _ = store.heartbeat(ws_id, &agent_name).await;
         let _ = store
             .set_agent_state(ws_id, &agent_name, AgentState::Working)
             .await;
+
+        // Every 5 turns: persist session state, but only when files_touched changed.
+        if turn > 0 && turn % 5 == 0 {
+            let current_len = self.files_touched.len();
+            if current_len != self.last_checkpoint_file_count {
+                let files: Vec<String> = self.files_touched.iter().cloned().collect();
+                let _ = store
+                    .update_session(ws_id, &agent_name, "in-progress", files)
+                    .await;
+                self.last_checkpoint_file_count = current_len;
+            }
+        }
     }
 
     /// Poll for pending decision notifications and inject them as a system message.
@@ -2309,7 +2379,7 @@ If you have questions, ask them now. If you're confident, continue."
             Some(s) => s,
             None => {
                 tracing::warn!(
-                    "plan mode: no uglyhat context — falling back to prompt-for-everything"
+                    "plan mode: no context store — falling back to prompt-for-everything"
                 );
                 return false;
             }
@@ -2391,7 +2461,7 @@ If you have questions, ask them now. If you're confident, continue."
     /// Check thread-scoped guardrails. Returns Some(denial_message) if denied.
     async fn check_guardrails(&self, tool_name: &str, args: &serde_json::Value) -> Option<String> {
         let thread_name = self.current_thread.as_deref()?;
-        let (store, ws_id, agent_name) = self.uh_context()?;
+        let (store, ws_id, agent_name) = self.context_store()?;
 
         // Only pass file_path for write tools — allowed_files semantically means "files you
         // may mutate." Passing it for reads would block legitimate reads on restricted paths.
@@ -2413,7 +2483,7 @@ If you have questions, ask them now. If you're confident, continue."
     pub async fn set_idle(&self) {
         use prism_context::model::AgentState;
 
-        let Some((store, ws_id, agent_name)) = self.uh_context() else {
+        let Some((store, ws_id, agent_name)) = self.context_store() else {
             return;
         };
 
@@ -2427,8 +2497,8 @@ If you have questions, ask them now. If you're confident, continue."
     async fn handle_ask_human(&self, args: &serde_json::Value) -> String {
         use prism_context::model::{InboxEntryType, InboxSeverity};
 
-        let Some((store, ws_id, agent_name)) = self.uh_context() else {
-            return json!({"error": "no uglyhat context store available"}).to_string();
+        let Some((store, ws_id, agent_name)) = self.context_store() else {
+            return json!({"error": "no context store available"}).to_string();
         };
 
         let question = args["question"].as_str().unwrap_or("").to_string();
@@ -2464,8 +2534,8 @@ If you have questions, ask them now. If you're confident, continue."
     async fn handle_report_blocker(&self, args: &serde_json::Value) -> String {
         use prism_context::model::{InboxEntryType, InboxSeverity};
 
-        let Some((store, ws_id, agent_name)) = self.uh_context() else {
-            return json!({"error": "no uglyhat context store available"}).to_string();
+        let Some((store, ws_id, agent_name)) = self.context_store() else {
+            return json!({"error": "no context store available"}).to_string();
         };
 
         let title = args["title"].as_str().unwrap_or("").to_string();
@@ -2526,8 +2596,8 @@ If you have questions, ask them now. If you're confident, continue."
     async fn handle_report_finding(&self, args: &serde_json::Value) -> String {
         use prism_context::model::{InboxEntryType, InboxSeverity};
 
-        let Some((store, ws_id, agent_name)) = self.uh_context() else {
-            return json!({"error": "no uglyhat context store available"}).to_string();
+        let Some((store, ws_id, agent_name)) = self.context_store() else {
+            return json!({"error": "no context store available"}).to_string();
         };
 
         let confidence = args["confidence"].as_str().unwrap_or("").to_string();
@@ -2619,8 +2689,8 @@ If you have questions, ask them now. If you're confident, continue."
     async fn handle_record_decision(&self, args: &serde_json::Value) -> String {
         use prism_context::model::DecisionScope;
 
-        let Some((store, ws_id, _agent_name)) = self.uh_context() else {
-            return json!({"error": "no uglyhat context store available"}).to_string();
+        let Some((store, ws_id, _agent_name)) = self.context_store() else {
+            return json!({"error": "no context store available"}).to_string();
         };
 
         let title = args["title"].as_str().unwrap_or("").to_string();
@@ -2658,7 +2728,7 @@ If you have questions, ask them now. If you're confident, continue."
         use prism_context::store::Store;
 
         let Some(store) = self.memory.store() else {
-            return json!({"error": "no uglyhat context store available"}).to_string();
+            return json!({"error": "no context store available"}).to_string();
         };
         let Some(ws_id) = self.memory.workspace_id() else {
             return json!({"error": "no workspace configured"}).to_string();
@@ -2730,6 +2800,29 @@ fn compute_implicit_quality(
         quality -= 0.40;
     }
     quality.clamp(0.0, 1.0)
+}
+
+/// Hardcoded cost fallback rates (per 1M tokens) when gateway pricing is unavailable.
+fn fallback_cost_rate(model: &str) -> (f64, f64) {
+    match model {
+        m if m.contains("claude-opus-4") => (5.50, 27.50),
+        m if m.contains("claude-sonnet-4") => (3.30, 16.50),
+        m if m.contains("claude-haiku-4") => (1.00, 5.00),
+        m if m.contains("gpt-5") && m.contains("codex") => (1.75, 14.0),
+        m if m.contains("gpt-5") => (1.75, 14.0),
+        m if m.contains("gpt-4o-mini") => (0.15, 0.6),
+        m if m.contains("gpt-4o") => (2.5, 10.0),
+        m if m.contains("qwen3") => (0.15, 1.20),
+        m if m.contains("kimi") => (0.60, 3.00),
+        m if m.contains("gpt-oss") => (0.15, 0.60),
+        m if m.contains("minimax") => (0.30, 1.20),
+        m if m.contains("gemma") => (0.23, 0.38),
+        m if m.contains("ministral") => (0.20, 0.20),
+        m if m.contains("nova") => (0.33, 2.75),
+        m if m.contains("gemini-1.5-pro") => (1.25, 5.0),
+        m if m.contains("gemini-1.5-flash") => (0.075, 0.3),
+        _ => (0.0, 0.0),
+    }
 }
 
 /// Extract the file path from tool args for guardrail checking.

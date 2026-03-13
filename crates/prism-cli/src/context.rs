@@ -433,12 +433,12 @@ async fn resolve_thread_id(
     store: &SqliteStore,
     workspace_id: Uuid,
     thread_name: &str,
-) -> Option<Uuid> {
+) -> anyhow::Result<Uuid> {
     store
         .get_thread(workspace_id, thread_name)
         .await
-        .ok()
         .map(|t| t.id)
+        .map_err(|_| anyhow!("thread '{thread_name}' not found"))
 }
 
 // ---------------------------------------------------------------------------
@@ -584,7 +584,7 @@ pub async fn run(cmd: ContextCmd) -> Result<()> {
             tags,
         } => {
             let thread_id = if let Some(ref tname) = thread {
-                resolve_thread_id(&store, workspace_id, tname).await
+                Some(resolve_thread_id(&store, workspace_id, tname).await?)
             } else {
                 None
             };
@@ -650,7 +650,7 @@ pub async fn run(cmd: ContextCmd) -> Result<()> {
                     .parse()
                     .map_err(|e| anyhow!("invalid decision id: {e}"))?;
                 let thread_id = if let Some(ref tname) = thread {
-                    resolve_thread_id(&store, workspace_id, tname).await
+                    Some(resolve_thread_id(&store, workspace_id, tname).await?)
                 } else {
                     None
                 };
@@ -668,7 +668,7 @@ pub async fn run(cmd: ContextCmd) -> Result<()> {
                 print_json(&d);
             } else {
                 let thread_id = if let Some(ref tname) = thread {
-                    resolve_thread_id(&store, workspace_id, tname).await
+                    Some(resolve_thread_id(&store, workspace_id, tname).await?)
                 } else {
                     None
                 };
@@ -691,7 +691,7 @@ pub async fn run(cmd: ContextCmd) -> Result<()> {
         }
         ContextCmd::Decisions { thread, tags } => {
             let thread_id = if let Some(ref tname) = thread {
-                resolve_thread_id(&store, workspace_id, tname).await
+                Some(resolve_thread_id(&store, workspace_id, tname).await?)
             } else {
                 None
             };
@@ -735,7 +735,7 @@ pub async fn run(cmd: ContextCmd) -> Result<()> {
         } => {
             let agent = name.unwrap_or_else(|| agent_name_from_env());
             let thread_id = if let Some(ref tname) = thread {
-                resolve_thread_id(&store, workspace_id, tname).await
+                Some(resolve_thread_id(&store, workspace_id, tname).await?)
             } else {
                 None
             };
@@ -820,7 +820,7 @@ pub async fn run(cmd: ContextCmd) -> Result<()> {
             } => {
                 let from_agent = agent_name_from_env();
                 let thread_id = if let Some(ref tname) = thread {
-                    resolve_thread_id(&store, workspace_id, tname).await
+                    Some(resolve_thread_id(&store, workspace_id, tname).await?)
                 } else {
                     None
                 };

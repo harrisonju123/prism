@@ -149,6 +149,14 @@ pub trait Store: Send + Sync {
         state: AgentState,
     ) -> Result<()>;
     async fn reap_dead_agents(&self, workspace_id: Uuid, timeout_secs: i64) -> Result<Vec<String>>;
+    /// Persist mid-session state without closing the session (crash recovery).
+    async fn update_session(
+        &self,
+        workspace_id: Uuid,
+        agent_name: &str,
+        summary: &str,
+        files_touched: Vec<String>,
+    ) -> Result<()>;
 
     // --- Context (2) ---
     async fn recall_thread(&self, workspace_id: Uuid, thread_name: &str) -> Result<ThreadContext>;
@@ -198,7 +206,7 @@ pub trait Store: Send + Sync {
         status: Option<HandoffStatus>,
     ) -> Result<Vec<Handoff>>;
 
-    // --- Guardrails (3) ---
+    // --- Guardrails (4) ---
     async fn set_guardrails(
         &self,
         workspace_id: Uuid,
@@ -218,6 +226,12 @@ pub trait Store: Send + Sync {
         tool_name: &str,
         file_path: Option<&str>,
     ) -> Result<GuardrailCheck>;
+    async fn increment_guardrail_cost(
+        &self,
+        workspace_id: Uuid,
+        thread_name: &str,
+        amount_usd: f64,
+    ) -> Result<()>;
 
     // --- Overview (1) ---
     async fn get_workspace_overview(&self, workspace_id: Uuid) -> Result<WorkspaceOverview>;

@@ -77,7 +77,7 @@ pub async fn run_interactive(
     };
 
     // Register "human" as a first-class agent so it appears in uh agents and can receive messages.
-    if let Some((store, ws_id)) = agent.uh_store_context() {
+    if let Some((store, ws_id)) = agent.store_context() {
         use prism_context::store::Store as _;
         let _ = store.checkin(ws_id, "human", vec![], None).await;
     }
@@ -114,7 +114,7 @@ pub async fn run_interactive(
 
         // Surface pending inbox entries (e.g. from subagents via ask_human)
         // and direct messages addressed to "human" before each prompt.
-        if let Some((store, ws_id)) = agent.uh_store_context() {
+        if let Some((store, ws_id)) = agent.store_context() {
             use prism_context::store::{InboxFilters, Store};
             let filters = InboxFilters {
                 unread_only: true,
@@ -214,7 +214,7 @@ pub async fn run_interactive(
         };
 
         // Record the human's task as a Plan in uglyhat — fire-and-forget.
-        if let Some((store, ws_id)) = agent.uh_store_context() {
+        if let Some((store, ws_id)) = agent.store_context() {
             let intent = task_str.to_string();
             tokio::spawn(async move {
                 use prism_context::store::Store;
