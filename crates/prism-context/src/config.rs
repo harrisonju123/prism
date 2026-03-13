@@ -86,8 +86,7 @@ pub async fn auto_init(
     }
 
     let prism_dir = dir.join(CONFIG_DIR);
-    std::fs::create_dir_all(&prism_dir)
-        .map_err(|e| format!("create .prism dir: {e}"))?;
+    std::fs::create_dir_all(&prism_dir).map_err(|e| format!("create .prism dir: {e}"))?;
 
     let db_path = prism_dir.join(NEW_DB_FILE);
     let store = SqliteStore::open(&db_path.to_string_lossy())
@@ -105,8 +104,7 @@ pub async fn auto_init(
     };
     let config_json =
         serde_json::to_string_pretty(&config).map_err(|e| format!("serialize config: {e}"))?;
-    std::fs::write(&new_config_path, &config_json)
-        .map_err(|e| format!("write config: {e}"))?;
+    std::fs::write(&new_config_path, &config_json).map_err(|e| format!("write config: {e}"))?;
 
     Ok((new_config_path, workspace.id.to_string()))
 }

@@ -6972,7 +6972,7 @@ fn ai_page() -> SettingsPage {
         ]
     }
 
-    fn agent_configuration_section() -> [SettingsPageItem; 12] {
+    fn agent_configuration_section() -> [SettingsPageItem; 13] {
         [
             SettingsPageItem::SectionHeader("Agent Configuration"),
             SettingsPageItem::SubPageLink(SubPageLink {
@@ -6997,6 +6997,24 @@ fn ai_page() -> SettingsPage {
                             .agent
                             .get_or_insert_default()
                             .single_file_review = value;
+                    },
+                }),
+                metadata: None,
+                files: USER,
+            }),
+            SettingsPageItem::SettingItem(SettingItem {
+                title: "Edit Review Mode",
+                description: "Controls when agent file edits are saved to disk. \"auto_apply\" saves immediately; \"review_first\" holds edits in memory and opens the diff review pane so you can accept or reject before writing to disk.",
+                field: Box::new(SettingField {
+                    json_path: Some("agent.edit_review_mode"),
+                    pick: |settings_content| {
+                        settings_content.agent.as_ref()?.edit_review_mode.as_ref()
+                    },
+                    write: |settings_content, value| {
+                        settings_content
+                            .agent
+                            .get_or_insert_default()
+                            .edit_review_mode = value;
                     },
                 }),
                 metadata: None,

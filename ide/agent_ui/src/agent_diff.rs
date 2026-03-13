@@ -1,7 +1,7 @@
 use crate::{Keep, KeepAll, OpenAgentDiff, Reject, RejectAll};
 use acp_thread::{AcpThread, AcpThreadEvent};
 use action_log::{ActionLogTelemetry, LastRejectUndo};
-use agent_settings::AgentSettings;
+use agent_settings::{AgentSettings, EditReviewMode};
 use anyhow::Result;
 use buffer_diff::DiffHunkStatus;
 use collections::{HashMap, HashSet};
@@ -304,9 +304,17 @@ impl AgentDiffPane {
     fn keep_all(&mut self, _: &KeepAll, _window: &mut Window, cx: &mut Context<Self>) {
         let telemetry = ActionLogTelemetry::from(self.thread.read(cx));
         let action_log = self.thread.read(cx).action_log().clone();
-        action_log.update(cx, |action_log, cx| {
-            action_log.keep_all_edits(Some(telemetry), cx)
-        });
+        if AgentSettings::get_global(cx).edit_review_mode == EditReviewMode::ReviewFirst {
+            action_log
+                .update(cx, |action_log, cx| {
+                    action_log.keep_all_edits_and_save(Some(telemetry), cx)
+                })
+                .detach();
+        } else {
+            action_log.update(cx, |action_log, cx| {
+                action_log.keep_all_edits(Some(telemetry), cx)
+            });
+        }
     }
 }
 

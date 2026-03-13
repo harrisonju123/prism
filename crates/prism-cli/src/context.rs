@@ -1,14 +1,16 @@
 use std::process;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use chrono::Utc;
 use clap::Subcommand;
 use serde::Serialize;
 use uuid::Uuid;
 
-use prism_cli::config::agent_name_from_env;
-use prism_context::config::{self, Config, CONFIG_DIR, NEW_CONFIG_FILE, NEW_DB_FILE};
+use prism_cli::agent::spawn::{SpawnConfig, spawn_agent};
+use prism_cli::config::{Config as AgentConfig, agent_name_from_env};
+use prism_context::config::{self, CONFIG_DIR, Config, NEW_CONFIG_FILE, NEW_DB_FILE};
 use prism_context::model::*;
+use prism_context::scheduler::{Assignment, SchedulerConfig, compute_assignments};
 use prism_context::store::sqlite::SqliteStore;
 use prism_context::store::{ActivityFilters, InboxFilters, MemoryFilters, Store};
 use prism_context::util::parse_duration;
@@ -194,6 +196,16 @@ pub enum ContextCmd {
     Files {
         #[command(subcommand)]
         action: FilesAction,
+    },
+
+    /// Background scheduler: dispatch Ready work packages to agents autonomously
+    Scheduler {
+        /// Tick interval in seconds
+        #[arg(long, default_value = "15")]
+        interval: u64,
+        /// Maximum assignments to dispatch per tick
+        #[arg(long, default_value = "5")]
+        max_per_tick: usize,
     },
 }
 
@@ -950,8 +962,7 @@ pub async fn run(cmd: ContextCmd) -> Result<()> {
                 let entry_type = r#type
                     .as_deref()
                     .map(|s| {
-                        InboxEntryType::from_str(s)
-                            .ok_or_else(|| anyhow!("invalid type: {s}"))
+                        InboxEntryType::from_str(s).ok_or_else(|| anyhow!("invalid type: {s}"))
                     })
                     .transpose()?;
                 let filters = InboxFilters {
@@ -997,7 +1008,10 @@ pub async fn run(cmd: ContextCmd) -> Result<()> {
         } => {
             let conv_id = conversation
                 .as_deref()
-                .map(|s| s.parse::<Uuid>().map_err(|e| anyhow!("invalid conversation id: {e}")))
+                .map(|s| {
+                    s.parse::<Uuid>()
+                        .map_err(|e| anyhow!("invalid conversation id: {e}"))
+                })
                 .transpose()?;
             let msg = store
                 .send_message(workspace_id, &agent_name_from_env(), &to, &message, conv_id)
@@ -1016,9 +1030,7 @@ pub async fn run(cmd: ContextCmd) -> Result<()> {
             PlanAction::List { status } => {
                 let plan_status = status
                     .as_deref()
-                    .map(|s| {
-                        PlanStatus::from_str(s).ok_or_else(|| anyhow!("invalid status: {s}"))
-                    })
+                    .map(|s| PlanStatus::from_str(s).ok_or_else(|| anyhow!("invalid status: {s}")))
                     .transpose()?;
                 let plans = store
                     .list_plans(workspace_id, plan_status)
@@ -1094,6 +1106,21 @@ pub async fn run(cmd: ContextCmd) -> Result<()> {
                 print_json(&claims);
             }
         },
+        ContextCmd::Scheduler {
+            interval,
+            max_per_tick,
+        } => {
+            let agent_config = AgentConfig::from_env().map_err(|e| anyhow!("{e}"))?;
+            run_scheduler(
+                store,
+                workspace_id,
+                interval,
+                max_per_tick,
+                agent_config.gateway.url,
+                agent_config.gateway.api_key,
+            )
+            .await?;
+        }
         ContextCmd::Wp { action } => match action {
             WpAction::Add {
                 intent,
@@ -1141,8 +1168,7 @@ pub async fn run(cmd: ContextCmd) -> Result<()> {
                 let wp_status = status
                     .as_deref()
                     .map(|s| {
-                        WorkPackageStatus::from_str(s)
-                            .ok_or_else(|| anyhow!("invalid status: {s}"))
+                        WorkPackageStatus::from_str(s).ok_or_else(|| anyhow!("invalid status: {s}"))
                     })
                     .transpose()?;
                 let wps = store
@@ -1165,6 +1191,104 @@ pub async fn run(cmd: ContextCmd) -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn run_scheduler(
+    store: SqliteStore,
+    workspace_id: Uuid,
+    interval_secs: u64,
+    max_per_tick: usize,
+    prism_url: String,
+    api_key: String,
+) -> Result<()> {
+    let config = SchedulerConfig {
+        max_assignments_per_tick: max_per_tick,
+    };
+
+    eprintln!(
+        "scheduler started (interval={}s, max_per_tick={})",
+        interval_secs, max_per_tick
+    );
+
+    let interval = tokio::time::Duration::from_secs(interval_secs);
+
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(interval) => {
+                match run_scheduler_tick(&store, workspace_id, &config, &prism_url, &api_key).await {
+                    Ok(n) if n > 0 => eprintln!("scheduler: dispatched {n} work package(s)"),
+                    Ok(_) => {}
+                    Err(e) => eprintln!("scheduler tick error: {e}"),
+                }
+            }
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("scheduler stopping");
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_scheduler_tick(
+    store: &SqliteStore,
+    workspace_id: Uuid,
+    config: &SchedulerConfig,
+    prism_url: &str,
+    api_key: &str,
+) -> Result<usize> {
+    let assignments = compute_assignments(store, workspace_id, config).await?;
+    let count = assignments.len();
+
+    for Assignment {
+        work_package,
+        agent_name,
+        thread_name,
+    } in assignments
+    {
+        // Create a context thread scoped to this work package
+        let thread = store
+            .create_thread(workspace_id, &thread_name, &work_package.intent, vec![])
+            .await
+            .map_err(|e| anyhow!("create thread for wp {}: {e}", work_package.id))?;
+
+        // Commit the assignment: sets status → InProgress and links agent + thread
+        store
+            .assign_work_package(workspace_id, work_package.id, &agent_name, thread.id)
+            .await
+            .map_err(|e| anyhow!("assign wp {}: {e}", work_package.id))?;
+
+        let spawn_config = SpawnConfig {
+            task: work_package.intent.clone(),
+            model: None,
+            cost_cap: None,
+            tools: None,
+            timeout_secs: None,
+            thread: Some(thread_name.clone()),
+            constraints: None,
+            handoff_mode: None,
+            handoff_id: None,
+        };
+
+        let prism_url = prism_url.to_string();
+        let api_key = api_key.to_string();
+        let agent_name_log = agent_name.clone();
+
+        // Fire-and-forget: the spawned agent runs independently
+        tokio::spawn(async move {
+            if let Err(e) = spawn_agent(spawn_config, &prism_url, &api_key).await {
+                eprintln!("agent {agent_name} for wp '{thread_name}' failed: {e}");
+            }
+        });
+
+        eprintln!(
+            "dispatched wp '{}' → agent '{agent_name_log}'",
+            work_package.intent
+        );
+    }
+
+    Ok(count)
 }
 
 async fn run_init(name: &str, desc: &str) -> Result<()> {

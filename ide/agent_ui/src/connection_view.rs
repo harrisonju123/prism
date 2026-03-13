@@ -9,7 +9,7 @@ use action_log::{ActionLog, ActionLogTelemetry};
 use agent::{NativeAgentServer, NativeAgentSessionList, SharedThread, ThreadStore};
 use agent_client_protocol::{self as acp, PromptCapabilities};
 use agent_servers::{AgentServer, AgentServerDelegate};
-use agent_settings::{AgentProfileId, AgentSettings};
+use agent_settings::{AgentProfileId, AgentSettings, EditReviewMode};
 use anyhow::{Result, anyhow};
 use arrayvec::ArrayVec;
 use audio::{Audio, Sound};
@@ -1361,6 +1361,16 @@ impl ConnectionView {
                 };
                 if should_send_queued {
                     self.send_queued_message_at_index(0, false, window, cx);
+                }
+
+                // In review_first mode, auto-open the diff pane when the turn ends and
+                // there are unsaved edits waiting for review.
+                if AgentSettings::get_global(cx).edit_review_mode == EditReviewMode::ReviewFirst {
+                    let action_log = thread.read(cx).action_log().clone();
+                    if action_log.read(cx).has_changed_buffers(cx) {
+                        AgentDiffPane::deploy(thread.clone(), self.workspace.clone(), window, cx)
+                            .log_err();
+                    }
                 }
             }
             AcpThreadEvent::Refusal => {

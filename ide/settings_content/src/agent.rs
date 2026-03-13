@@ -73,6 +73,14 @@ pub struct AgentSettingsContent {
     ///
     /// Default: true
     pub single_file_review: Option<bool>,
+    /// Controls when agent file edits are saved to disk.
+    ///
+    /// - "auto_apply": edits are saved to disk immediately (default).
+    /// - "review_first": edits are held in memory and the diff review pane opens automatically
+    ///   so you can keep or reject changes before they are written to disk.
+    ///
+    /// Default: "auto_apply"
+    pub edit_review_mode: Option<EditReviewMode>,
     /// Additional parameters for language model requests. When making a request
     /// to a model, parameters will be taken from the last entry in this list
     /// that matches the model's provider and name. In each entry, both provider
@@ -222,6 +230,16 @@ pub enum DefaultAgentView {
     #[default]
     Thread,
     TextThread,
+}
+
+#[derive(Copy, Clone, Default, Debug, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
+#[serde(rename_all = "snake_case")]
+pub enum EditReviewMode {
+    /// Apply edits immediately to disk (default behavior).
+    #[default]
+    AutoApply,
+    /// Apply edits to in-memory buffers only; open the diff pane for review before saving.
+    ReviewFirst,
 }
 
 #[derive(

@@ -16,6 +16,7 @@ use settings::{
 };
 
 pub use crate::agent_profile::*;
+pub use settings::EditReviewMode;
 
 pub const SUMMARIZE_THREAD_PROMPT: &str = include_str!("prompts/summarize_thread_prompt.txt");
 pub const SUMMARIZE_THREAD_DETAILED_PROMPT: &str =
@@ -42,6 +43,7 @@ pub struct AgentSettings {
     pub notify_when_agent_waiting: NotifyWhenAgentWaiting,
     pub play_sound_when_agent_done: bool,
     pub single_file_review: bool,
+    pub edit_review_mode: EditReviewMode,
     pub model_parameters: Vec<LanguageModelParameters>,
     pub enable_feedback: bool,
     pub expand_edit_card: bool,
@@ -429,6 +431,7 @@ impl Settings for AgentSettings {
             notify_when_agent_waiting: agent.notify_when_agent_waiting.unwrap(),
             play_sound_when_agent_done: agent.play_sound_when_agent_done.unwrap(),
             single_file_review: agent.single_file_review.unwrap(),
+            edit_review_mode: agent.edit_review_mode.unwrap_or_default(),
             model_parameters: agent.model_parameters,
             enable_feedback: agent.enable_feedback.unwrap(),
             expand_edit_card: agent.expand_edit_card.unwrap(),

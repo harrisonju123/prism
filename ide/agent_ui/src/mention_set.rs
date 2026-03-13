@@ -150,7 +150,8 @@ impl MentionSet {
             MentionUri::PastedImage
             | MentionUri::Selection { .. }
             | MentionUri::TerminalSelection { .. }
-            | MentionUri::GitDiff { .. } => {
+            | MentionUri::GitDiff { .. }
+            | MentionUri::Codebase { .. } => {
                 Task::ready(Err(anyhow!("Unsupported mention URI type for paste")))
             }
         }
@@ -300,6 +301,10 @@ impl MentionSet {
             MentionUri::GitDiff { .. } => {
                 debug_panic!("unexpected git diff URI");
                 Task::ready(Err(anyhow!("unexpected git diff URI")))
+            }
+            MentionUri::Codebase { .. } => {
+                debug_panic!("unexpected codebase URI");
+                Task::ready(Err(anyhow!("unexpected codebase URI")))
             }
         };
         let task = cx

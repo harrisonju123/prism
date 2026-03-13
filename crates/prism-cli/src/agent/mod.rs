@@ -10,8 +10,8 @@ use regex::Regex;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
-use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, OnceLock};
 use tokio::task::JoinSet;
 use uuid::Uuid;
 
@@ -76,12 +76,10 @@ fn extract_named_anchors(content: &str) -> HashSet<String> {
     let export_re = EXPORT_RE.get_or_init(|| {
         Regex::new(r#"export\s+(?:function|class|const|type|interface)\s+(\w+)"#).unwrap()
     });
-    let route_re =
-        ROUTE_RE.get_or_init(|| Regex::new(r#"path=["']([^"']+)["']"#).unwrap());
+    let route_re = ROUTE_RE.get_or_init(|| Regex::new(r#"path=["']([^"']+)["']"#).unwrap());
     let nav_re = NAV_RE.get_or_init(|| Regex::new(r#"\bto=["']([^"']+)["']"#).unwrap());
-    let fn_re = FN_RE.get_or_init(|| {
-        Regex::new(r#"(?m)^(?:pub\s+)?(?:async\s+)?fn\s+(\w+)"#).unwrap()
-    });
+    let fn_re =
+        FN_RE.get_or_init(|| Regex::new(r#"(?m)^(?:pub\s+)?(?:async\s+)?fn\s+(\w+)"#).unwrap());
 
     let mut anchors = HashSet::new();
     for cap in export_re.captures_iter(content) {
@@ -148,8 +146,15 @@ fn classify_ts_errors(output: &str) -> ErrorClass {
 fn has_completion_signals(text: &str) -> bool {
     let lower = text.to_lowercase();
     const SIGNALS: &[&str] = &[
-        "done", "implemented", "added", "wired", "here's what", "here is what",
-        "complete", "finished", "all set",
+        "done",
+        "implemented",
+        "added",
+        "wired",
+        "here's what",
+        "here is what",
+        "complete",
+        "finished",
+        "all set",
     ];
     SIGNALS.iter().any(|s| lower.contains(s))
 }
@@ -1166,9 +1171,8 @@ If you have questions, ask them now. If you're confident, continue."
                                     && !self.guard_c_warned.contains(&normed)
                                 {
                                     if let Ok(old_content) = std::fs::read_to_string(path) {
-                                        let new_content = args["content"]
-                                            .as_str()
-                                            .unwrap_or_default();
+                                        let new_content =
+                                            args["content"].as_str().unwrap_or_default();
                                         let old_anchors = extract_named_anchors(&old_content);
                                         let new_anchors = extract_named_anchors(new_content);
                                         let removed: Vec<&String> = old_anchors
@@ -1448,9 +1452,8 @@ If you have questions, ask them now. If you're confident, continue."
 
                                 // Create a uglyhat handoff record before spawning so the
                                 // delegation graph is visible to the dashboard.
-                                let handoff_id = self
-                                    .create_handoff_for_spawn(&task_str, &ptc.args)
-                                    .await;
+                                let handoff_id =
+                                    self.create_handoff_for_spawn(&task_str, &ptc.args).await;
                                 let spawn_store = self.memory.store().cloned();
                                 let spawn_ws_id = self.memory.workspace_id();
 
@@ -1467,15 +1470,18 @@ If you have questions, ask them now. If you're confident, continue."
                                         task_id.clone(),
                                         task_str.clone(),
                                         async move {
-                                            let result = match spawn::spawn_agent(spawn_cfg, &url, &key).await {
-                                                Ok(r) => r,
-                                                Err(e) => spawn::AgentResult {
-                                                    status: "error".to_string(),
-                                                    summary: e.to_string(),
-                                                    cost: 0.0,
-                                                    turns: 0,
-                                                },
-                                            };
+                                            let result =
+                                                match spawn::spawn_agent(spawn_cfg, &url, &key)
+                                                    .await
+                                                {
+                                                    Ok(r) => r,
+                                                    Err(e) => spawn::AgentResult {
+                                                        status: "error".to_string(),
+                                                        summary: e.to_string(),
+                                                        cost: 0.0,
+                                                        turns: 0,
+                                                    },
+                                                };
                                             // Complete the handoff in uglyhat
                                             if let (Some(store), Some(ws_id), Some(hid)) =
                                                 (spawn_store, spawn_ws_id, handoff_id)
@@ -1531,7 +1537,8 @@ If you have questions, ask them now. If you're confident, continue."
                                     let name = ptc.name;
                                     let url = gateway_url.clone();
                                     let key = gateway_key.clone();
-                                    let mut spawn_cfg = spawn::SpawnConfig::from_args(&args, task_str);
+                                    let mut spawn_cfg =
+                                        spawn::SpawnConfig::from_args(&args, task_str);
                                     spawn_cfg.handoff_id = handoff_id;
                                     joinset_pending.push((index, id.clone()));
                                     joinset.spawn(async move {
@@ -1560,9 +1567,9 @@ If you have questions, ask them now. If you're confident, continue."
                                             let result_val = agent_result
                                                 .as_ref()
                                                 .and_then(|r| serde_json::to_value(r).ok())
-                                                .unwrap_or_else(|| {
-                                                    serde_json::json!({"status": "error"})
-                                                });
+                                                .unwrap_or_else(
+                                                    || serde_json::json!({"status": "error"}),
+                                                );
                                             let _ = store
                                                 .complete_handoff(ws_id, hid, result_val)
                                                 .await;
@@ -1963,7 +1970,10 @@ If you have questions, ask them now. If you're confident, continue."
     /// Returns cloned (store, workspace_id) for use by callers outside the agent loop (e.g. REPL).
     pub fn uh_store_context(
         &self,
-    ) -> Option<(std::sync::Arc<prism_context::store::sqlite::SqliteStore>, uuid::Uuid)> {
+    ) -> Option<(
+        std::sync::Arc<prism_context::store::sqlite::SqliteStore>,
+        uuid::Uuid,
+    )> {
         let store = self.memory.store()?.clone();
         let ws_id = self.memory.workspace_id()?;
         Some((store, ws_id))
@@ -2185,10 +2195,7 @@ If you have questions, ask them now. If you're confident, continue."
 
         let mut msg = String::from("INBOX NOTIFICATIONS (review and act appropriately):\n");
         for entry in &relevant {
-            let from = entry
-                .source_agent
-                .as_deref()
-                .unwrap_or("operator");
+            let from = entry.source_agent.as_deref().unwrap_or("operator");
             msg.push_str(&format!(
                 "- [{type}:{severity}] {title}{body}\n",
                 r#type = entry.entry_type,

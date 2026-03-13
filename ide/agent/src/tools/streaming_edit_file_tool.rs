@@ -2,6 +2,8 @@ use super::edit_file_tool::EditFileTool;
 use super::restore_file_from_disk_tool::RestoreFileFromDiskTool;
 use super::save_file_tool::SaveFileTool;
 use super::tool_edit_parser::{ToolEditEvent, ToolEditParser};
+use agent_settings::{AgentSettings, EditReviewMode};
+use settings::Settings as _;
 use crate::{
     AgentTool, Thread, ToolCallEventStream, ToolInput,
     edit_agent::{
@@ -617,15 +619,18 @@ impl EditSession {
             };
         }
 
-        let save_task = tool.project.update(cx, |project, cx| {
-            project.save_buffer(self.buffer.clone(), cx)
-        });
-        futures::select! {
-            result = save_task.fuse() => { result.map_err(|e| StreamingEditFileToolOutput::error(e.to_string()))?; },
-            _ = event_stream.cancelled_by_user().fuse() => {
-                return Err(StreamingEditFileToolOutput::error("Edit cancelled by user"));
-            }
-        };
+        let review_mode = cx.update(|cx| AgentSettings::get_global(cx).edit_review_mode);
+        if review_mode == EditReviewMode::AutoApply {
+            let save_task = tool.project.update(cx, |project, cx| {
+                project.save_buffer(self.buffer.clone(), cx)
+            });
+            futures::select! {
+                result = save_task.fuse() => { result.map_err(|e| StreamingEditFileToolOutput::error(e.to_string()))?; },
+                _ = event_stream.cancelled_by_user().fuse() => {
+                    return Err(StreamingEditFileToolOutput::error("Edit cancelled by user"));
+                }
+            };
+        }
 
         tool.action_log.update(cx, |log, cx| {
             log.buffer_edited(self.buffer.clone(), cx);

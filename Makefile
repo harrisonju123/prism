@@ -17,6 +17,7 @@ build:
 
 check:
 	$(CARGO) check --workspace
+	@$(MAKE) --no-print-directory prune-build-cache
 
 test:
 	$(CARGO) test --workspace

@@ -922,6 +922,36 @@ impl ActionLog {
         cx.notify();
     }
 
+    /// Like `keep_all_edits`, but also saves all modified buffers to disk.
+    /// Use this in `review_first` mode where buffers were edited but not saved.
+    pub fn keep_all_edits_and_save(
+        &mut self,
+        telemetry: Option<ActionLogTelemetry>,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        // Collect only buffer handles (no diffs needed — changed_buffers would clone unused diffs).
+        let buffers_to_save: Vec<Entity<Buffer>> = self
+            .tracked_buffers
+            .iter()
+            .filter(|(_, tracked)| tracked.has_edits(cx))
+            .map(|(buffer, _)| buffer.clone())
+            .collect();
+        self.keep_all_edits(telemetry, cx);
+        // Build save tasks while we still have sync context access (same pattern as reject_all_edits).
+        let save_futures: Vec<_> = buffers_to_save
+            .into_iter()
+            .map(|buffer| {
+                let task = self
+                    .project
+                    .update(cx, |project, cx| project.save_buffer(buffer, cx));
+                async move { task.await.log_err() }
+            })
+            .collect();
+        cx.spawn(async move |_, _cx| {
+            futures::future::join_all(save_futures).await;
+        })
+    }
+
     pub fn reject_all_edits(
         &mut self,
         telemetry: Option<ActionLogTelemetry>,
@@ -1017,6 +1047,13 @@ impl ActionLog {
         cx.background_spawn(async move {
             futures::future::join_all(save_tasks).await;
         })
+    }
+
+    /// Returns true if any tracked buffer has unreviewed edits.
+    pub fn has_changed_buffers(&self, cx: &App) -> bool {
+        self.tracked_buffers
+            .values()
+            .any(|tracked| tracked.has_edits(cx))
     }
 
     /// Returns the set of buffers that contain edits that haven't been reviewed by the user.

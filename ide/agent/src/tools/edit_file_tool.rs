@@ -1,6 +1,8 @@
 use super::restore_file_from_disk_tool::RestoreFileFromDiskTool;
 use super::save_file_tool::SaveFileTool;
 use super::tool_permissions::authorize_file_edit;
+use agent_settings::{AgentSettings, EditReviewMode};
+use settings::Settings as _;
 use crate::{
     AgentTool, Templates, Thread, ToolCallEventStream, ToolInput,
     edit_agent::{EditAgent, EditAgentOutputEvent, EditFormat},
@@ -462,9 +464,12 @@ impl AgentTool for EditFileTool {
                     format_task.await.log_err();
                 }
 
-                project
-                    .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
-                    .await?;
+                let review_mode = cx.update(|cx| AgentSettings::get_global(cx).edit_review_mode);
+                if review_mode == EditReviewMode::AutoApply {
+                    project
+                        .update(cx, |project, cx| project.save_buffer(buffer.clone(), cx))
+                        .await?;
+                }
 
                 action_log.update(cx, |log, cx| {
                     log.buffer_edited(buffer.clone(), cx);

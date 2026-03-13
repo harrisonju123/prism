@@ -2505,11 +2505,21 @@ impl ThreadView {
                                     .size(LabelSize::XSmall)
                                     .color(Color::Disabled)
                             };
+                            let review_first = AgentSettings::get_global(cx).edit_review_mode
+                                == EditReviewMode::ReviewFirst;
 
                             this.child(
-                                Label::new("Edits")
-                                    .size(LabelSize::Small)
-                                    .color(Color::Muted),
+                                Label::new(if review_first {
+                                    "Pending Review"
+                                } else {
+                                    "Edits"
+                                })
+                                .size(LabelSize::Small)
+                                .color(if review_first {
+                                    Color::Warning
+                                } else {
+                                    Color::Muted
+                                }),
                             )
                             .child(dot_divider())
                             .child(
@@ -7995,6 +8005,7 @@ pub(crate) fn open_link(
             MentionUri::Diagnostics { .. } => {}
             MentionUri::TerminalSelection { .. } => {}
             MentionUri::GitDiff { .. } => {}
+            MentionUri::Codebase { .. } => {}
         })
     } else {
         cx.open_url(&url);

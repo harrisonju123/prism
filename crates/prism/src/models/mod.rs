@@ -223,6 +223,22 @@ static MISTRAL_SMALL_QUALITIES: &[(&str, f64)] = &[
 // LiteLLM-routed model quality scores
 // ---------------------------------------------------------------------------
 
+static GPT54_QUALITIES: &[(&str, f64)] = &[
+    ("classification", 0.92),
+    ("code_generation", 0.94),
+    ("code_review", 0.92),
+    ("conversation", 0.91),
+    ("extraction", 0.91),
+    ("reasoning", 0.93),
+    ("summarization", 0.90),
+    ("tool_selection", 0.92),
+    ("architecture", 0.91),
+    ("debugging", 0.93),
+    ("refactoring", 0.92),
+    ("documentation", 0.88),
+    ("testing", 0.91),
+];
+
 static GPT52_CODEX_QUALITIES: &[(&str, f64)] = &[
     ("classification", 0.85),
     ("code_generation", 0.87),
@@ -975,6 +991,24 @@ pub static MODEL_CATALOG: LazyLock<HashMap<&'static str, ModelInfo>> = LazyLock:
                 supports_vision: true,
                 task_qualities: OPUS_4_QUALITIES,
                 downgrade_to: Some("claude-sonnet-4-6"),
+            },
+        ),
+        (
+            "gpt-5-4",
+            ModelInfo {
+                provider: "litellm",
+                model_id: "gpt-5.4",
+                display_name: "GPT-5.4 (LiteLLM)",
+                context_window: 256_000,
+                max_output_tokens: 32_000,
+                input_cost_per_1m: 5.0,
+                output_cost_per_1m: 20.0,
+                tier: 1,
+                supports_streaming: true,
+                supports_tools: true,
+                supports_vision: true,
+                task_qualities: GPT54_QUALITIES,
+                downgrade_to: Some("gpt-5-2"),
             },
         ),
         (

@@ -21,7 +21,6 @@ mod message_editor;
 mod mode_selector;
 mod model_selector;
 mod model_selector_popover;
-pub mod multi_file_diff_review;
 mod profile_selector;
 mod slash_command;
 mod slash_command_picker;
@@ -586,6 +585,7 @@ mod tests {
             notify_when_agent_waiting: NotifyWhenAgentWaiting::default(),
             play_sound_when_agent_done: false,
             single_file_review: false,
+            edit_review_mode: Default::default(),
             model_parameters: vec![],
             enable_feedback: false,
             expand_edit_card: true,

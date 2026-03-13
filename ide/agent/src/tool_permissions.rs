@@ -551,6 +551,7 @@ mod tests {
             notify_when_agent_waiting: NotifyWhenAgentWaiting::default(),
             play_sound_when_agent_done: false,
             single_file_review: false,
+            edit_review_mode: Default::default(),
             model_parameters: vec![],
             enable_feedback: false,
             expand_edit_card: true,

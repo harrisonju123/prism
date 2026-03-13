@@ -1,9 +1,9 @@
 use anyhow::Result;
+use prism_context::store::sqlite::SqliteStore;
+use prism_context::store::{MemoryFilters, Store};
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
-use prism_context::store::sqlite::SqliteStore;
-use prism_context::store::{MemoryFilters, Store};
 use uuid::Uuid;
 
 /// Context-store backed memory manager using uglyhat's SqliteStore.
