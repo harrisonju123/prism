@@ -27,12 +27,13 @@ impl std::fmt::Display for ThreadStatus {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum AgentState {
     Idle,
     Working,
     Blocked,
     Dead,
+    AwaitingReview,
 }
 
 impl std::fmt::Display for AgentState {
@@ -42,6 +43,7 @@ impl std::fmt::Display for AgentState {
             AgentState::Working => write!(f, "working"),
             AgentState::Blocked => write!(f, "blocked"),
             AgentState::Dead => write!(f, "dead"),
+            AgentState::AwaitingReview => write!(f, "awaiting_review"),
         }
     }
 }
@@ -54,6 +56,7 @@ impl AgentState {
             "working" => Some(Self::Working),
             "blocked" => Some(Self::Blocked),
             "dead" => Some(Self::Dead),
+            "awaiting_review" => Some(Self::AwaitingReview),
             _ => None,
         }
     }

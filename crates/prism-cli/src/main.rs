@@ -60,6 +60,8 @@ enum Commands {
         undo: bool,
         #[arg(long, help = "Switch to branch N before resuming (requires --resume)")]
         branch: Option<u32>,
+        #[arg(long, help = "Pause after completion and wait for human review before exiting")]
+        await_review: bool,
     },
     /// List and manage agent personas
     Personas {
@@ -211,6 +213,7 @@ async fn run(cli: Cli) -> Result<()> {
             plan_file,
             undo,
             branch,
+            await_review,
         } => {
             let mut config = Config::from_env()?;
 
@@ -244,6 +247,9 @@ async fn run(cli: Cli) -> Result<()> {
             }
             if let Some(pf) = plan_file {
                 config.extensions.plan_file = Some(pf);
+            }
+            if await_review {
+                config.session.await_review = true;
             }
             let client = PrismClient::new(&config.gateway.url)
                 .with_api_key(&config.gateway.api_key)

@@ -38,6 +38,9 @@ pub struct Persona {
     /// Permission mode override (default, accept-edits, plan, dont-ask, bypass).
     #[serde(default)]
     pub permission_mode: Option<String>,
+    /// When true, agent pauses after clean completion and waits for human review.
+    #[serde(default)]
+    pub await_review: Option<bool>,
 }
 
 impl Persona {
@@ -74,6 +77,9 @@ impl Persona {
             if let Ok(mode) = PermissionMode::from_str(mode_str, true) {
                 config.extensions.permission_mode = Some(mode);
             }
+        }
+        if let Some(ar) = self.await_review {
+            config.session.await_review = ar;
         }
     }
 }
@@ -168,6 +174,7 @@ mod tests {
             denied_tools: None,
             sandbox_mode: None,
             permission_mode: None,
+            await_review: None,
         };
 
         persona.apply(&mut config);
@@ -191,6 +198,7 @@ mod tests {
             denied_tools: Some(vec!["write_file".to_string()]),
             sandbox_mode: None,
             permission_mode: None,
+            await_review: None,
         };
 
         persona.apply(&mut config);

@@ -301,6 +301,13 @@ impl AgentStopReason {
     }
 }
 
+enum ReviewOutcome {
+    Approved,
+    ChangesRequested(String),
+    Rejected,
+    Interrupted,
+}
+
 struct PreparedToolCall {
     index: usize,
     id: String,
@@ -648,13 +655,47 @@ impl Agent {
     }
 
     async fn inner_run(&mut self) -> Result<()> {
-        let result = self.inner_run_impl().await;
-        // Always tear down plan mode guardrails, even on early return or error.
-        // Covers both explicit --plan-file and auto-activated plan mode.
-        if self.plan_file.is_some() {
-            self.teardown_plan_mode_guardrails().await;
+        loop {
+            let result = self.inner_run_impl().await;
+            if self.plan_file.is_some() {
+                self.teardown_plan_mode_guardrails().await;
+            }
+
+            if !self.config.session.await_review {
+                return result;
+            }
+
+            // Only gate on clean Stop
+            let is_clean_stop = self.session.stop_reason.as_deref()
+                == Some(AgentStopReason::Stop.to_session_str());
+            if !is_clean_stop {
+                return result;
+            }
+
+            let entry_id = match self.create_review_approval_entry().await {
+                Some(id) => id,
+                None => return result,
+            };
+            self.set_agent_state(prism_context::model::AgentState::AwaitingReview).await;
+            eprintln!("[await-review] Session complete. Waiting for human review... (Ctrl+C to abort)");
+
+            match self.poll_for_review_resolution(entry_id).await {
+                ReviewOutcome::Approved => return result,
+                ReviewOutcome::ChangesRequested(msg) => {
+                    eprintln!("[await-review] Changes requested — re-entering agent loop");
+                    self.session.push_message(crate::common::user_message(format!(
+                        "REVIEW FEEDBACK (changes requested):\n{msg}\n\nPlease address the feedback above."
+                    )));
+                    self.session.stop_reason = None;
+                    continue;
+                }
+                ReviewOutcome::Rejected => {
+                    self.set_agent_state(prism_context::model::AgentState::Idle).await;
+                    anyhow::bail!("review rejected by reviewer");
+                }
+                ReviewOutcome::Interrupted => return result,
+            }
         }
-        result
     }
 
     async fn inner_run_impl(&mut self) -> Result<()> {
@@ -1986,7 +2027,7 @@ If you have questions, ask them now. If you're confident, continue."
 
         // Emit session-end inbox entries
         let thread_ref_id = self.current_thread_id().await;
-        if stop_reason == Some(AgentStopReason::Stop) {
+        if stop_reason == Some(AgentStopReason::Stop) && !self.config.session.await_review {
             let last_assistant_summary = self
                 .session
                 .active_messages()
@@ -2022,19 +2063,19 @@ If you have questions, ask them now. If you're confident, continue."
                 thread_ref_id,
             )
             .await;
+        }
 
-            // Suggest refactor review if many files were touched
-            if files_vec.len() >= 3 {
-                self.create_inbox_event(
-                    prism_context::model::InboxEntryType::Suggestion,
-                    &format!("{} files modified — consider review", files_vec.len()),
-                    &format!("Files: {}", files_vec.join(", ")),
-                    prism_context::model::InboxSeverity::Info,
-                    "thread",
-                    thread_ref_id,
-                )
-                .await;
-            }
+        // Suggest refactor review if many files were touched (fires unconditionally)
+        if stop_reason == Some(AgentStopReason::Stop) && files_vec.len() >= 3 {
+            self.create_inbox_event(
+                prism_context::model::InboxEntryType::Suggestion,
+                &format!("{} files modified — consider review", files_vec.len()),
+                &format!("Files: {}", files_vec.join(", ")),
+                prism_context::model::InboxSeverity::Info,
+                "thread",
+                thread_ref_id,
+            )
+            .await;
         }
 
         if stop_reason.is_none() {
@@ -2129,9 +2170,7 @@ If you have questions, ask them now. If you're confident, continue."
         let agent_name = crate::config::agent_name_from_env();
 
         let _ = store.heartbeat(ws_id, &agent_name).await;
-        let _ = store
-            .set_agent_state(ws_id, &agent_name, AgentState::Working)
-            .await;
+        self.set_agent_state(AgentState::Working).await;
 
         // Every 5 turns: persist session state, but only when files_touched changed.
         if turn > 0 && turn % 5 == 0 {
@@ -2142,6 +2181,149 @@ If you have questions, ask them now. If you're confident, continue."
                     .update_session(ws_id, &agent_name, "in-progress", files)
                     .await;
                 self.last_checkpoint_file_count = current_len;
+            }
+        }
+    }
+
+    /// Set agent state in the context store. No-op if store is unavailable.
+    async fn set_agent_state(&self, state: prism_context::model::AgentState) {
+        use prism_context::store::Store as _;
+        let Some(store) = self.memory.store().cloned() else {
+            return;
+        };
+        let Some(ws_id) = self.memory.workspace_id() else {
+            return;
+        };
+        let agent_name = crate::config::agent_name_from_env();
+        let _ = store.set_agent_state(ws_id, &agent_name, state).await;
+    }
+
+    /// Create an Approval inbox entry for the await-review gate. Returns the entry UUID, or
+    /// None if the context store is unavailable.
+    async fn create_review_approval_entry(&self) -> Option<uuid::Uuid> {
+        use prism_context::model::{InboxEntryType, InboxSeverity};
+        use prism_context::store::Store as _;
+
+        let store = self.memory.store()?.clone();
+        let ws_id = self.memory.workspace_id()?;
+        let agent_name = crate::config::agent_name_from_env();
+        let thread_ref_id = self.current_thread_id().await;
+
+        // Build the same body JSON used for Completed entries
+        let last_assistant_summary = self
+            .session
+            .active_messages()
+            .iter()
+            .rev()
+            .find(|m| m.role == prism_types::MessageRole::Assistant)
+            .and_then(|m| m.content.as_ref().and_then(|c| c.as_str()))
+            .map(|s| crate::common::truncate_with_ellipsis(s, 300))
+            .unwrap_or_default();
+        let files_vec: Vec<String> = self.files_touched.iter().cloned().collect();
+        let total_cost_usd = self.session.total_cost_usd;
+        let turns = self.session.turns;
+        let title = format!(
+            "Session completed: {} turn{}, ${:.4}",
+            turns,
+            if turns == 1 { "" } else { "s" },
+            total_cost_usd,
+        );
+        let body = serde_json::json!({
+            "task_name": &title,
+            "description": "",
+            "branch": &agent_name,
+            "diff_preview": "",
+            "session_cost_usd": total_cost_usd,
+            "test_summary": serde_json::Value::Null,
+            "files_touched": &files_vec,
+            "summary": last_assistant_summary,
+        })
+        .to_string();
+
+        let ref_type = thread_ref_id.map(|_| "thread");
+        match store
+            .create_inbox_entry(
+                ws_id,
+                InboxEntryType::Approval,
+                &title,
+                &body,
+                InboxSeverity::Warning,
+                Some(&agent_name),
+                ref_type,
+                thread_ref_id,
+            )
+            .await
+        {
+            Ok(entry) => Some(entry.id),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to create review approval entry");
+                None
+            }
+        }
+    }
+
+    /// Poll the context store for resolution of the given inbox entry. Returns when resolved or
+    /// interrupted. Sends heartbeats every 10s to prevent agent reaping.
+    async fn poll_for_review_resolution(&self, entry_id: uuid::Uuid) -> ReviewOutcome {
+        use prism_context::store::Store as _;
+        use std::sync::atomic::Ordering;
+
+        let Some(store) = self.memory.store().cloned() else {
+            return ReviewOutcome::Interrupted;
+        };
+        let Some(ws_id) = self.memory.workspace_id() else {
+            return ReviewOutcome::Interrupted;
+        };
+        let agent_name = crate::config::agent_name_from_env();
+
+        let start = std::time::Instant::now();
+        let mut last_elapsed_print = 0u64;
+
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+
+            if self.interrupted.load(Ordering::Relaxed) {
+                return ReviewOutcome::Interrupted;
+            }
+
+            let _ = store.heartbeat(ws_id, &agent_name).await;
+
+            let elapsed_secs = start.elapsed().as_secs();
+            if elapsed_secs / 60 > last_elapsed_print / 60 {
+                last_elapsed_print = elapsed_secs;
+                eprintln!("[await-review] Still waiting... ({}m elapsed)", elapsed_secs / 60);
+            }
+
+            match store.get_inbox_entry(ws_id, entry_id).await {
+                Ok(entry) if entry.resolved => {
+                    let resolution_raw = entry.resolution.as_deref().unwrap_or("{}");
+                    let resolution: serde_json::Value =
+                        serde_json::from_str(resolution_raw).unwrap_or(serde_json::Value::Null);
+                    let decision = resolution
+                        .get("decision")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("approve");
+                    match decision {
+                        "approve" => return ReviewOutcome::Approved,
+                        "request_changes" => {
+                            let msg = resolution
+                                .get("message")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            return ReviewOutcome::ChangesRequested(msg);
+                        }
+                        "reject" => return ReviewOutcome::Rejected,
+                        other => {
+                            tracing::warn!(decision = %other, "unknown review decision; treating as approve");
+                            return ReviewOutcome::Approved;
+                        }
+                    }
+                }
+                Ok(_) => {} // not yet resolved, keep polling
+                Err(e) => {
+                    tracing::warn!(error = %e, "error polling review entry; retrying");
+                }
             }
         }
     }

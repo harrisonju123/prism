@@ -83,6 +83,8 @@ pub struct SessionConfig {
     pub compile_check_command: Option<String>,
     /// Timeout in seconds for the compile check command.
     pub compile_check_timeout: u64,
+    /// When true, agent pauses after clean completion and waits for human review.
+    pub await_review: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -250,6 +252,9 @@ impl Config {
                     .ok()
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(30),
+                await_review: std::env::var("PRISM_AWAIT_REVIEW")
+                    .map(|s| s != "0" && s.to_lowercase() != "false")
+                    .unwrap_or(false),
             },
             compression: CompressionConfig {
                 model: compression_model,
