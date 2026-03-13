@@ -8,6 +8,7 @@ use prism_context::model::{
 use prism_context::store::ActivityFilters;
 use uuid::Uuid;
 use crate::context_service::ContextService;
+use crate::running_agents::RunningAgents;
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const ACTIVITY_LIMIT: i64 = 200;
@@ -34,6 +35,8 @@ pub struct HqState {
     pub error: Option<String>,
     /// Entry IDs already seen by the OS-notification logic (prevents re-firing on re-poll).
     seen_entry_ids: std::collections::HashSet<Uuid>,
+    /// Agent names for which we've already fired a completion OS notification.
+    notified_completions: std::collections::HashSet<String>,
     /// Rate-limit OS notifications to at most 1 per 10 seconds.
     last_os_notification: Option<Instant>,
     refresh_task: Option<Task<()>>,
@@ -64,6 +67,7 @@ impl HqState {
                 is_loading: false,
                 error: None,
                 seen_entry_ids: std::collections::HashSet::new(),
+                notified_completions: std::collections::HashSet::new(),
                 last_os_notification: None,
                 refresh_task: None,
                 _auto_refresh: Task::ready(()),
@@ -216,6 +220,25 @@ impl HqState {
                         // Mark all current entries as seen.
                         for entry in &inbox_entries {
                             this.seen_entry_ids.insert(entry.id);
+                        }
+
+                        // Fire OS notifications for Completed entries from locally-spawned agents.
+                        let running_agents = RunningAgents::global(cx);
+                        for entry in &inbox_entries {
+                            let InboxEntryType::Completed = entry.entry_type else { continue };
+                            let Some(ref source) = entry.source_agent else { continue };
+                            if this.notified_completions.contains(source) { continue; }
+                            let is_local = running_agents
+                                .as_ref()
+                                .map(|ra| ra.read(cx).was_spawned(source))
+                                .unwrap_or(false);
+                            if is_local {
+                                crate::notification::notify_os(
+                                    "PrisM",
+                                    &format!("{} finished", source),
+                                );
+                                this.notified_completions.insert(source.clone());
+                            }
                         }
 
                         this.inbox_entries = inbox_entries;

@@ -560,9 +560,12 @@ impl Render for NavigatorPanel {
                             prism_context::model::AgentState::Blocked => Color::Warning,
                             prism_context::model::AgentState::Dead => Color::Muted,
                         };
-                        let is_spawned = RunningAgents::global(cx)
-                            .map(|ra| ra.read(cx).is_running(&name))
-                            .unwrap_or(false);
+                        let (is_running, is_completed) = RunningAgents::global(cx)
+                            .map(|ra| {
+                                let ra = ra.read(cx);
+                                (ra.is_running(&name), ra.is_completed(&name))
+                            })
+                            .unwrap_or((false, false));
                         let unread = self
                             .hq_state
                             .as_ref()
@@ -591,11 +594,18 @@ impl Render for NavigatorPanel {
                                     )
                                     .child(Label::new(name).size(LabelSize::Small))
                                     .flex_1()
-                                    .when(is_spawned, |this| {
+                                    .when(is_running, |this| {
                                         this.child(
                                             Label::new("◉")
                                                 .size(LabelSize::XSmall)
                                                 .color(Color::Accent),
+                                        )
+                                    })
+                                    .when(is_completed, |this| {
+                                        this.child(
+                                            Label::new("✓")
+                                                .size(LabelSize::XSmall)
+                                                .color(Color::Success),
                                         )
                                     })
                                     .when(unread > 0, |this| {

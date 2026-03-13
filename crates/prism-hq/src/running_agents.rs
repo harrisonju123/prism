@@ -1,9 +1,14 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use gpui::{App, AppContext as _, Context, Entity, Global, Task};
+use gpui::{App, AppContext as _, Context, Entity, EventEmitter, Global, Task};
 
 const MAX_OUTPUT_LINES: usize = 200;
+
+#[derive(Debug, Clone)]
+pub enum RunningAgentsEvent {
+    AgentExited { agent_name: String },
+}
 
 /// Ring buffer of output lines captured from a running agent process.
 #[derive(Clone)]
@@ -43,6 +48,8 @@ pub struct RunningAgents {
 
 pub struct RunningAgentsGlobal(pub Entity<RunningAgents>);
 impl Global for RunningAgentsGlobal {}
+
+impl EventEmitter<RunningAgentsEvent> for RunningAgents {}
 
 impl RunningAgents {
     pub fn init_global(cx: &mut App) -> Entity<Self> {
@@ -88,11 +95,21 @@ impl RunningAgents {
                 if let Some(proc) = ra.processes.get_mut(&agent_name) {
                     proc.is_running = false;
                 }
+                cx.emit(RunningAgentsEvent::AgentExited { agent_name: agent_name.clone() });
                 cx.notify();
             })
             .ok();
         });
         self._reader_tasks.push(task);
+    }
+
+    pub fn was_spawned(&self, agent_name: &str) -> bool {
+        self.processes.contains_key(agent_name)
+    }
+
+    /// Returns true if the agent was spawned in this session and has since exited.
+    pub fn is_completed(&self, agent_name: &str) -> bool {
+        self.was_spawned(agent_name) && !self.is_running(agent_name)
     }
 
     pub fn is_running(&self, agent_name: &str) -> bool {

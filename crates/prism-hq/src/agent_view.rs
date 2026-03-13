@@ -240,6 +240,31 @@ impl Render for AgentViewItem {
                             .color(state_color),
                     ),
             )
+            .when_some(RunningAgents::global(cx), |this, running_agents| {
+                let ready = running_agents.read(cx).is_completed(&self.agent_name);
+                this.when(ready, |this| {
+                    this.child(
+                        h_flex()
+                            .px_2()
+                            .py_1()
+                            .h(px(32.))
+                            .bg(cx.theme().colors().editor_subheader_background)
+                            .border_b_1()
+                            .border_color(cx.theme().colors().border)
+                            .gap_1()
+                            .child(
+                                Label::new("Ready for Review")
+                                    .size(LabelSize::Small)
+                                    .color(Color::Success),
+                            )
+                            .child(
+                                Label::new("Agent has finished its work")
+                                    .size(LabelSize::XSmall)
+                                    .color(Color::Muted),
+                            ),
+                    )
+                })
+            })
             .child(
                 v_flex()
                     .id("agent-content")
@@ -379,14 +404,16 @@ impl Render for AgentViewItem {
                                     .child(Label::new(summary).size(LabelSize::XSmall))
                             })),
                     )
-                    // Live output section (only if running in this session)
+                    // Live output section (only if spawned in this session)
                     .when_some(RunningAgents::global(cx), |this, running_agents| {
-                        let lines = running_agents.read(cx).output_lines(&self.agent_name);
-                        if lines.is_empty() {
+                        let ra = running_agents.read(cx);
+                        let lines = ra.output_lines(&self.agent_name);
+                        if !ra.was_spawned(&self.agent_name) || lines.is_empty() {
                             return this;
                         }
+                        let heading = if ra.is_running(&self.agent_name) { "LIVE OUTPUT" } else { "OUTPUT (completed)" };
                         let mut output_view = v_flex().w_full().px_2().gap_0p5().child(
-                            Label::new("LIVE OUTPUT")
+                            Label::new(heading)
                                 .size(LabelSize::XSmall)
                                 .color(Color::Muted),
                         );
