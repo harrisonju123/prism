@@ -765,6 +765,21 @@ impl NativeAgent {
     }
 
     fn build_available_commands(&self, cx: &App) -> Vec<acp::AvailableCommand> {
+        // Start with builtin commands
+        let mut commands: Vec<acp::AvailableCommand> = BuiltinCommand::all()
+            .iter()
+            .map(|def| {
+                let mut command = acp::AvailableCommand::new(def.name, def.description);
+                if let Some(hint) = def.input_hint {
+                    command = command.input(acp::AvailableCommandInput::Unstructured(
+                        acp::UnstructuredCommandInput::new(hint),
+                    ));
+                }
+                command
+            })
+            .collect();
+
+        // Append MCP context server commands
         let registry = self.context_server_registry.read(cx);
 
         let mut prompt_name_counts: HashMap<&str, usize> = HashMap::default();
@@ -774,46 +789,50 @@ impl NativeAgent {
                 .or_insert(0) += 1;
         }
 
-        registry
-            .prompts()
-            .flat_map(|context_server_prompt| {
-                let prompt = &context_server_prompt.prompt;
+        commands.extend(
+            registry
+                .prompts()
+                .flat_map(|context_server_prompt| {
+                    let prompt = &context_server_prompt.prompt;
 
-                let should_prefix = prompt_name_counts
-                    .get(prompt.name.as_str())
-                    .copied()
-                    .unwrap_or(0)
-                    > 1;
+                    let should_prefix = prompt_name_counts
+                        .get(prompt.name.as_str())
+                        .copied()
+                        .unwrap_or(0)
+                        > 1;
 
-                let name = if should_prefix {
-                    format!("{}.{}", context_server_prompt.server_id, prompt.name)
-                } else {
-                    prompt.name.clone()
-                };
+                    let name = if should_prefix {
+                        format!("{}.{}", context_server_prompt.server_id, prompt.name)
+                    } else {
+                        prompt.name.clone()
+                    };
 
-                let mut command = acp::AvailableCommand::new(
-                    name,
-                    prompt.description.clone().unwrap_or_default(),
-                );
+                    let mut command = acp::AvailableCommand::new(
+                        name,
+                        prompt.description.clone().unwrap_or_default(),
+                    );
 
-                match prompt.arguments.as_deref() {
-                    Some([arg]) => {
-                        let hint = format!("<{}>", arg.name);
+                    match prompt.arguments.as_deref() {
+                        Some([arg]) => {
+                            let hint = format!("<{}>", arg.name);
 
-                        command = command.input(acp::AvailableCommandInput::Unstructured(
-                            acp::UnstructuredCommandInput::new(hint),
-                        ));
+                            command = command.input(acp::AvailableCommandInput::Unstructured(
+                                acp::UnstructuredCommandInput::new(hint),
+                            ));
+                        }
+                        Some([]) | None => {}
+                        Some(_) => {
+                            // skip >1 argument commands since we don't support them yet
+                            return None;
+                        }
                     }
-                    Some([]) | None => {}
-                    Some(_) => {
-                        // skip >1 argument commands since we don't support them yet
-                        return None;
-                    }
-                }
 
-                Some(command)
-            })
-            .collect()
+                    Some(command)
+                })
+                .collect::<Vec<_>>(),
+        );
+
+        commands
     }
 
     pub fn load_thread(
@@ -1167,6 +1186,272 @@ impl NativeAgentConnection {
             anyhow::Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
         })
     }
+
+    fn handle_builtin_command(
+        &self,
+        message_id: UserMessageId,
+        session_id: acp::SessionId,
+        command: BuiltinCommand,
+        arg: String,
+        original_content: Vec<acp::ContentBlock>,
+        cx: &mut App,
+    ) -> Task<Result<acp::PromptResponse>> {
+        match command {
+            BuiltinCommand::Plan => self.handle_plan(message_id, session_id, arg, original_content, cx),
+            BuiltinCommand::Review => self.handle_review(message_id, session_id, arg, original_content, cx),
+            BuiltinCommand::Help => self.handle_help(session_id, cx),
+            // Clear is intercepted at the UI layer (thread_view.rs) before reaching the agent.
+            // Return EndTurn immediately as a no-op fallback in case it slips through.
+            BuiltinCommand::Clear => Task::ready(Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))),
+            BuiltinCommand::Compact => self.handle_compact(session_id, cx),
+            BuiltinCommand::Model => self.handle_model(session_id, arg, cx),
+        }
+    }
+
+    /// Inject a system-prompt block and trigger an LLM turn (no MCP server needed).
+    fn send_builtin_prompt(
+        &self,
+        message_id: UserMessageId,
+        session_id: acp::SessionId,
+        system_prompt: String,
+        original_content: Vec<acp::ContentBlock>,
+        cx: &mut App,
+    ) -> Task<Result<acp::PromptResponse>> {
+        let Some((acp_thread, thread)) = self.0.update(cx, |agent, _cx| {
+            agent
+                .sessions
+                .get(&session_id)
+                .map(|s| (s.acp_thread.clone(), s.thread.clone()))
+        }) else {
+            return Task::ready(Err(anyhow!("Session not found")));
+        };
+        let path_style = self.0.read(cx).project.read(cx).path_style(cx);
+
+        // Push original user content (skipping the /command text block)
+        thread.update(cx, |thread, cx| {
+            thread.push_acp_user_block(
+                message_id,
+                original_content.into_iter().skip(1),
+                path_style,
+                cx,
+            );
+        });
+
+        // Inject system prompt as an indented user block
+        let prompt_block = acp::ContentBlock::Text(acp::TextContent::new(system_prompt));
+        let prompt_id = acp_thread::UserMessageId::new();
+
+        acp_thread.update(cx, |thread, cx| {
+            thread.push_user_content_block_with_indent(
+                Some(prompt_id.clone()),
+                prompt_block.clone(),
+                true,
+                cx,
+            );
+        });
+        thread.update(cx, |thread, cx| {
+            thread.push_acp_user_block(prompt_id, [prompt_block], path_style, cx);
+        });
+
+        let response_stream = match thread.update(cx, |thread, cx| thread.send_existing(cx)) {
+            Ok(stream) => stream,
+            Err(e) => return Task::ready(Err(e)),
+        };
+        Self::handle_thread_events(response_stream, acp_thread.downgrade(), cx)
+    }
+
+    fn handle_plan(
+        &self,
+        message_id: UserMessageId,
+        session_id: acp::SessionId,
+        _arg: String,
+        original_content: Vec<acp::ContentBlock>,
+        cx: &mut App,
+    ) -> Task<Result<acp::PromptResponse>> {
+        let system_prompt = "You are in planning mode. Create a detailed plan before taking any \
+            actions. Break down the task, identify files to modify, consider edge cases, and \
+            present the plan for approval before implementing."
+            .to_string();
+        self.send_builtin_prompt(message_id, session_id, system_prompt, original_content, cx)
+    }
+
+    fn handle_review(
+        &self,
+        message_id: UserMessageId,
+        session_id: acp::SessionId,
+        _arg: String,
+        original_content: Vec<acp::ContentBlock>,
+        cx: &mut App,
+    ) -> Task<Result<acp::PromptResponse>> {
+        let skill_path = self
+            .0
+            .read(cx)
+            .project
+            .read(cx)
+            .visible_worktrees(cx)
+            .next()
+            .map(|wt| wt.read(cx).abs_path().join(".prism/skills/pr-review/SKILL.md"));
+
+        let Some(skill_path) = skill_path else {
+            return self.send_builtin_prompt(
+                message_id,
+                session_id,
+                default_review_prompt(),
+                original_content,
+                cx,
+            );
+        };
+
+        let fs = self.0.read(cx).fs.clone();
+        let connection = self.clone();
+        cx.spawn(async move |cx| {
+            let system_prompt = match fs.load(&skill_path).await {
+                Ok(content) => content,
+                Err(_) => default_review_prompt(),
+            };
+
+            cx.update(|cx| {
+                connection.send_builtin_prompt(
+                    message_id,
+                    session_id,
+                    system_prompt,
+                    original_content,
+                    cx,
+                )
+            })
+            .await
+        })
+    }
+
+    fn handle_help(
+        &self,
+        session_id: acp::SessionId,
+        cx: &mut App,
+    ) -> Task<Result<acp::PromptResponse>> {
+        let Some(acp_thread) = self.0.update(cx, |agent, _cx| {
+            agent.sessions.get(&session_id).map(|s| s.acp_thread.clone())
+        }) else {
+            return Task::ready(Err(anyhow!("Session not found")));
+        };
+
+        let available_commands = acp_thread.read(cx).available_commands();
+        let mut help =
+            "**Available commands:**\n\n| Command | Description |\n|---------|-------------|\n"
+                .to_string();
+        for cmd in &available_commands {
+            help.push_str(&format!("| `/{}`  | {} |\n", cmd.name, cmd.description));
+        }
+
+        acp_thread.update(cx, |thread, cx| {
+            thread.push_assistant_content_block(
+                acp::ContentBlock::Text(acp::TextContent::new(help)),
+                false,
+                cx,
+            );
+        });
+        Task::ready(Ok(acp::PromptResponse::new(acp::StopReason::EndTurn)))
+    }
+
+    fn handle_compact(
+        &self,
+        session_id: acp::SessionId,
+        cx: &mut App,
+    ) -> Task<Result<acp::PromptResponse>> {
+        let Some((acp_thread, thread)) = self.0.update(cx, |agent, _cx| {
+            agent
+                .sessions
+                .get(&session_id)
+                .map(|s| (s.acp_thread.clone(), s.thread.clone()))
+        }) else {
+            return Task::ready(Err(anyhow!("Session not found")));
+        };
+
+        let summary_task = thread.update(cx, |thread, cx| thread.summary(cx));
+
+        cx.spawn(async move |cx| {
+            let summary = summary_task.await;
+            let text = match summary {
+                Some(s) => format!("**Conversation summary:**\n\n{s}"),
+                None => "No summarization model is configured. Set one in AI settings to use `/compact`.".to_string(),
+            };
+            acp_thread.update(cx, |thread, cx| {
+                thread.push_assistant_content_block(
+                    acp::ContentBlock::Text(acp::TextContent::new(text)),
+                    false,
+                    cx,
+                );
+            });
+            Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
+        })
+    }
+
+    fn handle_model(
+        &self,
+        session_id: acp::SessionId,
+        arg: String,
+        cx: &mut App,
+    ) -> Task<Result<acp::PromptResponse>> {
+        let Some(acp_thread) = self.0.update(cx, |agent, _cx| {
+            agent.sessions.get(&session_id).map(|s| s.acp_thread.clone())
+        }) else {
+            return Task::ready(Err(anyhow!("Session not found")));
+        };
+
+        if arg.trim().is_empty() {
+            // List available models
+            let model_list = self.0.read(cx).models.model_list.clone();
+            let mut text = "**Available models:**\n\n".to_string();
+            match &model_list {
+                acp_thread::AgentModelList::Flat(models) => {
+                    for m in models {
+                        text.push_str(&format!("- `{}`  — {}\n", m.id, m.name));
+                    }
+                }
+                acp_thread::AgentModelList::Grouped(groups) => {
+                    for (group, models) in groups {
+                        text.push_str(&format!("**{}**\n", group.0));
+                        for m in models {
+                            text.push_str(&format!("- `{}`  — {}\n", m.id, m.name));
+                        }
+                        text.push('\n');
+                    }
+                }
+            }
+            text.push_str("\nUse `/model <model-id>` to switch.");
+            acp_thread.update(cx, |thread, cx| {
+                thread.push_assistant_content_block(
+                    acp::ContentBlock::Text(acp::TextContent::new(text)),
+                    false,
+                    cx,
+                );
+            });
+            Task::ready(Ok(acp::PromptResponse::new(acp::StopReason::EndTurn)))
+        } else {
+            // Switch model
+            let selector = NativeAgentModelSelector {
+                session_id: session_id.clone(),
+                connection: self.clone(),
+            };
+            let model_id = acp::ModelId::from(arg.trim().to_string());
+            let switch_task = selector.select_model(model_id.clone(), cx);
+
+            cx.spawn(async move |cx| {
+                let result = switch_task.await;
+                let text = match result {
+                    Ok(()) => format!("Switched to model `{model_id}`."),
+                    Err(e) => format!("Failed to switch model: {e}"),
+                };
+                acp_thread.update(cx, |thread, cx| {
+                    thread.push_assistant_content_block(
+                        acp::ContentBlock::Text(acp::TextContent::new(text)),
+                        false,
+                        cx,
+                    );
+                });
+                Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
+            })
+        }
+    }
 }
 
 struct Command<'a> {
@@ -1199,6 +1484,70 @@ impl<'a> Command<'a> {
                 explicit_server_id: None,
             })
         }
+    }
+}
+
+struct BuiltinCommandDef {
+    name: &'static str,
+    description: &'static str,
+    input_hint: Option<&'static str>,
+}
+
+enum BuiltinCommand {
+    Plan,
+    Review,
+    Help,
+    Clear,
+    Compact,
+    Model,
+}
+
+impl BuiltinCommand {
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "plan" => Some(Self::Plan),
+            "review" => Some(Self::Review),
+            "help" => Some(Self::Help),
+            "clear" => Some(Self::Clear),
+            "compact" => Some(Self::Compact),
+            "model" => Some(Self::Model),
+            _ => None,
+        }
+    }
+
+    fn all() -> &'static [BuiltinCommandDef] {
+        &[
+            BuiltinCommandDef {
+                name: "plan",
+                description: "Plan before executing",
+                input_hint: Some("<task description>"),
+            },
+            BuiltinCommandDef {
+                name: "review",
+                description: "Run PR review workflow",
+                input_hint: Some("<PR number or branch>"),
+            },
+            BuiltinCommandDef {
+                name: "help",
+                description: "Show available commands",
+                input_hint: None,
+            },
+            BuiltinCommandDef {
+                name: "clear",
+                description: "Start a new conversation",
+                input_hint: None,
+            },
+            BuiltinCommandDef {
+                name: "compact",
+                description: "Summarize conversation to save context",
+                input_hint: None,
+            },
+            BuiltinCommandDef {
+                name: "model",
+                description: "Switch the active model",
+                input_hint: Some("<model name>"),
+            },
+        ]
     }
 }
 
@@ -1388,6 +1737,20 @@ impl acp_thread::AgentConnection for NativeAgentConnection {
         log::debug!("Prompt blocks count: {}", params.prompt.len());
 
         if let Some(parsed_command) = Command::parse(&params.prompt) {
+            // Check builtin commands before MCP lookup (only when no explicit server prefix)
+            if parsed_command.explicit_server_id.is_none() {
+                if let Some(builtin) = BuiltinCommand::from_name(parsed_command.prompt_name) {
+                    return self.handle_builtin_command(
+                        id,
+                        session_id,
+                        builtin,
+                        parsed_command.arg_value.to_string(),
+                        params.prompt,
+                        cx,
+                    );
+                }
+            }
+
             let registry = self.0.read(cx).context_server_registry.read(cx);
 
             let explicit_server_id = parsed_command
@@ -2768,6 +3131,19 @@ mod internal_tests {
             LanguageModelRegistry::test(cx);
         });
     }
+}
+
+fn default_review_prompt() -> String {
+    "You are a senior code reviewer. Review the changes in this pull request or branch.\n\
+    \n\
+    For each finding, clearly state:\n\
+    1. **Severity** (blocker / warning / suggestion)\n\
+    2. **Location** (file and line if applicable)\n\
+    3. **Issue** and **recommended fix**\n\
+    \n\
+    Focus on correctness, security, performance, and maintainability.\n\
+    Be concise and constructive."
+        .to_string()
 }
 
 fn mcp_message_content_to_acp_content_block(

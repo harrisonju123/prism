@@ -906,6 +906,12 @@ impl ThreadView {
             }
         }
 
+        if text == "/clear" {
+            message_editor.update(cx, |editor, cx| editor.clear(window, cx));
+            window.dispatch_action(NewThread.boxed_clone(), cx);
+            return;
+        }
+
         self.send_impl(message_editor, window, cx)
     }
 
