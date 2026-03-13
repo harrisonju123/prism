@@ -125,15 +125,33 @@ impl SqliteStore {
     }
 
     pub(crate) async fn delete_memory_impl(&self, workspace_id: Uuid, key: &str) -> Result<()> {
-        let result = sqlx::query("DELETE FROM memories WHERE workspace_id = $1 AND key = $2")
-            .bind(workspace_id.to_string())
-            .bind(key)
-            .execute(&self.pool)
-            .await?;
+        let deleted_id: Option<String> = sqlx::query_scalar(
+            "DELETE FROM memories WHERE workspace_id = $1 AND key = $2 RETURNING id",
+        )
+        .bind(workspace_id.to_string())
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await?;
 
-        if result.rows_affected() == 0 {
+        if deleted_id.is_none() {
             return Err(Error::NotFound(format!("memory {key:?} not found")));
         }
+
+        if let Some(id_str) = deleted_id {
+            if let Ok(id) = parse_uuid(&id_str) {
+                self.log_activity_fire_and_forget(
+                    workspace_id,
+                    "system",
+                    "deleted",
+                    "memory",
+                    id,
+                    &format!("Deleted memory: {key}"),
+                    None,
+                )
+                .await;
+            }
+        }
+
         Ok(())
     }
 }

@@ -57,7 +57,20 @@ impl SqliteStore {
         .fetch_one(&self.pool)
         .await?;
 
-        row_to_snapshot(&row)
+        let snapshot = row_to_snapshot(&row)?;
+
+        self.log_activity_fire_and_forget(
+            workspace_id,
+            "system",
+            "snapshot_created",
+            "snapshot",
+            snapshot.id,
+            &format!("Snapshot '{}': {}", label, &summary),
+            None,
+        )
+        .await;
+
+        Ok(snapshot)
     }
 }
 

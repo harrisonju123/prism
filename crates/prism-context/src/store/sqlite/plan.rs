@@ -70,7 +70,20 @@ impl SqliteStore {
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| Error::NotFound(format!("plan {plan_id} not found")))?;
-        row_to_plan(&row)
+        let plan = row_to_plan(&row)?;
+
+        self.log_activity_fire_and_forget(
+            workspace_id,
+            "system",
+            "plan_status_changed",
+            "plan",
+            plan_id,
+            &format!("Plan status changed to {status}"),
+            None,
+        )
+        .await;
+
+        Ok(plan)
     }
 
     pub(crate) async fn list_plans_impl(

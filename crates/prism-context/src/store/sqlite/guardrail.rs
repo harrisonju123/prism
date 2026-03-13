@@ -45,7 +45,20 @@ impl SqliteStore {
         .fetch_one(&self.pool)
         .await?;
 
-        row_to_guardrails(&row)
+        let g = row_to_guardrails(&row)?;
+
+        self.log_activity_fire_and_forget(
+            workspace_id,
+            "system",
+            "guardrails_set",
+            "thread_guardrails",
+            thread.id,
+            &format!("Guardrails set for thread '{thread_name}'"),
+            None,
+        )
+        .await;
+
+        Ok(g)
     }
 
     pub(crate) async fn get_guardrails_impl(
@@ -253,6 +266,18 @@ impl SqliteStore {
         }
 
         tx.commit().await?;
+
+        self.log_activity_fire_and_forget(
+            workspace_id,
+            "system",
+            "guardrail_cost_incremented",
+            "thread_guardrails",
+            thread.id,
+            &format!("Cost incremented by ${amount_usd:.4} for thread '{thread_name}'"),
+            None,
+        )
+        .await;
+
         Ok(())
     }
 }

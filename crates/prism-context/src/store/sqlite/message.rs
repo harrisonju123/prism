@@ -31,7 +31,7 @@ impl SqliteStore {
         .execute(&self.pool)
         .await?;
 
-        Ok(Message {
+        let message = Message {
             id,
             workspace_id,
             from_agent: from_agent.to_string(),
@@ -40,7 +40,20 @@ impl SqliteStore {
             read: false,
             created_at: parse_time(&now)?,
             conversation_id,
-        })
+        };
+
+        self.log_activity_fire_and_forget(
+            workspace_id,
+            from_agent,
+            "message_sent",
+            "message",
+            id,
+            &format!("Message to '{to_agent}'"),
+            None,
+        )
+        .await;
+
+        Ok(message)
     }
 
     pub(crate) async fn list_messages_impl(

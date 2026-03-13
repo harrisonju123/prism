@@ -173,6 +173,17 @@ impl SqliteStore {
 
         tx.commit().await?;
 
+        self.log_activity_fire_and_forget(
+            workspace_id,
+            name,
+            "checkin",
+            "agent",
+            agent.id,
+            &format!("Agent '{name}' checked in"),
+            None,
+        )
+        .await;
+
         Ok(CheckinContext {
             agent,
             session,
@@ -272,6 +283,18 @@ impl SqliteStore {
         .await?;
 
         tx.commit().await?;
+
+        self.log_activity_fire_and_forget(
+            workspace_id,
+            name,
+            "checkout",
+            "agent_session",
+            session.id,
+            &format!("Agent '{name}' checked out"),
+            None,
+        )
+        .await;
+
         Ok(session)
     }
 
@@ -320,20 +343,35 @@ impl SqliteStore {
         state: AgentState,
     ) -> Result<()> {
         let now = now_rfc3339();
-        let result = sqlx::query(
+        let id_str: Option<String> = sqlx::query_scalar(
             "UPDATE agents SET state = $1, updated_at = $2
-             WHERE workspace_id = $3 AND name = $4",
+             WHERE workspace_id = $3 AND name = $4
+             RETURNING id",
         )
         .bind(state.to_string())
         .bind(&now)
         .bind(workspace_id.to_string())
         .bind(name)
-        .execute(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
 
-        if result.rows_affected() == 0 {
+        let Some(id_str) = id_str else {
             return Err(Error::NotFound(format!("agent {name:?} not found")));
+        };
+
+        if let Ok(agent_id) = parse_uuid(&id_str) {
+            self.log_activity_fire_and_forget(
+                workspace_id,
+                name,
+                "state_changed",
+                "agent",
+                agent_id,
+                &format!("Agent '{name}' state changed to {state}"),
+                None,
+            )
+            .await;
         }
+
         Ok(())
     }
 
@@ -347,14 +385,14 @@ impl SqliteStore {
 
         let mut tx = self.pool.begin().await?;
 
-        // Atomically mark stale agents as dead and return their names.
+        // Atomically mark stale agents as dead and return their ids and names.
         let rows = sqlx::query(
             "UPDATE agents SET state = 'dead', updated_at = $1
              WHERE workspace_id = $2
                AND state != 'dead'
                AND last_heartbeat IS NOT NULL
                AND last_heartbeat < $3
-             RETURNING name",
+             RETURNING id, name",
         )
         .bind(&now)
         .bind(workspace_id.to_string())
@@ -362,10 +400,12 @@ impl SqliteStore {
         .fetch_all(&mut *tx)
         .await?;
 
-        let names: Vec<String> = rows
+        let reaped: Vec<(String, String)> = rows
             .iter()
-            .map(|r| r.try_get::<String, _>("name"))
-            .collect::<std::result::Result<_, _>>()?;
+            .map(|r| Ok((r.try_get::<String, _>("id")?, r.try_get::<String, _>("name")?)))
+            .collect::<std::result::Result<_, sqlx::Error>>()?;
+
+        let names: Vec<String> = reaped.iter().map(|(_, n)| n.clone()).collect();
 
         if !names.is_empty() {
             // Close open sessions for reaped agents
@@ -398,6 +438,22 @@ impl SqliteStore {
         }
 
         tx.commit().await?;
+
+        for (id_str, agent_name) in &reaped {
+            if let Ok(agent_id) = parse_uuid(id_str) {
+                self.log_activity_fire_and_forget(
+                    workspace_id,
+                    "system",
+                    "reaped",
+                    "agent",
+                    agent_id,
+                    &format!("Agent '{agent_name}' reaped"),
+                    None,
+                )
+                .await;
+            }
+        }
+
         Ok(names)
     }
 
@@ -408,17 +464,34 @@ impl SqliteStore {
         summary: &str,
         files_touched: Vec<String>,
     ) -> Result<()> {
-        sqlx::query(
+        let id_str: Option<String> = sqlx::query_scalar(
             "UPDATE agent_sessions SET summary = $1, files_touched = $2
              WHERE agent_id = (SELECT id FROM agents WHERE workspace_id = $3 AND name = $4)
-               AND ended_at IS NULL",
+               AND ended_at IS NULL
+             RETURNING id",
         )
         .bind(summary)
         .bind(json_array_to_str(&files_touched))
         .bind(workspace_id.to_string())
         .bind(agent_name)
-        .execute(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
+
+        if let Some(id_str) = id_str {
+            if let Ok(session_id) = parse_uuid(&id_str) {
+                self.log_activity_fire_and_forget(
+                    workspace_id,
+                    agent_name,
+                    "session_updated",
+                    "agent_session",
+                    session_id,
+                    &format!("Session updated for agent '{agent_name}'"),
+                    None,
+                )
+                .await;
+            }
+        }
+
         Ok(())
     }
 

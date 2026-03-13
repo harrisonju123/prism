@@ -44,7 +44,20 @@ impl SqliteStore {
         .fetch_one(&self.pool)
         .await?;
 
-        row_to_inbox_entry(&row)
+        let entry = row_to_inbox_entry(&row)?;
+
+        self.log_activity_fire_and_forget(
+            workspace_id,
+            source_agent.unwrap_or("system"),
+            "inbox_created",
+            "inbox_entry",
+            entry.id,
+            &format!("Inbox: {}", &title[..title.len().min(60)]),
+            None,
+        )
+        .await;
+
+        Ok(entry)
     }
 
     /// Find a recent entry matching entry_type + source_agent + title prefix within cooldown.

@@ -117,7 +117,20 @@ impl SqliteStore {
         .await?
         .ok_or_else(|| Error::NotFound(format!("pending handoff {handoff_id} not found")))?;
 
-        row_to_handoff(&row)
+        let handoff = row_to_handoff(&row)?;
+
+        self.log_activity_fire_and_forget(
+            workspace_id,
+            agent_name,
+            "handoff_accepted",
+            "handoff",
+            handoff.id,
+            &format!("Accepted handoff {handoff_id}"),
+            None,
+        )
+        .await;
+
+        Ok(handoff)
     }
 
     pub(crate) async fn complete_handoff_impl(
@@ -144,7 +157,20 @@ impl SqliteStore {
             Error::NotFound(format!("handoff {handoff_id} not found or already completed"))
         })?;
 
-        row_to_handoff(&row)
+        let handoff = row_to_handoff(&row)?;
+
+        self.log_activity_fire_and_forget(
+            workspace_id,
+            "system",
+            "handoff_completed",
+            "handoff",
+            handoff.id,
+            &format!("Completed handoff {handoff_id}"),
+            None,
+        )
+        .await;
+
+        Ok(handoff)
     }
 
     pub(crate) async fn list_handoffs_impl(

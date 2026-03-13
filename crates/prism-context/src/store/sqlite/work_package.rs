@@ -97,7 +97,20 @@ impl SqliteStore {
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| Error::NotFound(format!("work package {wp_id} not found")))?;
-        row_to_work_package(&row)
+        let wp = row_to_work_package(&row)?;
+
+        self.log_activity_fire_and_forget(
+            workspace_id,
+            "system",
+            "work_package_status_changed",
+            "work_package",
+            wp_id,
+            &format!("Work package status changed to {status}"),
+            None,
+        )
+        .await;
+
+        Ok(wp)
     }
 
     pub(crate) async fn assign_work_package_impl(
@@ -124,7 +137,20 @@ impl SqliteStore {
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| Error::NotFound(format!("work package {wp_id} not found")))?;
-        row_to_work_package(&row)
+        let wp = row_to_work_package(&row)?;
+
+        self.log_activity_fire_and_forget(
+            workspace_id,
+            agent_name,
+            "work_package_assigned",
+            "work_package",
+            wp_id,
+            &format!("Assigned to '{agent_name}'"),
+            None,
+        )
+        .await;
+
+        Ok(wp)
     }
 
     pub(crate) async fn list_work_packages_impl(

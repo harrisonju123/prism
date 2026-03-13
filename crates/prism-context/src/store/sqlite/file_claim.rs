@@ -114,14 +114,30 @@ impl SqliteStore {
         file_path: &str,
         agent_name: &str,
     ) -> Result<()> {
-        sqlx::query(
-            "DELETE FROM file_claims WHERE workspace_id = $1 AND file_path = $2 AND agent_name = $3",
+        let deleted_id: Option<String> = sqlx::query_scalar(
+            "DELETE FROM file_claims WHERE workspace_id = $1 AND file_path = $2 AND agent_name = $3 RETURNING id",
         )
         .bind(workspace_id.to_string())
         .bind(file_path)
         .bind(agent_name)
-        .execute(&self.pool)
+        .fetch_optional(&self.pool)
         .await?;
+
+        if let Some(id_str) = deleted_id {
+            if let Ok(id) = parse_uuid(&id_str) {
+                self.log_activity_fire_and_forget(
+                    workspace_id,
+                    agent_name,
+                    "release",
+                    "file_claim",
+                    id,
+                    &format!("released {file_path}"),
+                    None,
+                )
+                .await;
+            }
+        }
+
         Ok(())
     }
 
