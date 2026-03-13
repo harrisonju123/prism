@@ -842,6 +842,7 @@ mod tests {
                 compile_check_command: None,
                 compile_check_timeout: 30,
                 await_review: false,
+                file_claim_enforcement: true,
             },
             compression: CompressionConfig {
                 model: None,

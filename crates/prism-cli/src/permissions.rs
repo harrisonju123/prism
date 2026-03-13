@@ -27,6 +27,19 @@ pub enum PermissionMode {
     Auto,
 }
 
+impl PermissionMode {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::AcceptEdits => "accept-edits",
+            Self::Plan => "plan",
+            Self::DontAsk => "dont-ask",
+            Self::BypassPermissions => "bypass",
+            Self::Auto => "auto",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionDecision {
     Allow,

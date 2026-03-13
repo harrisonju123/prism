@@ -1,0 +1,108 @@
+# default-review-rules.toml — companion template for .prism/review-rules.toml
+#
+# This file documents all supported fields. Copy it to .prism/review-rules.toml
+# in your repo and fill in the rules that apply to your project.
+#
+# Template variables resolved at runtime:
+#   {affected_crate}   — the crate name(s) derived from changed files (Rust only)
+#   {changed_files}    — space-separated list of changed file paths
+#
+# Language sections activate automatically based on changed file extensions:
+#   .rs  → [rust]
+#   .go  → [go]
+#   .py  → [python]
+#   .ts / .js → [typescript]
+#
+# [general] always applies regardless of file types.
+
+[general]
+# Shell commands that must pass (exit 0) on every PR.
+required_checks = [
+    # "cargo fmt --check 2>&1",
+    # "your-linter --check 2>&1",
+]
+
+# Regex patterns searched in changed files only (grep_files).
+# Matches are reported as `concern`.
+forbidden_patterns = [
+    # "println!",
+    # "TODO\\(unassigned\\)",
+]
+
+# Human-readable conventions the reviewer checks for in new code.
+# Violations reported as `nit`.
+conventions = [
+    # "Error types must implement Display",
+    # "All public APIs must have doc comments",
+]
+
+[rust]
+# Checks to run for PRs touching .rs files.
+# {affected_crate} is substituted with the detected crate name.
+required_checks = [
+    # "cargo clippy -p {affected_crate} --features full -- -W clippy::all 2>&1",
+    # "cargo test -p {affected_crate} --features full 2>&1",
+]
+
+conventions = [
+    # "Structs: PascalCase, functions: snake_case",
+    # "Keep pub surface minimal",
+    # "Tests in #[cfg(test)] mod tests at bottom of file",
+    # "Use tracing macros, never println",
+    # "Config structs need Default impl",
+    # "Module files: singular nouns (workspace.rs not workspaces.rs)",
+]
+
+forbidden_patterns = [
+    # "println!",
+    # "dbg!",
+    # "unwrap\\(\\)",
+]
+
+# Optional: naming rules checked on new public symbols.
+# naming_rules = [
+#     "structs must be PascalCase",
+#     "functions must be snake_case",
+# ]
+
+[go]
+required_checks = [
+    # "go vet ./... 2>&1",
+    # "golangci-lint run 2>&1",
+]
+conventions = [
+    # "Run swaggo for API docs on handler changes",
+    # "Follow service client pattern for new services",
+]
+forbidden_patterns = [
+    # "fmt\\.Println",
+    # "log\\.Print",
+]
+
+[python]
+required_checks = [
+    # "ruff check {changed_files} 2>&1",
+    # "mypy {changed_files} 2>&1",
+]
+conventions = [
+    # "All public functions must have type annotations",
+    # "Use structlog for logging, not print()",
+]
+forbidden_patterns = [
+    # "import \\*",
+    # "print\\(",
+]
+
+[typescript]
+required_checks = [
+    # "tsc --noEmit 2>&1",
+    # "eslint {changed_files} 2>&1",
+]
+conventions = [
+    # "Use named exports, not default exports",
+    # "No any types without a comment explaining why",
+]
+forbidden_patterns = [
+    # "console\\.log",
+    # "TODO: ",
+]

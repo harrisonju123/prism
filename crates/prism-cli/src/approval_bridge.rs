@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
 
@@ -45,11 +44,7 @@ pub struct ApprovalResponse {
 /// Deterministic per-project socket path: `~/.prism/run/approval-<hash>.sock`
 /// where `<hash>` is the first 12 hex chars of SHA-256(canonical cwd).
 pub fn socket_path(cwd: &Path) -> PathBuf {
-    let canonical = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-    let mut hasher = Sha256::new();
-    hasher.update(canonical.to_string_lossy().as_bytes());
-    let digest = hasher.finalize();
-    let hash = hex::encode(&digest[..6]); // 6 bytes = 12 hex chars
+    let hash = crate::config::hash_path(cwd);
     crate::config::prism_home()
         .join("run")
         .join(format!("approval-{hash}.sock"))

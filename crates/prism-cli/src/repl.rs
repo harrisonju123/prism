@@ -1,21 +1,43 @@
 use anyhow::Result;
+use clap::ValueEnum;
 use prism_client::PrismClient;
+use rustyline::EditMode;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use crate::agent::Agent;
-use crate::config::Config;
+use crate::config::{Config, repl_history_path};
 use crate::mcp::McpRegistry;
 use crate::memory::MemoryManager;
 use crate::permissions::PermissionMode;
+use crate::persona::load_persona;
 use crate::session::Session;
 use crate::skills::{SkillRegistry, parse_skill_invocation};
+use crate::tools::{is_tool_allowed, tool_definitions};
+use prism_context::model::DecisionScope;
+use prism_context::store::{InboxFilters, MemoryFilters, Store as ContextStore};
+
+/// Minimal helper struct — all trait impls are no-ops for now.
+/// Provides the extension point for tab completion (Epic 4).
+#[derive(rustyline::Helper, rustyline::Completer, rustyline::Hinter, rustyline::Highlighter, rustyline::Validator)]
+struct PrismHelper;
 
 enum MetaCommand {
     Clear,
     Compact,
     Help,
     Mode(Option<String>),
+    Persona(Option<String>),
+    Thread(Option<String>),
+    Model(Option<String>),
+    Who,
+    Cost,
+    Tools,
+    Skills,
+    Decide(String),
+    Recall(Option<String>),
+    Memory,
+    AddDir(Option<String>),
 }
 
 impl MetaCommand {
@@ -26,13 +48,35 @@ impl MetaCommand {
             "/compact" => Some(Self::Compact),
             "/help" => Some(Self::Help),
             "/mode" => Some(Self::Mode(None)),
-            _ if trimmed.starts_with("/mode ") => {
-                let arg = trimmed["/mode ".len()..].trim().to_string();
-                Some(Self::Mode(Some(arg)))
+            "/who" => Some(Self::Who),
+            "/cost" => Some(Self::Cost),
+            "/tools" => Some(Self::Tools),
+            "/skills" => Some(Self::Skills),
+            "/persona" => Some(Self::Persona(None)),
+            "/thread" => Some(Self::Thread(None)),
+            "/model" => Some(Self::Model(None)),
+            "/recall" => Some(Self::Recall(None)),
+            "/memory" => Some(Self::Memory),
+            "/add-dir" => Some(Self::AddDir(None)),
+            _ if trimmed.starts_with("/mode ") => Some(Self::Mode(parse_arg(trimmed, "/mode"))),
+            _ if trimmed.starts_with("/persona ") => Some(Self::Persona(parse_arg(trimmed, "/persona"))),
+            _ if trimmed.starts_with("/thread ") => Some(Self::Thread(parse_arg(trimmed, "/thread"))),
+            _ if trimmed.starts_with("/model ") => Some(Self::Model(parse_arg(trimmed, "/model"))),
+            _ if trimmed.starts_with("/decide ") => {
+                Some(Self::Decide(parse_arg(trimmed, "/decide").unwrap_or_default()))
             }
+            _ if trimmed.starts_with("/recall ") => Some(Self::Recall(parse_arg(trimmed, "/recall"))),
+            _ if trimmed.starts_with("/add-dir ") => Some(Self::AddDir(parse_arg(trimmed, "/add-dir"))),
             _ => None,
         }
     }
+}
+
+fn parse_arg(input: &str, cmd: &str) -> Option<String> {
+    input
+        .strip_prefix(cmd)
+        .and_then(|rest| rest.strip_prefix(' '))
+        .map(|arg| arg.trim().to_string())
 }
 
 fn print_help() {
@@ -42,6 +86,17 @@ fn print_help() {
     eprintln!("  /compact             Compress context window (LLM summarization or FIFO trim)");
     eprintln!("  /mode [<mode>]       Show or switch permission mode");
     eprintln!("                       Modes: default, accept-edits, plan, dont-ask, bypass");
+    eprintln!("  /who                 Show session info (persona, thread, model, cost, turns)");
+    eprintln!("  /cost                Show session cost breakdown");
+    eprintln!("  /tools               List available tools and their allowed/denied status");
+    eprintln!("  /skills              List loaded skills");
+    eprintln!("  /persona [<name>]    Show or switch active persona");
+    eprintln!("  /thread [<name>]     Show or switch active context thread");
+    eprintln!("  /model [<name>]      Show or switch model (takes effect on next turn)");
+    eprintln!("  /decide <title>      Record a decision in the current thread");
+    eprintln!("  /recall [<thread>]   Recall thread context (memories, decisions, sessions)");
+    eprintln!("  /memory              List memories for the current thread");
+    eprintln!("  /add-dir [<path>]    Add a directory to the agent's context (or list current dirs)");
     eprintln!("  Ctrl+C               Exit");
     eprintln!();
     eprintln!("Skill invocations: /<skill-name> [args]");
@@ -90,12 +145,11 @@ pub async fn run_interactive(
 
     // Register "human" as a first-class agent so it appears in uh agents and can receive messages.
     if let Some((store, ws_id)) = agent.store_context() {
-        use prism_context::store::Store as _;
         let _ = store.checkin(ws_id, "human", vec![], None).await;
     }
 
-    // Install a ctrl-c handler that sets the shared flag. In REPL mode we want Ctrl+C at the
-    // prompt to exit, and Ctrl+C during a turn to interrupt just that turn.
+    // Install a ctrl-c handler that sets the shared flag. Fires during agent turns
+    // (not during readline — rustyline catches Ctrl+C there via ReadlineError::Interrupted).
     let interrupt_flag = agent.interrupted.clone();
     tokio::spawn(async move {
         loop {
@@ -103,6 +157,22 @@ pub async fn run_interactive(
             interrupt_flag.store(true, Ordering::SeqCst);
         }
     });
+
+    // Set up rustyline editor with persistent per-project history.
+    let rl_config = rustyline::Config::builder()
+        .max_history_size(1000)
+        .unwrap()
+        .auto_add_history(true)
+        .edit_mode(EditMode::Emacs)
+        .build();
+    let mut rl_editor = rustyline::Editor::<PrismHelper, rustyline::history::FileHistory>::with_config(rl_config)?;
+    let history_path = repl_history_path(&std::env::current_dir().unwrap_or_default());
+    if let Some(parent) = history_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = rl_editor.load_history(&history_path);
+    let rl_editor: Arc<std::sync::Mutex<rustyline::Editor<PrismHelper, rustyline::history::FileHistory>>> =
+        Arc::new(std::sync::Mutex::new(rl_editor));
 
     eprintln!("Interactive mode. Type /help for commands, Ctrl+C to exit.");
     eprintln!();
@@ -127,21 +197,24 @@ pub async fn run_interactive(
         // Surface pending inbox entries (e.g. from subagents via ask_human)
         // and direct messages addressed to "human" before each prompt.
         if let Some((store, ws_id)) = agent.store_context() {
-            use prism_context::store::{InboxFilters, Store};
             let filters = InboxFilters {
                 unread_only: true,
                 include_dismissed: false,
                 limit: 10,
                 entry_type: None,
             };
-            if let Ok(entries) = store.list_inbox_entries(ws_id, filters).await {
+            let (inbox_result, msgs_result) = tokio::join!(
+                store.list_inbox_entries(ws_id, filters),
+                store.list_messages(ws_id, "human", true),
+            );
+            if let Ok(entries) = inbox_result {
                 for e in &entries {
                     let from = e.source_agent.as_deref().unwrap_or("agent");
                     eprintln!("[inbox/{}/{}] {}", e.severity, from, e.body);
                     let _ = store.mark_inbox_read(ws_id, e.id).await;
                 }
             }
-            if let Ok(msgs) = store.list_messages(ws_id, "human", true).await {
+            if let Ok(msgs) = msgs_result {
                 for m in &msgs {
                     eprintln!("[message from {}] {}", m.from_agent, m.content);
                 }
@@ -151,35 +224,33 @@ pub async fn run_interactive(
             }
         }
 
-        eprint!("> ");
-        let _ = std::io::Write::flush(&mut std::io::stderr());
+        let prompt = agent.build_prompt();
+        let rl = rl_editor.clone();
+        let readline_result: Result<String, rustyline::error::ReadlineError> =
+            tokio::task::spawn_blocking(move || {
+                let mut editor = rl.lock().unwrap();
+                editor.readline(&prompt)
+            })
+            .await
+            .unwrap_or(Err(rustyline::error::ReadlineError::Eof));
 
-        // Read a line from stdin in a blocking thread so we can select! with ctrl-c
-        let line = tokio::task::spawn_blocking(|| {
-            let mut buf = String::new();
-            match std::io::stdin().read_line(&mut buf) {
-                Ok(0) => None, // EOF
-                Ok(_) => Some(buf),
-                Err(_) => None,
+        let line: String = match readline_result {
+            Ok(line) => line,
+            Err(rustyline::error::ReadlineError::Interrupted) => {
+                // Ctrl+C at prompt — exit
+                eprintln!("\n[exit]");
+                break;
             }
-        })
-        .await
-        .unwrap_or(None);
-
-        let Some(line) = line else {
-            // EOF (piped input exhausted)
-            break;
+            Err(rustyline::error::ReadlineError::Eof) => {
+                // EOF (piped input exhausted)
+                break;
+            }
+            Err(_) => break,
         };
 
         let input = line.trim();
         if input.is_empty() {
             continue;
-        }
-
-        // Check interrupt after read (Ctrl+C during readline)
-        if agent.interrupted.load(Ordering::Relaxed) {
-            eprintln!("\n[exit]");
-            break;
         }
 
         // Dispatch meta-commands first
@@ -197,22 +268,233 @@ pub async fn run_interactive(
                     agent.compact().await;
                 }
                 MetaCommand::Mode(None) => {
-                    use clap::ValueEnum;
-                    let mode = agent.permission_mode();
-                    let name = mode
-                        .to_possible_value()
-                        .map(|pv| pv.get_name().to_string())
-                        .unwrap_or_else(|| "auto".to_string());
+                    let name = agent.permission_mode().display_name();
                     eprintln!("[mode] current: {name}");
                     eprintln!("       available: default, accept-edits, plan, dont-ask, bypass");
                 }
                 MetaCommand::Mode(Some(arg)) => {
-                    use clap::ValueEnum;
                     if let Ok(mode) = PermissionMode::from_str(&arg, true) {
                         agent.set_permission_mode(mode);
                         eprintln!("[mode] switched to: {arg}");
                     } else {
                         eprintln!("[error] unknown mode '{arg}'. Available: default, accept-edits, plan, dont-ask, bypass");
+                    }
+                }
+                MetaCommand::Persona(None) => {
+                    let name = agent.config.session.persona.as_deref().unwrap_or("(none)");
+                    eprintln!("[persona] current: {name}");
+                }
+                MetaCommand::Persona(Some(name)) => {
+                    match load_persona(&name) {
+                        Ok(persona) => {
+                            persona.apply(&mut agent.config);
+                            // apply() may set config.extensions.permission_mode — sync the gate
+                            if let Some(mode) = agent.config.extensions.permission_mode {
+                                agent.set_permission_mode(mode);
+                            }
+                            agent.config.session.persona = Some(name.clone());
+                            eprintln!("[persona] switched to: {name}");
+                        }
+                        Err(e) => eprintln!("[error] {e}"),
+                    }
+                }
+                MetaCommand::Thread(None) => {
+                    let name = agent.current_thread.as_deref().unwrap_or("(none)");
+                    eprintln!("[thread] current: {name}");
+                }
+                MetaCommand::Thread(Some(name)) => {
+                    if let Some((store, ws_id)) = agent.store_context() {
+                        match store.get_thread(ws_id, &name).await {
+                            Ok(_) => {}
+                            Err(prism_context::error::Error::NotFound(_)) => {
+                                let _ = store.create_thread(ws_id, &name, "", vec![]).await;
+                            }
+                            Err(e) => {
+                                eprintln!("[error] {e}");
+                            }
+                        }
+                    }
+                    agent.current_thread = Some(name.clone());
+                    eprintln!("[thread] switched to: {name}");
+                }
+                MetaCommand::Model(None) => {
+                    eprintln!("[model] current: {}", agent.config.model.model);
+                }
+                MetaCommand::Model(Some(name)) => {
+                    agent.config.model.model = name.clone();
+                    eprintln!("[model] switched to: {name} (takes effect on next turn)");
+                }
+                MetaCommand::Who => {
+                    let persona = agent.config.session.persona.as_deref().unwrap_or("(none)");
+                    let thread = agent.current_thread.as_deref().unwrap_or("(none)");
+                    let model = &agent.config.model.model;
+                    let mode_name = agent.permission_mode().display_name();
+                    let cost = agent.session.total_cost_usd;
+                    let turns = agent.session.turns;
+                    let episode = &agent.session.episode_id.to_string()[..8];
+                    eprintln!("[who]");
+                    eprintln!("  persona: {persona}");
+                    eprintln!("  thread:  {thread}");
+                    eprintln!("  model:   {model}");
+                    eprintln!("  mode:    {mode_name}");
+                    eprintln!("  cost:    ${cost:.4}");
+                    eprintln!("  turns:   {turns}");
+                    eprintln!("  episode: {episode}");
+                }
+                MetaCommand::Cost => {
+                    let total = agent.session.total_cost_usd;
+                    let cap = agent.config.model.max_cost_usd;
+                    let prompt_tokens = agent.session.total_prompt_tokens;
+                    let completion_tokens = agent.session.total_completion_tokens;
+                    eprintln!("[cost]");
+                    eprintln!("  session total: ${total:.4}");
+                    if let Some(c) = cap {
+                        let pct = 100.0 * total / c;
+                        eprintln!("  cost cap:      ${c:.4}");
+                        eprintln!("  % used:        {pct:.1}%");
+                    } else {
+                        eprintln!("  cost cap:      unlimited");
+                    }
+                    eprintln!("  prompt tokens:     {prompt_tokens}");
+                    eprintln!("  completion tokens: {completion_tokens}");
+                }
+                MetaCommand::Tools => {
+                    let print_tools = |tools: &[prism_types::Tool], config: &Config| {
+                        for tool in tools {
+                            let name = &tool.function.name;
+                            let status = if is_tool_allowed(name, config) { "allow" } else { "deny" };
+                            eprintln!("    [{status}] {name}");
+                        }
+                    };
+                    eprintln!("[tools] sandbox: {:?}", agent.config.session.sandbox_mode);
+                    eprintln!("  builtin:");
+                    print_tools(&tool_definitions(), &agent.config);
+                    if let Some(reg) = &agent.mcp_registry {
+                        let mcp = reg.tool_definitions();
+                        if !mcp.is_empty() {
+                            eprintln!("  mcp:");
+                            print_tools(mcp, &agent.config);
+                        }
+                    }
+                }
+                MetaCommand::Skills => {
+                    let names = agent.skill_registry.names();
+                    if names.is_empty() {
+                        eprintln!("[skills] (no skills loaded)");
+                    } else {
+                        eprintln!("[skills]");
+                        for name in names {
+                            eprintln!("  /{name}");
+                        }
+                    }
+                }
+                MetaCommand::Decide(title) => {
+                    if let Some((store, ws_id)) = agent.store_context() {
+                        let thread_id = if let Some(ref t) = agent.current_thread {
+                            store.get_thread(ws_id, t).await.ok().map(|th| th.id)
+                        } else {
+                            None
+                        };
+                        match store
+                            .save_decision(ws_id, &title, "", thread_id, vec![], DecisionScope::Thread)
+                            .await
+                        {
+                            Ok(d) => eprintln!("[decide] recorded: {} (id: {})", title, &d.id.to_string()[..8]),
+                            Err(e) => eprintln!("[error] {e}"),
+                        }
+                    } else {
+                        eprintln!("[error] no context store available");
+                    }
+                }
+                MetaCommand::Recall(arg) => {
+                    let thread_name = arg.or_else(|| agent.current_thread.clone());
+                    if let Some(name) = thread_name {
+                        if let Some((store, ws_id)) = agent.store_context() {
+                            match store.recall_thread(ws_id, &name).await {
+                                Ok(ctx) => {
+                                    eprintln!("[recall] thread: {}", ctx.thread.name);
+                                    if !ctx.memories.is_empty() {
+                                        eprintln!("  memories ({}):", ctx.memories.len());
+                                        for m in &ctx.memories {
+                                            eprintln!("    {} = {}", m.key, m.value);
+                                        }
+                                    }
+                                    if !ctx.decisions.is_empty() {
+                                        eprintln!("  decisions ({}):", ctx.decisions.len());
+                                        for d in &ctx.decisions {
+                                            eprintln!("    - {}", d.title);
+                                        }
+                                    }
+                                    if !ctx.recent_sessions.is_empty() {
+                                        eprintln!("  recent sessions ({}):", ctx.recent_sessions.len());
+                                        for s in &ctx.recent_sessions {
+                                            let summary = if s.summary.is_empty() { "(no summary)" } else { &s.summary };
+                                            eprintln!("    - {summary}");
+                                        }
+                                    }
+                                }
+                                Err(e) => eprintln!("[error] {e}"),
+                            }
+                        } else {
+                            eprintln!("[error] no context store available");
+                        }
+                    } else {
+                        eprintln!("[error] no thread set — use /thread <name> or /recall <thread>");
+                    }
+                }
+                MetaCommand::Memory => {
+                    if let Some((store, ws_id)) = agent.store_context() {
+                        let filters = MemoryFilters {
+                            thread_name: agent.current_thread.clone(),
+                            ..Default::default()
+                        };
+                        match store.load_memories(ws_id, filters).await {
+                            Ok(memories) => {
+                                if memories.is_empty() {
+                                    eprintln!("[memory] (none)");
+                                } else {
+                                    eprintln!("[memory]");
+                                    for m in &memories {
+                                        eprintln!("  {} = {}", m.key, m.value);
+                                    }
+                                }
+                            }
+                            Err(e) => eprintln!("[error] {e}"),
+                        }
+                    } else {
+                        eprintln!("[error] no context store available");
+                    }
+                }
+                MetaCommand::AddDir(None) => {
+                    if agent.additional_dirs.is_empty() {
+                        eprintln!("[add-dir] (no extra directories)");
+                    } else {
+                        eprintln!("[add-dir] active directories:");
+                        for dir in &agent.additional_dirs {
+                            eprintln!("  {}", dir.display());
+                        }
+                    }
+                }
+                MetaCommand::AddDir(Some(raw)) => {
+                    let expanded = shellexpand::tilde(&raw).into_owned();
+                    let path = std::path::PathBuf::from(&expanded);
+                    let canonical = std::fs::canonicalize(&path);
+                    match canonical {
+                        Ok(abs) if abs.is_dir() => {
+                            if agent.additional_dirs.contains(&abs) {
+                                eprintln!("[add-dir] already added: {}", abs.display());
+                            } else {
+                                agent.additional_dirs.push(abs.clone());
+                                eprintln!("[add-dir] added: {}", abs.display());
+                                eprintln!("          agent can now read files from this directory");
+                            }
+                        }
+                        Ok(abs) => {
+                            eprintln!("[error] not a directory: {}", abs.display());
+                        }
+                        Err(e) => {
+                            eprintln!("[error] {raw}: {e}");
+                        }
                     }
                 }
             }
@@ -248,7 +530,6 @@ pub async fn run_interactive(
         if let Some((store, ws_id)) = agent.store_context() {
             let intent = task_str.to_string();
             tokio::spawn(async move {
-                use prism_context::store::Store;
                 let _ = store.create_plan(ws_id, &intent).await;
             });
         }
@@ -269,6 +550,11 @@ pub async fn run_interactive(
 
         // After each turn, ensure interrupt flag is clear so next prompt reads correctly
         agent.interrupted.store(false, Ordering::SeqCst);
+
+        // Save history after each turn so crashes only lose the last unsaved command
+        if let Ok(mut editor) = rl_editor.lock() {
+            let _ = editor.save_history(&history_path);
+        }
     }
 
     Ok(())

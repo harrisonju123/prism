@@ -1,0 +1,43 @@
+# PrisM repo-specific PR review rules
+# Loaded by the pr-review skill (Step 0) before any analysis begins.
+# Language sections activate based on changed file extensions.
+# [general] always applies regardless of file types.
+
+[general]
+required_checks = [
+    "cargo fmt --check 2>&1",
+]
+forbidden_patterns = [
+    "println!",
+    "dbg!",
+]
+conventions = [
+    "Error types must implement Display",
+    "Do not commit .env, .prism/context.json, or credentials",
+]
+
+[rust]
+required_checks = [
+    "cargo clippy -p {affected_crate} --features full -- -W clippy::all 2>&1",
+]
+conventions = [
+    "Structs: PascalCase, functions: snake_case",
+    "Keep pub surface minimal — only expose what other modules need",
+    "Tests in #[cfg(test)] mod tests at the bottom of each file",
+    "Use tracing macros, never println or dbg",
+    "Config structs need Default impl with sensible values",
+    "Module files: singular nouns (workspace.rs not workspaces.rs)",
+    "Virtual keys: prism_<32 hex> format, SHA-256 hashed, plaintext never stored",
+    "UUIDs: always stringify for SQLite (.bind(id.to_string()))",
+    "Timestamps: RFC3339 strings for SQLite",
+    "Vec<String> columns: JSON TEXT in SQLite (serde_json::to_string/from_str)",
+    "Concurrent context fetches: use tokio::join! not sequential awaits",
+    "Stack-recursive code: wrap with stacker::maybe_grow(512*1024, 8*1024*1024, || { ... })",
+    "Arc cycles: use Weak to break reference cycles",
+]
+forbidden_patterns = [
+    "println!",
+    "dbg!",
+    "expect\\(\"",
+    "\\.clone\\(\\)\\.clone\\(\\)",
+]

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::compression::ContextCompressor;
 use crate::hooks::HookRunner;
@@ -19,6 +19,23 @@ pub fn agent_name_from_env() -> String {
     std::env::var("PRISM_AGENT_NAME")
         .or_else(|_| std::env::var("UH_AGENT_NAME"))
         .unwrap_or_else(|_| "claude".to_string())
+}
+
+/// Returns the first 12 hex chars of SHA-256(canonical path) — a short, stable identifier.
+/// Used for per-project socket paths, history paths, etc.
+pub fn hash_path(p: &Path) -> String {
+    use sha2::Digest;
+    let canonical = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(canonical.to_string_lossy().as_bytes());
+    hex::encode(&hasher.finalize()[..6])
+}
+
+/// Returns the per-project REPL history file path under `~/.prism/history/`.
+pub fn repl_history_path(cwd: &Path) -> PathBuf {
+    prism_home()
+        .join("history")
+        .join(format!("repl-{}.txt", hash_path(cwd)))
 }
 
 /// Returns `~/.prism`, the base directory for all prism-cli state.

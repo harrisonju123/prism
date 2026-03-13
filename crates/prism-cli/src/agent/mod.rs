@@ -343,11 +343,11 @@ impl ToolOutcome {
 
 pub struct Agent {
     client: PrismClient,
-    config: Config,
-    session: Session,
+    pub config: Config,
+    pub session: Session,
     memory: MemoryManager,
-    mcp_registry: Option<Arc<McpRegistry>>,
-    skill_registry: SkillRegistry,
+    pub mcp_registry: Option<Arc<McpRegistry>>,
+    pub skill_registry: SkillRegistry,
     permission_gate: ToolPermissionGate,
     hook_runner: HookRunner,
     compressor: Option<ContextCompressor>,
@@ -358,7 +358,7 @@ pub struct Agent {
     // Kept as a field so two-press kill logic persists correctly across REPL turns.
     interrupt_count: Arc<AtomicU32>,
     /// Current thread name (from PRISM_THREAD env or handoff)
-    current_thread: Option<String>,
+    pub current_thread: Option<String>,
     /// Count of write-tool denials while in plan mode
     plan_mode_violations: u32,
     /// Plan file path for structural plan mode enforcement (from config)
@@ -370,7 +370,7 @@ pub struct Agent {
     /// Cancels the previous run's ctrl-c listener task when a new run starts.
     cancel_interrupt: Arc<AtomicBool>,
     /// Directories added via `add_dir` — ephemeral, scoped to this session.
-    additional_dirs: Vec<std::path::PathBuf>,
+    pub additional_dirs: Vec<std::path::PathBuf>,
     /// True when the user's prompt contains decision-required signals.
     decision_checkpoint_armed: bool,
     /// Cumulative count of read-only exploration tool calls in current run.
@@ -2801,6 +2801,44 @@ If you have questions, ask them now. If you're confident, continue."
     /// Return the current permission mode.
     pub fn permission_mode(&self) -> PermissionMode {
         self.permission_gate.mode()
+    }
+
+    /// Build a dynamic REPL prompt reflecting current agent state.
+    pub fn build_prompt(&self) -> String {
+        let mut segments: Vec<String> = Vec::new();
+
+        if let Some(ref p) = self.config.session.persona {
+            segments.push(p.clone());
+        }
+
+        if let Some(ref t) = self.current_thread {
+            segments.push(t.clone());
+        }
+
+        if self.session.total_cost_usd > 0.0 {
+            segments.push(format!("${:.4}", self.session.total_cost_usd));
+        }
+
+        let mode = self.permission_mode();
+        let mode_label = match mode {
+            PermissionMode::Default | PermissionMode::Auto => None,
+            _ => Some(mode.display_name()),
+        };
+        let (color_start, color_end) = match mode {
+            PermissionMode::AcceptEdits => ("\x1b[34m", "\x1b[0m"),
+            PermissionMode::Plan => ("\x1b[33m", "\x1b[0m"),
+            PermissionMode::BypassPermissions => ("\x1b[31m", "\x1b[0m"),
+            _ => ("", ""),
+        };
+        if let Some(label) = mode_label {
+            segments.push(label.to_string());
+        }
+
+        if segments.is_empty() {
+            return "> ".to_string();
+        }
+
+        format!("{}[{}] ›{} ", color_start, segments.join(" · "), color_end)
     }
 
     /// Set agent state to Idle (called from REPL at prompt).
