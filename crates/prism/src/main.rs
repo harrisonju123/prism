@@ -790,9 +790,9 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Open uglyhat SQLite store for agent inbox/handoff APIs (best-effort).
-    // Discovers .uglyhat.json by walking up from the current working directory.
-    let (uh_store_arc, uh_workspace_id) = {
+    // Open context SQLite store for agent inbox/handoff APIs (best-effort).
+    // Discovers .prism/context.json by walking up from the current working directory.
+    let (context_store_arc, context_workspace_id) = {
         use prism_context::config as uh_config;
         use prism_context::store::sqlite::SqliteStore;
 
@@ -804,11 +804,11 @@ async fn main() -> anyhow::Result<()> {
             let db_path = uh_config::resolve_db_path(&cfg_path, &cfg);
             match SqliteStore::open(&db_path.to_string_lossy()).await {
                 Ok(store) => {
-                    tracing::info!(path = %db_path.display(), "uglyhat store opened");
+                    tracing::info!(path = %db_path.display(), "context store opened");
                     Some((Arc::new(store), ws_id))
                 }
                 Err(e) => {
-                    tracing::debug!(error = %e, "uglyhat store open failed");
+                    tracing::debug!(error = %e, "context store open failed");
                     None
                 }
             }
@@ -853,7 +853,7 @@ async fn main() -> anyhow::Result<()> {
             .with_audit_service_opt(audit_service)
             .with_alias_cache_opt(alias_cache)
             .with_alias_repo_opt(alias_repo)
-            .with_uh_store(uh_store_arc, uh_workspace_id)
+            .with_context_store(context_store_arc, context_workspace_id)
             .with_pg_pool_opt(pg_pool)
             .build()
             .expect("AppState construction is infallible after main.rs init"),

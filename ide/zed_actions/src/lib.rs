@@ -449,7 +449,7 @@ pub mod agent {
             OpenSettings,
             /// Spawns a new Claude Code agent session in a fresh git worktree.
             /// Prompts for a feature name, creates .worktrees/<name>, claims or
-            /// creates a matching uglyhat task, and opens a terminal with the
+            /// creates a matching context thread, and opens a terminal with the
             /// agent pre-configured.
             SpawnInNewWorktree,
             /// Opens the agent onboarding modal.

@@ -212,13 +212,13 @@ FROM inference_events
 GROUP BY hour, model
 "#;
 
-/// Add thread_id column for uglyhat thread attribution.
+/// Add thread_id column for context thread attribution.
 pub const INFERENCE_EVENTS_MIGRATION_V3: &str = r#"
 ALTER TABLE inference_events
     ADD COLUMN IF NOT EXISTS thread_id Nullable(String)
 "#;
 
-/// Materialized view for daily spend by uglyhat thread.
+/// Materialized view for daily spend by context thread.
 pub const DAILY_SPEND_BY_THREAD_SCHEMA: &str = r#"
 CREATE MATERIALIZED VIEW IF NOT EXISTS daily_spend_by_thread
 ENGINE = SummingMergeTree()

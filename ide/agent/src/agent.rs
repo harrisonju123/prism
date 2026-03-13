@@ -340,7 +340,7 @@ impl NativeAgent {
         });
 
         // Persist .prism-session.json to the first visible worktree root.
-        // This enables uglyhat hooks, other tools, and the title bar to discover
+        // This enables prism hooks, other tools, and the title bar to discover
         // which agent is working in this worktree and which task it has claimed.
         let session_id = thread.read(cx).id().0.to_string();
         let model_string = default_model
@@ -364,7 +364,7 @@ impl NativeAgent {
                 model_string,
             );
 
-            // Auto-claim uglyhat task when the branch matches a known task or a
+            // Auto-claim context thread when the branch matches a known thread or a
             // `.prism-session.json` already has a task_id (resume after crash).
             let session_file_path = prism_session::session_file_path(&worktree_root);
             let maybe_task_id: Option<String> =

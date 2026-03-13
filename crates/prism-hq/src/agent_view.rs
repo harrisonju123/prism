@@ -94,7 +94,7 @@ impl AgentViewItem {
 
             let result: anyhow::Result<(Option<AgentStatus>, Vec<AgentSession>)> = cx
                 .background_spawn(async move {
-                    let handle = handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
+                    let handle = handle.ok_or_else(|| anyhow::anyhow!("context service not available"))?;
                     let agents = handle.list_agents()?;
                     let overview = handle.get_workspace_overview()?;
                     let agent_status = agents.into_iter().find(|a| a.name == agent_name);
@@ -134,7 +134,7 @@ impl AgentViewItem {
 
             let result: anyhow::Result<()> = cx
                 .background_spawn(async move {
-                    let handle = handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
+                    let handle = handle.ok_or_else(|| anyhow::anyhow!("context service not available"))?;
                     handle.set_agent_state(&agent_name, state)
                 })
                 .await;
@@ -162,7 +162,7 @@ impl AgentViewItem {
 
             let result: anyhow::Result<()> = cx
                 .background_spawn(async move {
-                    let handle = handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
+                    let handle = handle.ok_or_else(|| anyhow::anyhow!("context service not available"))?;
                     handle.set_agent_state(&agent_name, AgentState::Dead)
                 })
                 .await;

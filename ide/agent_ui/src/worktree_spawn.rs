@@ -15,7 +15,7 @@ use workspace::{ModalView, Workspace};
 
 /// Modal that prompts for a feature/task name, then:
 /// 1. Creates `.worktrees/<name>` via `git worktree add`
-/// 2. Claims or creates a uglyhat task with the same name
+/// 2. Claims or creates a context thread with the same name
 /// 3. Opens a terminal in the worktree directory with `UH_AGENT_NAME` set
 /// 4. Launches a Claude Code session in that terminal
 pub struct SpawnWorktreeModal {

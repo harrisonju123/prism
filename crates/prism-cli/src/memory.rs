@@ -6,7 +6,7 @@ use std::path::Path;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// Context-store backed memory manager using uglyhat's SqliteStore.
+/// Context-store backed memory manager using PrisM's SqliteStore.
 /// Falls back to in-memory buffering if the store can't be opened.
 pub struct MemoryManager {
     store: Option<Arc<SqliteStore>>,
@@ -16,7 +16,7 @@ pub struct MemoryManager {
 }
 
 impl MemoryManager {
-    /// Create a new MemoryManager backed by an uglyhat store.
+    /// Create a new MemoryManager backed by a context store.
     /// If `store` is None, memories are buffered in-memory and lost on exit.
     pub fn new(store: Option<Arc<SqliteStore>>, workspace_id: Option<Uuid>) -> Self {
         let agent_name = crate::config::agent_name_from_env();
@@ -106,12 +106,12 @@ impl MemoryManager {
     }
 }
 
-/// Try to open an uglyhat store and discover the workspace.
-/// Returns (store, workspace_id) if successful, or (None, None) if no uglyhat DB found.
+/// Try to open a context store and discover the workspace.
+/// Returns (store, workspace_id) if successful, or (None, None) if no context DB found.
 pub async fn open_context_store(
     db_path: Option<&Path>,
 ) -> (Option<Arc<SqliteStore>>, Option<Uuid>) {
-    let (discovered_db, discovered_ws) = discover_uglyhat();
+    let (discovered_db, discovered_ws) = discover_context_store();
 
     let path = match db_path {
         Some(p) => Some(p.to_path_buf()),
@@ -125,14 +125,14 @@ pub async fn open_context_store(
     match SqliteStore::open(&path.to_string_lossy()).await {
         Ok(store) => (Some(Arc::new(store)), discovered_ws),
         Err(e) => {
-            tracing::warn!("failed to open uglyhat store at {}: {e}", path.display());
+            tracing::warn!("failed to open context store at {}: {e}", path.display());
             (None, None)
         }
     }
 }
 
-/// Discover uglyhat config and database path from the current directory.
-fn discover_uglyhat() -> (Option<std::path::PathBuf>, Option<Uuid>) {
+/// Discover context config and database path from the current directory.
+fn discover_context_store() -> (Option<std::path::PathBuf>, Option<Uuid>) {
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
         Err(_) => return (None, None),

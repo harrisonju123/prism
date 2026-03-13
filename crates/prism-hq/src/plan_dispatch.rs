@@ -153,7 +153,7 @@ impl PlanDispatchModal {
 
             let result: anyhow::Result<Vec<(String, String)>> = cx
                 .background_spawn(async move {
-                    let handle = handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
+                    let handle = handle.ok_or_else(|| anyhow::anyhow!("context service not available"))?;
 
                     // 1. Create the plan
                     // Combine all intents into one overview sentence

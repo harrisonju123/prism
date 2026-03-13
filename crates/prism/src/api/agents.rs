@@ -61,13 +61,13 @@ pub struct WorkPackageListResponse {
 // Helper
 // ---------------------------------------------------------------------------
 
-fn uh_store(state: &AppState) -> Result<(&dyn Store, Uuid)> {
+fn context_store(state: &AppState) -> Result<(&dyn Store, Uuid)> {
     let (store, ws_id) = state
-        .uh_store
+        .context_store
         .as_ref()
-        .zip(state.uh_workspace_id)
+        .zip(state.context_workspace_id)
         .ok_or_else(|| {
-            PrismError::Internal("uglyhat store not available — is .uglyhat.db present?".into())
+            PrismError::Internal("context store not available — is .prism/context.db present?".into())
         })?;
     Ok((store.as_ref(), ws_id))
 }
@@ -80,7 +80,7 @@ pub async fn list_inbox(
     State(state): State<Arc<AppState>>,
     Query(params): Query<InboxParams>,
 ) -> Result<impl IntoResponse> {
-    let (store, ws_id) = uh_store(&state)?;
+    let (store, ws_id) = context_store(&state)?;
 
     let entry_type = params
         .entry_type
@@ -107,7 +107,7 @@ pub async fn mark_inbox_read(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let (store, ws_id) = uh_store(&state)?;
+    let (store, ws_id) = context_store(&state)?;
     store
         .mark_inbox_read(ws_id, id)
         .await
@@ -119,7 +119,7 @@ pub async fn dismiss_inbox(
     State(state): State<Arc<AppState>>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse> {
-    let (store, ws_id) = uh_store(&state)?;
+    let (store, ws_id) = context_store(&state)?;
     store
         .dismiss_inbox_entry(ws_id, id)
         .await
@@ -135,7 +135,7 @@ pub async fn list_handoffs(
     State(state): State<Arc<AppState>>,
     Query(params): Query<HandoffParams>,
 ) -> Result<impl IntoResponse> {
-    let (store, ws_id) = uh_store(&state)?;
+    let (store, ws_id) = context_store(&state)?;
 
     let status = params.status.as_deref().and_then(HandoffStatus::from_str);
 
@@ -158,7 +158,7 @@ pub async fn list_work_packages(
 ) -> Result<impl IntoResponse> {
     use prism_context::model::WorkPackageStatus;
 
-    let (store, ws_id) = uh_store(&state)?;
+    let (store, ws_id) = context_store(&state)?;
 
     let plan_id = params
         .plan_id

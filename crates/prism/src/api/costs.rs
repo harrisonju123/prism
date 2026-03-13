@@ -22,7 +22,7 @@ fn default_period_days() -> u32 {
 
 /// GET /v1/costs?thread_id=X
 ///
-/// Aggregated cost for a uglyhat thread from the daily_spend_by_thread materialized view.
+/// Aggregated cost for a context thread from the daily_spend_by_thread materialized view.
 pub async fn thread_costs(
     State(state): State<Arc<AppState>>,
     Query(params): Query<CostParams>,

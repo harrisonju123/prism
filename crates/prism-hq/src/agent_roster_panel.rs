@@ -1,5 +1,5 @@
 use crate::context_service::get_context_handle;
-use crate::panel_types::{prism_binary, uh_binary, AgentStatus};
+use crate::panel_types::{prism_binary, AgentStatus};
 use anyhow::Result;
 use db::kvp::KEY_VALUE_STORE;
 use gpui::{
@@ -211,7 +211,7 @@ impl AgentRosterPanel {
             let result = cx
                 .background_spawn(async move {
                     let Some(handle) = handle else {
-                        anyhow::bail!("uglyhat service not available");
+                        anyhow::bail!("context service not available");
                     };
                     let agents = handle.list_agents()?;
                     let panel_agents: Vec<AgentStatus> =
@@ -283,7 +283,7 @@ impl AgentRosterPanel {
             let result = cx
                 .background_spawn(async move {
                     let Some(handle) = handle else {
-                        anyhow::bail!("uglyhat service not available");
+                        anyhow::bail!("context service not available");
                     };
                     handle.save_memory(&title, &content, None, vec!["note".to_string()])?;
                     anyhow::Ok(())
@@ -359,8 +359,8 @@ impl AgentRosterPanel {
                     let repo_root = repo_root.clone();
                     let name = name.clone();
                     async move {
-                        std::process::Command::new(uh_binary())
-                            .args(["task", "create", &name, "--status", "in_progress"])
+                        std::process::Command::new(prism_binary())
+                            .args(["context", "thread", "create", &name])
                             .current_dir(&repo_root)
                             .status()
                             .ok();

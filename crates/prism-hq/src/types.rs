@@ -10,10 +10,6 @@ fn cargo_bin(name: &str) -> PathBuf {
     name.into()
 }
 
-pub fn uh_binary() -> PathBuf {
-    cargo_bin("uh")
-}
-
 pub fn prism_binary() -> PathBuf {
     cargo_bin("prism")
 }

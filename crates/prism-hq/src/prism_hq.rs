@@ -55,7 +55,7 @@ pub fn init(cx: &mut App) {
     HqState::init_global(cx);
     RunningAgents::init_global(cx);
 
-    // Initialize ContextService (formerly uglyhat-panel) for each new workspace.
+    // Initialize ContextService for each new workspace.
     cx.observe_new(|workspace: &mut Workspace, _, cx| {
         if cx.try_global::<ContextService>().is_none() {
             let root = workspace

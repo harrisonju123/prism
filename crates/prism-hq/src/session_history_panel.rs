@@ -181,7 +181,7 @@ impl SessionHistoryPanel {
             let result: anyhow::Result<Vec<SessionEntry>> = cx
                 .background_spawn(async move {
                     let Some(handle) = handle else {
-                        anyhow::bail!("uglyhat service not available");
+                        anyhow::bail!("context service not available");
                     };
                     let activities = handle.list_activity(prism_context::store::ActivityFilters {
                         limit: 50,

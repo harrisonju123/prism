@@ -1,6 +1,6 @@
 # PrisM Platform Roadmap
 
-Three systems, one loop: **Zed IDE** (edit) → **PrisM Gateway** (route + observe) → **uglyhat** (remember + coordinate).
+Three systems, one loop: **Zed IDE** (edit) → **PrisM Gateway** (route + observe) → **prism context** (remember + coordinate).
 
 ---
 
@@ -9,26 +9,26 @@ Three systems, one loop: **Zed IDE** (edit) → **PrisM Gateway** (route + obser
 Connect the three systems so data flows between them automatically.
 
 ### 1.1 Thread-aware agent sessions
-> uglyhat threads become the context backbone for IDE agent sessions
+> prism context threads become the context backbone for IDE agent sessions
 
-- IDE agent panel gets a "Thread" picker (uglyhat threads, not just conversations)
-- Starting an agent session calls `uh checkin` and attaches the thread's memories + decisions to the system prompt
-- Ending a session calls `uh checkout` with summary, files touched, and next steps
+- IDE agent panel gets a "Thread" picker (context threads, not just conversations)
+- Starting an agent session calls `prism context checkin` and attaches the thread's memories + decisions to the system prompt
+- Ending a session calls `prism context checkout` with summary, files touched, and next steps
 - **Why first:** This is the single change that makes multi-session work coherent. Every session after the first one starts smarter.
 
 ### 1.2 Cost attribution pipeline
-> PrisM events flow to uglyhat as activity entries
+> PrisM events flow to prism context as activity entries
 
 - PrisM tags each `InferenceEvent` with `x-session-id` + `x-episode-id` (IDE already sends these)
-- A lightweight reconciler (cron or post-request hook) writes cost summaries to uglyhat activity log
-- uglyhat `recall` can answer: "how much did this thread cost so far?"
+- A lightweight reconciler (cron or post-request hook) writes cost summaries to the context activity log
+- `prism context recall` can answer: "how much did this thread cost so far?"
 - **Why:** Cost visibility per-thread/per-agent is the most asked-for observability feature in agentic workflows.
 
-### 1.3 Embedded uglyhat in IDE
+### 1.3 Embedded context store in IDE
 > Direct SQLite access from the Zed process, no CLI shelling out
 
-- Add `uglyhat` as a Cargo dependency to the IDE's PrisM provider crate
-- The IDE opens the same `.uglyhat.db` that the CLI uses
+- Add `prism-context` as a Cargo dependency to the IDE's PrisM provider crate
+- The IDE opens the same `.prism/context.db` that the CLI uses
 - Enables real-time thread/memory/decision access without subprocess overhead
 - **Why:** Latency matters for inline experiences (autocomplete, context injection). CLI round-trips add ~50ms each.
 
@@ -49,7 +49,7 @@ Make the integrated data visible and useful in the IDE.
 ### 2.2 Context panel (memories + decisions)
 > Sidebar panel showing what the agent "knows"
 
-- Pulls from uglyhat: thread-scoped memories, recent decisions, last session's next-steps
+- Pulls from prism context: thread-scoped memories, recent decisions, last session's next-steps
 - Editable — user can add/remove memories before starting a session
 - Auto-surfaces relevant global memories by tag matching against open files
 - **Why:** The black box problem. Users don't know what context the agent has. Making it visible builds trust.
@@ -79,7 +79,7 @@ Enable multiple agents working on related tasks simultaneously.
 ### 3.1 Agent roster panel
 > See all active agents and their work
 
-- Pull from `uh agents` — name, current thread, session status, last activity
+- Pull from `prism context agents` — name, current thread, session status, last activity
 - Show in IDE sidebar: which agents are active, what they're working on, what's blocked
 - Click an agent to see its recent activity and session summaries
 - **Why:** When running 3+ agents in worktrees, there's no visibility into what's happening. This is mission control.
@@ -87,7 +87,7 @@ Enable multiple agents working on related tasks simultaneously.
 ### 3.2 Decision propagation
 > Decisions made in one session are visible to all agents on the same thread
 
-- Agent explicitly records decisions via tool call (`uh decide "use sqlx not diesel" --thread <id>`)
+- Agent explicitly records decisions via tool call (`prism context decide "use sqlx not diesel" --thread <id>`)
 - All agents on the same thread see decisions in their context on next turn/checkin
 - IDE surfaces new decisions as notifications: "Agent claude-worktree-2 decided: use sqlx not diesel"
 - **Why:** The #1 failure mode of multi-agent work is contradictory decisions. Shared decision records prevent this.
@@ -95,7 +95,7 @@ Enable multiple agents working on related tasks simultaneously.
 ### 3.3 Handoff-driven spawning
 > One agent can hand off work to another with full context
 
-- Agent calls `uh handoff` → uglyhat creates a new thread with context (summary, findings, blockers, next-steps)
+- Agent calls `prism context checkout` → prism context creates a new thread with context (summary, findings, blockers, next-steps)
 - IDE picks up the handoff notification and offers to spawn a new agent worktree
 - New agent session starts with the handoff context pre-loaded
 - **Why:** Today handoffs are manual (copy-paste summaries). Structured handoffs preserve context across agent boundaries.
@@ -103,7 +103,7 @@ Enable multiple agents working on related tasks simultaneously.
 ### 3.4 Thread-scoped guardrails
 > PrisM enforces per-thread boundaries
 
-- uglyhat threads get a `scope` field: list of allowed crate/file paths
+- Context threads get a `scope` field: list of allowed crate/file paths
 - PrisM policy engine checks tool calls against scope before execution
 - Agent working on "payments" can't accidentally modify "auth" code
 - **Why:** As agents get more autonomous, blast radius control becomes critical. Thread scope is the natural boundary.
@@ -126,7 +126,7 @@ The platform gets smarter over time from its own usage data.
 > Agent conversations automatically produce reusable memories
 
 - Post-session, a lightweight LLM pass extracts key facts from the conversation
-- Facts are stored as uglyhat memories, tagged by crate/domain
+- Facts are stored as context memories, tagged by crate/domain
 - Future sessions get relevant memories injected automatically
 - **Why:** Most project knowledge lives in chat transcripts that no one reads again. Auto-extraction captures it.
 
@@ -154,7 +154,7 @@ The platform gets smarter over time from its own usage data.
 Phase 1 (foundation)
 ├── 1.1 Thread-aware sessions ← no deps
 ├── 1.2 Cost attribution ← needs 1.1 (session_id linkage)
-└── 1.3 Embedded uglyhat ← no deps (but accelerates Phase 2)
+└── 1.3 Embedded context store ← no deps (but accelerates Phase 2)
 
 Phase 2 (visibility)
 ├── 2.1 Cost gauge ← needs 1.2

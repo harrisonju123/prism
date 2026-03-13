@@ -13,7 +13,7 @@ use crate::running_agents::RunningAgents;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 const ACTIVITY_LIMIT: i64 = 200;
 
-/// Snapshot of uglyhat state, refreshed every 3 seconds.
+/// Snapshot of prism context state, refreshed every 3 seconds.
 pub struct HqState {
     pub overview: Option<WorkspaceOverview>,
     pub activity: Vec<ActivityEntry>,
@@ -122,7 +122,7 @@ impl HqState {
             let result: anyhow::Result<RefreshData> = cx
                 .background_spawn(async move {
                     let Some(handle) = handle else {
-                        anyhow::bail!("uglyhat not available");
+                        anyhow::bail!("context service not available");
                     };
                     let overview = handle.get_workspace_overview()?;
                     let activity = handle.list_activity(ActivityFilters {

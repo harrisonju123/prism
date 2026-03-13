@@ -99,7 +99,7 @@ impl ThreadViewItem {
 
             let result: anyhow::Result<(ThreadContext, Vec<Handoff>, Vec<AgentStatus>)> = cx
                 .background_spawn(async move {
-                    let handle = handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
+                    let handle = handle.ok_or_else(|| anyhow::anyhow!("context service not available"))?;
                     let ctx = handle.recall_thread(&thread_name)?;
                     let all_handoffs = handle.list_handoffs(None, None)?;
                     let handoffs: Vec<Handoff> = all_handoffs
@@ -168,7 +168,7 @@ impl ThreadViewItem {
 
             let result: anyhow::Result<()> = cx
                 .background_spawn(async move {
-                    let handle = handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
+                    let handle = handle.ok_or_else(|| anyhow::anyhow!("context service not available"))?;
                     handle.save_memory(&key, &value, Some(&thread_name), vec![])?;
                     anyhow::Ok(())
                 })
@@ -214,7 +214,7 @@ impl ThreadViewItem {
 
             let result: anyhow::Result<()> = cx
                 .background_spawn(async move {
-                    let handle = handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
+                    let handle = handle.ok_or_else(|| anyhow::anyhow!("context service not available"))?;
                     handle.save_decision(&title, &content, thread_id, vec![], scope)?;
                     anyhow::Ok(())
                 })
@@ -259,7 +259,7 @@ impl ThreadViewItem {
 
             let result: anyhow::Result<()> = cx
                 .background_spawn(async move {
-                    let handle = handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
+                    let handle = handle.ok_or_else(|| anyhow::anyhow!("context service not available"))?;
                     handle.create_handoff(
                         "zed-user",
                         &task,
@@ -303,7 +303,7 @@ impl ThreadViewItem {
 
             let result: anyhow::Result<()> = cx
                 .background_spawn(async move {
-                    let handle = handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
+                    let handle = handle.ok_or_else(|| anyhow::anyhow!("context service not available"))?;
                     handle.set_agent_state(&agent_name, state)
                 })
                 .await;
@@ -487,7 +487,7 @@ impl Render for ThreadViewItem {
                                     let _result: anyhow::Result<()> = cx
                                         .background_spawn(async move {
                                             let handle = handle.ok_or_else(|| {
-                                                anyhow::anyhow!("uglyhat not available")
+                                                anyhow::anyhow!("context service not available")
                                             })?;
                                             handle.archive_thread(&thread_name)?;
                                             anyhow::Ok(())

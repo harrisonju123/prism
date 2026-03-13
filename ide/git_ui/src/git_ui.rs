@@ -900,12 +900,12 @@ impl EventEmitter<DismissEvent> for GitCloneModal {}
 
 impl ModalView for GitCloneModal {}
 
-pub(crate) fn uh_binary() -> std::path::PathBuf {
+pub(crate) fn prism_binary() -> std::path::PathBuf {
     if let Ok(home) = std::env::var("HOME") {
-        let p = std::path::PathBuf::from(home).join(".cargo/bin/uh");
+        let p = std::path::PathBuf::from(home).join(".cargo/bin/prism");
         if p.exists() {
             return p;
         }
     }
-    "uh".into()
+    "prism".into()
 }

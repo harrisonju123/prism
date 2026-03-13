@@ -82,7 +82,7 @@ pub struct ToolPermissionGate {
     renderer: Renderer,
     bridge_client: Option<ApprovalClient>,
     /// True when a plan file is configured — enables structural enforcement where
-    /// read-only tools are auto-allowed and writes are guarded by uglyhat guardrails.
+    /// read-only tools are auto-allowed and writes are guarded by context guardrails.
     plan_file_set: bool,
 }
 

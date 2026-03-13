@@ -921,7 +921,7 @@ pub struct Thread {
     ui_scroll_position: Option<gpui::ListOffset>,
     /// Weak references to running subagent threads for cancellation propagation
     running_subagents: Vec<WeakEntity<Thread>>,
-    /// Linked uglyhat thread ID for cost attribution and context tracking
+    /// Linked context thread ID for cost attribution and context tracking
     context_thread_id: Option<String>,
 }
 

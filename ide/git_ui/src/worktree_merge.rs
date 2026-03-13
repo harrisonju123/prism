@@ -22,7 +22,7 @@ pub struct WorktreeMergeRequest {
     pub worktree_path: PathBuf,
     /// Branch name of the worktree.
     pub branch: String,
-    /// The uglyhat task ID that completed.
+    /// The context thread ID that completed.
     pub task_id: String,
     /// Task name for display.
     pub task_name: String,
@@ -100,7 +100,7 @@ pub fn merge_worktree(
             "--no-ff",
             branch,
             "-m",
-            &format!("chore: merge {branch} (uglyhat task {})", request.task_id),
+            &format!("chore: merge {branch} (context thread {})", request.task_id),
         ])
         .output()
         .context("git merge failed")?;
@@ -158,7 +158,7 @@ pub fn remove_worktree(repo_root: &std::path::Path, request: &WorktreeMergeReque
     Ok(())
 }
 
-/// Poll uglyhat for tasks that have transitioned to `done` and have an associated
+/// Poll prism context for threads that have transitioned to `done` and have an associated
 /// worktree branch. Returns a list of merge requests ready for review.
 ///
 /// This is designed to be called on a background thread and polled on an interval.
@@ -189,11 +189,11 @@ pub fn poll_completed_worktrees(repo_root: &std::path::Path) -> Result<Vec<Workt
         }
     }
 
-    // Query uglyhat for done tasks assigned to agents with matching worktrees
-    let tasks_output = std::process::Command::new(crate::uh_binary())
-        .args(["tasks", "--status", "done"])
+    // Query prism context for done threads assigned to agents with matching worktrees
+    let tasks_output = std::process::Command::new(crate::prism_binary())
+        .args(["context", "thread", "list", "--archived"])
         .output()
-        .context("uh tasks failed")?;
+        .context("prism context thread list failed")?;
 
     if !tasks_output.status.success() {
         return Ok(Vec::new());

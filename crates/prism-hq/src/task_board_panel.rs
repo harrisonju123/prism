@@ -1,6 +1,6 @@
 use crate::context_service::get_context_handle;
 use crate::panel_types::{
-    uh_binary, AgentStatus, DependencyInfo, StatusCount, TaskContext, TaskSummary, WorkspaceContext,
+    prism_binary, AgentStatus, DependencyInfo, StatusCount, TaskContext, TaskSummary, WorkspaceContext,
 };
 use anyhow::Result;
 use db::kvp::KEY_VALUE_STORE;
@@ -187,7 +187,7 @@ impl TaskBoardPanel {
                     let handle = handle.clone();
                     async move {
                         let Some(handle) = handle else {
-                            anyhow::bail!("uglyhat service not available");
+                            anyhow::bail!("context service not available");
                         };
                         let overview = handle.get_workspace_overview()?;
                         let ctx = WorkspaceContext {
@@ -208,10 +208,10 @@ impl TaskBoardPanel {
                 })
                 .await;
 
-            // `uh next` stays as CLI — task querying not in Store trait
+            // `prism context` stays as CLI — task querying not in Store trait
             let next_result = cx
                 .background_spawn(async move {
-                    let output = std::process::Command::new(uh_binary())
+                    let output = std::process::Command::new(prism_binary())
                         .arg("next")
                         .output()?;
                     if !output.status.success() {
@@ -248,8 +248,8 @@ impl TaskBoardPanel {
         self.detail_task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_spawn(async move {
-                    let output = std::process::Command::new(uh_binary())
-                        .args(["task", "context", &task_id])
+                    let output = std::process::Command::new(prism_binary())
+                        .args(["context", "recall", &task_id])
                         .output()?;
                     if !output.status.success() {
                         anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr));
@@ -289,7 +289,7 @@ impl TaskBoardPanel {
             let result = cx
                 .background_spawn(async move {
                     let Some(handle) = handle else {
-                        anyhow::bail!("uglyhat service not available");
+                        anyhow::bail!("context service not available");
                     };
                     handle.checkin(&name, vec!["zed".to_string()], None)?;
                     anyhow::Ok(())
@@ -317,7 +317,7 @@ impl TaskBoardPanel {
             let result = cx
                 .background_spawn(async move {
                     let Some(handle) = handle else {
-                        anyhow::bail!("uglyhat service not available");
+                        anyhow::bail!("context service not available");
                     };
                     handle.checkout(
                         &name,
@@ -885,7 +885,7 @@ impl Render for TaskBoardPanel {
 
                 if let Some(error_msg) = &error {
                     if self.context.is_none() {
-                        let error_text = if error_msg.contains("uglyhat.json")
+                        let error_text = if error_msg.contains("context.json")
                             || error_msg.contains("not found")
                         {
                             "No .prism/context.json found. Run `prism context init` to set up.".to_owned()

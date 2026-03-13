@@ -50,9 +50,9 @@ pub struct PrismDashboardPanel {
     quality_expanded: bool,
     savings_expanded: bool,
     efficiency_expanded: bool,
-    uglyhat_agents: Vec<AgentStatus>,
-    uglyhat_activity: Vec<ActivityEntry>,
-    uglyhat_available: bool,
+    context_agents: Vec<AgentStatus>,
+    context_activity: Vec<ActivityEntry>,
+    context_available: bool,
     active_agents_expanded: bool,
     recent_activity_expanded: bool,
     refresh_task: Option<Task<()>>,
@@ -131,9 +131,9 @@ impl PrismDashboardPanel {
                 quality_expanded: true,
                 savings_expanded: true,
                 efficiency_expanded: true,
-                uglyhat_agents: Vec::new(),
-                uglyhat_activity: Vec::new(),
-                uglyhat_available: false,
+                context_agents: Vec::new(),
+                context_activity: Vec::new(),
+                context_available: false,
                 active_agents_expanded: true,
                 recent_activity_expanded: true,
                 refresh_task: None,
@@ -156,19 +156,19 @@ impl PrismDashboardPanel {
 
             panel.refresh(cx);
 
-            // Subscribe to HqState for uglyhat data (agents, activity)
+            // Subscribe to HqState for context data (agents, activity)
             if let Some(hq_entity) = HqState::global(cx) {
                 {
                     let hq = hq_entity.read(cx);
-                    panel.uglyhat_agents = hq.agents.clone();
-                    panel.uglyhat_activity = hq.activity.iter().take(10).cloned().collect();
-                    panel.uglyhat_available = hq.error.is_none();
+                    panel.context_agents = hq.agents.clone();
+                    panel.context_activity = hq.activity.iter().take(10).cloned().collect();
+                    panel.context_available = hq.error.is_none();
                 }
                 panel._hq_subscription = Some(cx.observe(&hq_entity, |this, hq, cx| {
                     let hq = hq.read(cx);
-                    this.uglyhat_agents = hq.agents.clone();
-                    this.uglyhat_activity = hq.activity.iter().take(10).cloned().collect();
-                    this.uglyhat_available = hq.error.is_none();
+                    this.context_agents = hq.agents.clone();
+                    this.context_activity = hq.activity.iter().take(10).cloned().collect();
+                    this.context_available = hq.error.is_none();
                     cx.notify();
                 }));
             }
@@ -1089,8 +1089,8 @@ impl PrismDashboardPanel {
 
     fn render_active_agents_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let expanded = self.active_agents_expanded;
-        let has_agents = !self.uglyhat_agents.is_empty();
-        let uglyhat_available = self.uglyhat_available;
+        let has_agents = !self.context_agents.is_empty();
+        let context_available = self.context_available;
         v_flex()
             .w_full()
             .child(Self::render_section_header(
@@ -1105,10 +1105,10 @@ impl PrismDashboardPanel {
                 cx,
             ))
             .when(expanded, |this| {
-                if !uglyhat_available {
+                if !context_available {
                     return this.child(
                         div().px_3().pb_1().child(
-                            Label::new("uglyhat not connected")
+                            Label::new("prism not connected")
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                         ),
@@ -1124,7 +1124,7 @@ impl PrismDashboardPanel {
                     );
                 }
                 let mut children = v_flex().w_full().px_3().pb_1().gap_0p5();
-                for agent in &self.uglyhat_agents {
+                for agent in &self.context_agents {
                     let state_color = match agent.state {
                         AgentState::Working => Color::Accent,
                         AgentState::Idle => Color::Success,
@@ -1183,7 +1183,7 @@ impl PrismDashboardPanel {
 
     fn render_recent_activity_section(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let expanded = self.recent_activity_expanded;
-        let uglyhat_available = self.uglyhat_available;
+        let context_available = self.context_available;
         v_flex()
             .w_full()
             .child(Self::render_section_header(
@@ -1198,16 +1198,16 @@ impl PrismDashboardPanel {
                 cx,
             ))
             .when(expanded, |this| {
-                if !uglyhat_available {
+                if !context_available {
                     return this.child(
                         div().px_3().pb_1().child(
-                            Label::new("uglyhat not connected")
+                            Label::new("prism not connected")
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                         ),
                     );
                 }
-                if self.uglyhat_activity.is_empty() {
+                if self.context_activity.is_empty() {
                     return this.child(
                         div().px_3().pb_1().child(
                             Label::new("No recent activity")
@@ -1217,7 +1217,7 @@ impl PrismDashboardPanel {
                     );
                 }
                 let mut children = v_flex().w_full().px_3().pb_1().gap_0p5();
-                for entry in self.uglyhat_activity.iter().take(10) {
+                for entry in self.context_activity.iter().take(10) {
                     let label = if entry.actor.is_empty() {
                         format!("{} {}", entry.action, entry.entity_type)
                     } else {
@@ -1305,20 +1305,20 @@ impl Render for PrismDashboardPanel {
                             .child(Label::new("PrisM Dashboard").size(LabelSize::Small))
                             .child(
                                 div()
-                                    .id("uglyhat-status-dot")
+                                    .id("context-status-dot")
                                     .w(px(6.))
                                     .h(px(6.))
                                     .rounded_full()
                                     .flex_none()
-                                    .bg(if self.uglyhat_available {
+                                    .bg(if self.context_available {
                                         Color::Success.color(cx)
                                     } else {
                                         Color::Error.color(cx)
                                     })
-                                    .tooltip(Tooltip::text(if self.uglyhat_available {
-                                        "uglyhat connected"
+                                    .tooltip(Tooltip::text(if self.context_available {
+                                        "prism connected"
                                     } else {
-                                        "uglyhat not connected"
+                                        "prism not connected"
                                     })),
                             )
                             .child(

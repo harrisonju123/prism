@@ -141,7 +141,7 @@ impl TaskDispatchModal {
 
             let create_result: anyhow::Result<()> = cx
                 .background_spawn(async move {
-                    let handle = handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
+                    let handle = handle.ok_or_else(|| anyhow::anyhow!("context service not available"))?;
                     handle.create_thread(&thread_name_bg, &task_input_bg, vec![])?;
                     anyhow::Ok(())
                 })

@@ -8,18 +8,18 @@ const SESSION_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Metadata written to `.prism-session.json` in the worktree root.
 ///
-/// Other tools (uglyhat CLI hooks, status bar, etc.) read this file to learn
+/// Other tools (prism CLI hooks, status bar, etc.) read this file to learn
 /// what agent is working in the worktree and which task it has claimed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrismSessionFile {
     /// Zed thread session ID
     pub session_id: String,
-    /// uglyhat agent name (`UH_AGENT_NAME` env var, or "claude" by default)
+    /// prism agent name (`PRISM_AGENT_NAME` env var, or "claude" by default)
     pub agent_name: String,
-    /// uglyhat task ID claimed for this session, if any
+    /// prism context thread ID claimed for this session, if any
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
-    /// uglyhat task name, for display purposes
+    /// Context thread name, for display purposes
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_name: Option<String>,
     /// Absolute path of the worktree root
@@ -109,22 +109,22 @@ pub fn agent_name_from_env() -> String {
     std::env::var("PRISM_AGENT_NAME").or_else(|_| std::env::var("UH_AGENT_NAME")).unwrap_or_else(|_| "claude".to_string())
 }
 
-fn uh_binary() -> Option<PathBuf> {
+fn prism_binary() -> Option<PathBuf> {
     let home = std::env::var("HOME").ok()?;
-    let uh = PathBuf::from(home).join(".cargo/bin/uh");
-    if uh.exists() { Some(uh) } else { None }
+    let p = PathBuf::from(home).join(".cargo/bin/prism");
+    if p.exists() { Some(p) } else { None }
 }
 
-/// Attempt to auto-claim the uglyhat task whose ID is stored in `session`.
+/// Attempt to auto-claim the context thread whose ID is stored in `session`.
 ///
-/// Invokes `~/.cargo/bin/uh task claim <id> --name <agent>` in a background
+/// Invokes `~/.cargo/bin/prism context checkin --name <agent>` in a background
 /// thread.  Returns the task name on success so the caller can update the
 /// session file.
 pub fn auto_claim_task(task_id: &str, agent_name: &str) -> Option<String> {
-    let uh = uh_binary()?;
+    let uh = prism_binary()?;
 
     let output = std::process::Command::new(&uh)
-        .args(["task", "claim", task_id, "--name", agent_name])
+        .args(["context", "checkin", "--name", agent_name])
         .output()
         .ok()?;
 
@@ -140,22 +140,22 @@ pub fn auto_claim_task(task_id: &str, agent_name: &str) -> Option<String> {
         }
     } else {
         log::debug!(
-            "uh task claim failed: {}",
+            "prism context checkin failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
     }
     None
 }
 
-/// Look up the uglyhat task whose branch matches `branch_name`.
+/// Look up the context thread whose branch matches `branch_name`.
 ///
-/// Invokes `~/.cargo/bin/uh tasks` and searches by domain_tags or description.
+/// Invokes `~/.cargo/bin/prism context thread list` and searches by name.
 /// Returns `(task_id, task_name)` when a match is found.
 pub fn find_task_for_branch(branch_name: &str) -> Option<(String, String)> {
-    let uh = uh_binary()?;
+    let uh = prism_binary()?;
 
     let output = std::process::Command::new(&uh)
-        .args(["tasks", "--status", "pending"])
+        .args(["context", "thread", "list", "--active"])
         .output()
         .ok()?;
 

@@ -261,9 +261,9 @@ impl Render for NavigatorPanel {
             .track_focus(&self.focus_handle)
             .size_full()
             .bg(cx.theme().colors().panel_background)
-            // Status bar: uglyhat + gateway health
+            // Status bar: prism context + gateway health
             .child({
-                let uh_ok = self
+                let context_ok = self
                     .hq_state
                     .as_ref()
                     .map(|s| s.read(cx).error.is_none())
@@ -285,18 +285,18 @@ impl Render for NavigatorPanel {
                             .h(px(6.))
                             .rounded_full()
                             .flex_none()
-                            .bg(if uh_ok {
+                            .bg(if context_ok {
                                 Color::Success.color(cx)
                             } else {
                                 Color::Error.color(cx)
                             })
-                            .tooltip(Tooltip::text(if uh_ok {
-                                "uglyhat connected"
+                            .tooltip(Tooltip::text(if context_ok {
+                                "prism connected"
                             } else {
-                                "uglyhat not connected"
+                                "prism not connected"
                             })),
                     )
-                    .child(Label::new("uh").size(LabelSize::XSmall).color(if uh_ok {
+                    .child(Label::new("ctx").size(LabelSize::XSmall).color(if context_ok {
                         Color::Muted
                     } else {
                         Color::Error

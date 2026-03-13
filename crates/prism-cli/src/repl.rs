@@ -692,7 +692,7 @@ pub async fn run_interactive(
             input
         };
 
-        // Record the human's task as a Plan in uglyhat — fire-and-forget.
+        // Record the human's task as a Plan in the context store — fire-and-forget.
         if let Some((store, ws_id)) = agent.store_context() {
             let intent = task_str.to_string();
             tokio::spawn(async move {

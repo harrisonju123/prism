@@ -12,7 +12,7 @@ use prism_context::store::sqlite::SqliteStore;
 use prism_context::store::{ActivityFilters, InboxFilters, Store};
 use uuid::Uuid;
 
-/// GPUI Global that holds uglyhat state. Lives on the main thread.
+/// GPUI Global that holds prism context state. Lives on the main thread.
 /// Use `handle()` to get a cloneable, Send-able handle for background work.
 pub struct ContextService {
     inner: Option<ContextHandle>,
@@ -20,7 +20,7 @@ pub struct ContextService {
 
 impl Global for ContextService {}
 
-/// Thread-safe, cloneable handle to uglyhat. Can be sent to background threads.
+/// Thread-safe, cloneable handle to prism context. Can be sent to background threads.
 #[derive(Clone)]
 pub struct ContextHandle {
     store: Arc<SqliteStore>,
@@ -29,7 +29,7 @@ pub struct ContextHandle {
 }
 
 impl ContextService {
-    /// Initialize the service by discovering `.uglyhat.json` from `workspace_root`.
+    /// Initialize the service by discovering `.prism/context.json` from `workspace_root`.
     /// Config discovery is synchronous; store opening is async (non-blocking).
     pub fn init(workspace_root: &std::path::Path, cx: &mut App) -> Result<()> {
         let tokio_handle = gpui_tokio::Tokio::handle(cx);

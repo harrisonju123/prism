@@ -1644,7 +1644,7 @@ If you have questions, ask them now. If you're confident, continue."
                                     ptc.args["run_in_background"].as_bool().unwrap_or(false);
                                 let task_str = ptc.args["task"].as_str().unwrap_or("").to_string();
 
-                                // Create a uglyhat handoff record before spawning so the
+                                // Create a context handoff record before spawning so the
                                 // delegation graph is visible to the dashboard.
                                 let handoff_id =
                                     self.create_handoff_for_spawn(&task_str, &ptc.args).await;
@@ -1676,7 +1676,7 @@ If you have questions, ask them now. If you're confident, continue."
                                                         turns: 0,
                                                     },
                                                 };
-                                            // Complete the handoff in uglyhat
+                                            // Complete the handoff in context store
                                             if let (Some(store), Some(ws_id), Some(hid)) =
                                                 (spawn_store, spawn_ws_id, handoff_id)
                                             {
@@ -1753,7 +1753,7 @@ If you have questions, ask them now. If you're confident, continue."
                                                     None,
                                                 ),
                                             };
-                                        // Complete the handoff in uglyhat
+                                        // Complete the handoff in context store
                                         if let (Some(store), Some(ws_id), Some(hid)) =
                                             (spawn_store, spawn_ws_id, handoff_id)
                                         {
@@ -2487,8 +2487,8 @@ If you have questions, ask them now. If you're confident, continue."
         let _ = store.mark_messages_read(ws_id, &agent_name).await;
     }
 
-    /// Create a handoff record in uglyhat before forking a child agent.
-    /// Returns the handoff UUID if uglyhat is available, else None.
+    /// Create a handoff record in the context store before forking a child agent.
+    /// Returns the handoff UUID if context store is available, else None.
     async fn create_handoff_for_spawn(
         &self,
         task: &str,
@@ -2539,7 +2539,7 @@ If you have questions, ask them now. If you're confident, continue."
             .map(|t| t.id)
     }
 
-    /// Create an inbox entry in the uglyhat store. Silently no-ops if uglyhat is unavailable.
+    /// Create an inbox entry in the context store. Silently no-ops if context store is unavailable.
     async fn create_inbox_event(
         &self,
         entry_type: prism_context::model::InboxEntryType,
@@ -2675,7 +2675,7 @@ If you have questions, ask them now. If you're confident, continue."
             .await;
     }
 
-    /// Set up uglyhat guardrails for structural plan mode enforcement.
+    /// Set up context guardrails for structural plan mode enforcement.
     /// Creates a thread (or reuses the current one) and restricts:
     /// - `allowed_files` to the plan file only
     /// - `allowed_tools` to everything except bash/run_command (shell escape vectors)
@@ -2854,7 +2854,7 @@ If you have questions, ask them now. If you're confident, continue."
             .await;
     }
 
-    /// Handle the `ask_human` tool — posts a question to the human's inbox in uglyhat.
+    /// Handle the `ask_human` tool — posts a question to the human's inbox in the context store.
     /// The REPL surfaces pending inbox entries before each prompt so the human sees it immediately.
     async fn handle_ask_human(&self, args: &serde_json::Value) -> String {
         use prism_context::model::{InboxEntryType, InboxSeverity};
@@ -3158,7 +3158,7 @@ If you have questions, ask them now. If you're confident, continue."
         }
     }
 
-    /// Handle the `record_decision` tool — persists a decision with rationale to uglyhat.
+    /// Handle the `record_decision` tool — persists a decision with rationale to the context store.
     async fn handle_record_decision(&self, args: &serde_json::Value) -> String {
         use prism_context::model::DecisionScope;
 
@@ -3196,7 +3196,7 @@ If you have questions, ask them now. If you're confident, continue."
         }
     }
 
-    /// Handle the `recall` tool — loads context from uglyhat store.
+    /// Handle the `recall` tool — loads context from the context store.
     async fn handle_recall(&self, args: &serde_json::Value) -> String {
         use prism_context::store::Store;
 

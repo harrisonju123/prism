@@ -123,7 +123,7 @@ impl TaskBoardItem {
 
             let result: anyhow::Result<ThreadContext> = cx
                 .background_spawn(async move {
-                    let handle = handle.ok_or_else(|| anyhow::anyhow!("uglyhat not available"))?;
+                    let handle = handle.ok_or_else(|| anyhow::anyhow!("context service not available"))?;
                     handle.recall_thread(&thread_name)
                 })
                 .await;
