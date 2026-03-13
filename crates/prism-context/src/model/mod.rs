@@ -332,6 +332,9 @@ pub struct InboxEntry {
     pub ref_id: Option<Uuid>,
     pub read: bool,
     pub dismissed: bool,
+    pub resolved: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 

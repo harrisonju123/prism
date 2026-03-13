@@ -175,6 +175,8 @@ CREATE TABLE IF NOT EXISTS inbox_entries (
     ref_id       TEXT,
     read         INTEGER NOT NULL DEFAULT 0,
     dismissed    INTEGER NOT NULL DEFAULT 0,
+    resolved     INTEGER NOT NULL DEFAULT 0,
+    resolution   TEXT,
     created_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_inbox_workspace ON inbox_entries(workspace_id, dismissed, read);

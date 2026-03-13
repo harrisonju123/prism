@@ -1,4 +1,4 @@
-use sqlx::Row;
+use sqlx::Row as _;
 use uuid::Uuid;
 
 use super::SqliteStore;
@@ -193,16 +193,65 @@ impl SqliteStore {
     ) -> Result<()> {
         let thread = self.get_thread_impl(workspace_id, thread_name).await?;
         let now = now_rfc3339();
-        sqlx::query(
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query(
             "UPDATE thread_guardrails SET cost_spent_usd = cost_spent_usd + $1, updated_at = $2
-             WHERE thread_id = $3 AND workspace_id = $4",
+             WHERE thread_id = $3 AND workspace_id = $4
+             RETURNING cost_spent_usd, cost_budget_usd, thread_id",
         )
         .bind(amount_usd)
         .bind(&now)
         .bind(thread.id.to_string())
         .bind(workspace_id.to_string())
-        .execute(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?;
+
+        if let Some(row) = row {
+            let new_spent: f64 = row.try_get("cost_spent_usd")?;
+            let cost_budget_usd: Option<f64> = row.try_get("cost_budget_usd")?;
+            let thread_id_str: String = row.try_get("thread_id")?;
+            let thread_id = parse_uuid(&thread_id_str)?;
+
+            if let Some(budget) = cost_budget_usd {
+                if budget > 0.0 {
+                    let old_spent = new_spent - amount_usd;
+                    let threshold_80 = 0.8 * budget;
+                    let threshold_95 = 0.95 * budget;
+
+                    let maybe_spike: Option<(f64, InboxSeverity)> =
+                        if old_spent < threshold_95 && new_spent >= threshold_95 {
+                            Some((95.0, InboxSeverity::Critical))
+                        } else if old_spent < threshold_80 && new_spent >= threshold_80 {
+                            Some((80.0, InboxSeverity::Warning))
+                        } else {
+                            None
+                        };
+
+                    if let Some((pct, severity)) = maybe_spike {
+                        let title = format!(
+                            "Thread cost at {pct:.0}% of budget (${new_spent:.2} / ${budget:.2})"
+                        );
+                        let body = format!(
+                            "Thread '{thread_name}' has consumed {pct:.0}% of its cost budget."
+                        );
+                        super::inbox::insert_inbox_entry_tx(
+                            &mut tx,
+                            workspace_id,
+                            InboxEntryType::CostSpike,
+                            &title,
+                            &body,
+                            severity,
+                            None,
+                            Some("thread"),
+                            Some(thread_id),
+                        )
+                        .await?;
+                    }
+                }
+            }
+        }
+
+        tx.commit().await?;
         Ok(())
     }
 }
@@ -217,7 +266,6 @@ fn path_matches_pattern(path: &str, pattern: &str) -> bool {
 }
 
 fn row_to_guardrails(row: &sqlx::sqlite::SqliteRow) -> Result<ThreadGuardrails> {
-    use sqlx::Row as _;
     Ok(ThreadGuardrails {
         id: parse_uuid(&row.try_get::<String, _>("id")?)?,
         thread_id: parse_uuid(&row.try_get::<String, _>("thread_id")?)?,

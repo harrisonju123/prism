@@ -826,11 +826,24 @@ If you have questions, ask them now. If you're confident, continue."
                 ..Default::default()
             };
 
-            let mut stream = self
-                .client
-                .stream_chat_completion(&req)
-                .await
-                .map_err(|e| anyhow!("stream_chat_completion failed: {e}"))?;
+            let mut stream = match self.client.stream_chat_completion(&req).await {
+                Ok(s) => s,
+                Err(e) => {
+                    if e.is_budget_exceeded() {
+                        let thread_ref_id = self.current_thread_id().await;
+                        self.create_inbox_event(
+                            prism_context::model::InboxEntryType::CostSpike,
+                            "Gateway budget exceeded",
+                            "The gateway rejected the request because the virtual key budget has been exhausted (HTTP 402).",
+                            prism_context::model::InboxSeverity::Critical,
+                            "thread",
+                            thread_ref_id,
+                        )
+                        .await;
+                    }
+                    return Err(anyhow!("stream_chat_completion failed: {e}"));
+                }
+            };
 
             turns += 1;
 
@@ -1106,8 +1119,10 @@ If you have questions, ask them now. If you're confident, continue."
                             continue;
                         }
 
-                        // Write discipline guards
-                        if matches!(BuiltinTool::from_str(&name), Some(BuiltinTool::WriteFile)) {
+                        // Write discipline guards (skipped in BypassPermissions mode)
+                        let skip_guards = self.permission_gate.skip_write_guards();
+                        let builtin_tool = BuiltinTool::from_str(&name);
+                        if !skip_guards && matches!(builtin_tool, Some(BuiltinTool::WriteFile)) {
                             if let Some(path) = args["path"].as_str() {
                                 let normed = normalize_path(path);
 
@@ -1241,8 +1256,8 @@ If you have questions, ask them now. If you're confident, continue."
                         }
 
                         // Staleness guard: deny write/edit if the file was modified since last read
-                        if matches!(
-                            BuiltinTool::from_str(&name),
+                        if !skip_guards && matches!(
+                            builtin_tool,
                             Some(BuiltinTool::WriteFile | BuiltinTool::EditFile)
                         ) {
                             if let Some(path) = args["path"].as_str() {
@@ -1401,6 +1416,18 @@ If you have questions, ask them now. If you're confident, continue."
                             Some(BuiltinTool::ReportFinding) => {
                                 let t0 = std::time::Instant::now();
                                 let result = self.handle_report_finding(&ptc.args).await;
+                                outcomes.push(ToolOutcome::Result {
+                                    index: ptc.index,
+                                    id: ptc.id,
+                                    name: ptc.name,
+                                    args: ptc.args,
+                                    result,
+                                    elapsed_ms: t0.elapsed().as_millis(),
+                                });
+                            }
+                            Some(BuiltinTool::RequestReview) => {
+                                let t0 = std::time::Instant::now();
+                                let result = self.handle_request_review(&ptc.args).await;
                                 outcomes.push(ToolOutcome::Result {
                                     index: ptc.index,
                                     id: ptc.id,
@@ -2479,6 +2506,16 @@ If you have questions, ask them now. If you're confident, continue."
         }
     }
 
+    /// Switch the permission mode mid-session (e.g. from a /mode REPL command).
+    pub fn set_permission_mode(&mut self, mode: PermissionMode) {
+        self.permission_gate.set_mode(mode);
+    }
+
+    /// Return the current permission mode.
+    pub fn permission_mode(&self) -> PermissionMode {
+        self.permission_gate.mode()
+    }
+
     /// Set agent state to Idle (called from REPL at prompt).
     pub async fn set_idle(&self) {
         use prism_context::model::AgentState;
@@ -2682,6 +2719,98 @@ If you have questions, ask them now. If you're confident, continue."
         {
             Ok(e) => json!({ "reported": true, "inbox_id": e.id.to_string() }).to_string(),
             Err(e) => json!({ "error": e.to_string() }).to_string(),
+        }
+    }
+
+    /// Handle the `request_review` tool — creates an Approval inbox entry and blocks until resolved.
+    async fn handle_request_review(&self, args: &serde_json::Value) -> String {
+        use prism_context::model::{InboxEntryType, InboxSeverity};
+
+        let Some((store, ws_id, agent_name)) = self.context_store() else {
+            return json!({"error": "no context store available"}).to_string();
+        };
+
+        let title = args["title"].as_str().unwrap_or("").to_string();
+        let body = args["body"].as_str().unwrap_or("").to_string();
+
+        for (field, value) in [("title", &title), ("body", &body)] {
+            if value.is_empty() {
+                return json!({"error": format!("{field} is required")}).to_string();
+            }
+        }
+
+        let severity = match args["severity"].as_str() {
+            Some("critical") => InboxSeverity::Critical,
+            Some("info") => InboxSeverity::Info,
+            _ => InboxSeverity::Warning,
+        };
+
+        let thread_id = self.resolve_thread_id(&args["thread"], store, ws_id).await;
+        let ref_type = thread_id.is_some().then_some("thread");
+
+        let entry = match store
+            .create_inbox_entry(
+                ws_id,
+                InboxEntryType::Approval,
+                &title,
+                &body,
+                severity,
+                Some(&agent_name),
+                ref_type,
+                thread_id,
+            )
+            .await
+        {
+            Ok(e) => e,
+            Err(e) => return json!({"error": e.to_string()}).to_string(),
+        };
+
+        const POLL_INTERVAL_SECS: u64 = 3;
+        const TIMEOUT_SECS: u64 = 3600; // 1 hour
+
+        let inbox_id = entry.id;
+        let inbox_id_str = inbox_id.to_string();
+        eprintln!(
+            "\n[request_review] Parked — waiting for human approval.\n  Inbox entry: {inbox_id_str}\n  Run: prism context inbox resolve {inbox_id_str} --response \"approved\"\n"
+        );
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(TIMEOUT_SECS);
+        loop {
+            if self.interrupted.load(std::sync::atomic::Ordering::Relaxed) {
+                return json!({
+                    "status": "interrupted",
+                    "inbox_id": inbox_id_str,
+                    "message": "request_review interrupted by user before resolution"
+                })
+                .to_string();
+            }
+
+            if std::time::Instant::now() >= deadline {
+                return json!({
+                    "status": "timeout",
+                    "inbox_id": inbox_id_str,
+                    "message": format!("request_review timed out after {} hour with no human response", TIMEOUT_SECS / 3600)
+                })
+                .to_string();
+            }
+
+            tokio::time::sleep(std::time::Duration::from_secs(POLL_INTERVAL_SECS)).await;
+
+            match store.get_inbox_entry(ws_id, inbox_id).await {
+                Ok(e) if e.resolved => {
+                    let resolution = e.resolution.as_deref().unwrap_or("approved");
+                    return json!({
+                        "status": "resolved",
+                        "inbox_id": inbox_id_str,
+                        "resolution": resolution
+                    })
+                    .to_string();
+                }
+                Ok(_) => continue,
+                Err(e) => {
+                    return json!({"error": format!("polling failed: {e}")}).to_string();
+                }
+            }
         }
     }
 

@@ -51,6 +51,7 @@ pub enum BuiltinTool {
     AskHuman,
     ReportBlocker,
     ReportFinding,
+    RequestReview,
 }
 
 impl BuiltinTool {
@@ -76,6 +77,7 @@ impl BuiltinTool {
             "ask_human" => Some(Self::AskHuman),
             "report_blocker" => Some(Self::ReportBlocker),
             "report_finding" => Some(Self::ReportFinding),
+            "request_review" => Some(Self::RequestReview),
             _ => None,
         }
     }
@@ -101,6 +103,7 @@ impl BuiltinTool {
             Self::AskHuman => "ask_human",
             Self::ReportBlocker => "report_blocker",
             Self::ReportFinding => "report_finding",
+            Self::RequestReview => "request_review",
         }
     }
 
@@ -125,6 +128,7 @@ impl BuiltinTool {
             Self::AskHuman,
             Self::ReportBlocker,
             Self::ReportFinding,
+            Self::RequestReview,
         ]
     }
 }
@@ -299,6 +303,16 @@ pub fn tool_definitions() -> Vec<Tool> {
                 "severity": { "type": "string", "enum": ["critical", "warning"], "description": "critical = work cannot proceed; warning = degraded (default: warning)" },
                 "thread": { "type": "string", "description": "Thread name (defaults to current thread)" }
             }, "required": ["title", "description", "initialization_trace", "reachability", "alternative_handlers"] }),
+        ),
+        make_tool(
+            "request_review",
+            "Post an approval request to the human operator's inbox and BLOCK until the human resolves it. Use when you need explicit human sign-off before proceeding — unlike ask_human (fire-and-forget), this tool parks the agent until the human runs `prism context inbox resolve <id>`.",
+            json!({ "type": "object", "properties": {
+                "title":    { "type": "string", "description": "Short summary of what needs approval" },
+                "body":     { "type": "string", "description": "Detailed description of what you are about to do and why you need approval" },
+                "severity": { "type": "string", "enum": ["critical", "warning", "info"], "description": "Urgency level (default: warning)" },
+                "thread":   { "type": "string", "description": "Thread name to associate with (defaults to current thread)" }
+            }, "required": ["title", "body"] }),
         ),
         make_tool(
             "report_finding",
@@ -756,7 +770,8 @@ async fn dispatch_inner(
             | BuiltinTool::AddDir
             | BuiltinTool::AskHuman
             | BuiltinTool::ReportBlocker
-            | BuiltinTool::ReportFinding,
+            | BuiltinTool::ReportFinding
+            | BuiltinTool::RequestReview,
         ) => {
             // Intercepted before dispatch() in the agent loop; reaching here means
             // the caller invoked dispatch() directly without agent context.

@@ -40,6 +40,10 @@ impl ClientError {
         }
     }
 
+    pub fn is_budget_exceeded(&self) -> bool {
+        matches!(self, ClientError::Api { status: 402, .. })
+    }
+
     /// Returns the `Retry-After` delay in seconds parsed from the response header, if present.
     pub fn retry_after_secs(&self) -> Option<u64> {
         match self {

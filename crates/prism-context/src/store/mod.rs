@@ -255,6 +255,13 @@ pub trait Store: Send + Sync {
     ) -> Result<Vec<InboxEntry>>;
     async fn mark_inbox_read(&self, workspace_id: Uuid, id: Uuid) -> Result<()>;
     async fn dismiss_inbox_entry(&self, workspace_id: Uuid, id: Uuid) -> Result<()>;
+    async fn get_inbox_entry(&self, workspace_id: Uuid, id: Uuid) -> Result<InboxEntry>;
+    async fn resolve_inbox_entry(
+        &self,
+        workspace_id: Uuid,
+        id: Uuid,
+        resolution: &str,
+    ) -> Result<InboxEntry>;
 
     // --- Plan (4) ---
     async fn create_plan(&self, workspace_id: Uuid, intent: &str) -> Result<Plan>;

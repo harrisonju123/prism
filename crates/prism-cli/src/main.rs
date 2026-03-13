@@ -42,7 +42,11 @@ enum Commands {
             help = "Resume a previous session. Omit value for most recent; pass UUID prefix for specific."
         )]
         resume: Option<Option<String>>,
-        #[arg(long, value_enum)]
+        #[arg(
+            long,
+            value_enum,
+            help = "Permission mode: default, accept-edits, plan, dont-ask, bypass"
+        )]
         permission_mode: Option<PermissionMode>,
         #[arg(
             long,

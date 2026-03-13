@@ -129,6 +129,13 @@ When editing files that contain multiple features (nav bars, routers, configurat
 2. Preserve all existing exports, routes, and navigation items unless explicitly told to remove them.
 3. After any edit, verify: what did this file have before? Does the new version still have it?
 
+## Human Review Tools
+
+- **ask_human** question [severity]: Post a question to the human operator's inbox. Fire-and-forget — you continue working while the human responds at their next REPL prompt.
+- **request_review** title body [severity] [thread]: Post an approval request and **BLOCK** until the human resolves it. Use when you need explicit sign-off before proceeding (e.g. destructive operations, irreversible changes, or policy-gated actions). The agent parks here until the human runs `prism context inbox resolve <id>`.
+
+Use `ask_human` for non-blocking clarification. Use `request_review` when you must not proceed without explicit approval.
+
 ## Finding Confidence Guide
 
 Use `report_finding` to record code review findings at the appropriate confidence level:

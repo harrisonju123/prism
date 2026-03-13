@@ -132,6 +132,9 @@ const MIGRATIONS: &[&str] = &[
      CREATE INDEX IF NOT EXISTS idx_file_claims_workspace ON file_claims(workspace_id, agent_name);",
     // Migration 10: conversation_id on messages — groups initial task + follow-up Q&A
     "ALTER TABLE messages ADD COLUMN conversation_id TEXT;",
+    // Migration 11: resolution fields on inbox_entries — supports blocking request_review pattern
+    "ALTER TABLE inbox_entries ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0;
+     ALTER TABLE inbox_entries ADD COLUMN resolution TEXT;",
 ];
 
 pub fn latest_version() -> i64 {

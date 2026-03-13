@@ -9,8 +9,21 @@ use crate::tools::BuiltinTool;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum PermissionMode {
+    /// Prompt for writes; reads auto-allowed (default).
     Default,
+    /// Auto-allow file edits/writes; prompt for shell commands.
+    #[clap(name = "accept-edits")]
+    AcceptEdits,
+    /// Read-only exploration; all writes denied.
     Plan,
+    /// Auto-allow all tools without prompting.
+    #[clap(name = "dont-ask")]
+    DontAsk,
+    /// Auto-allow all tools and skip write discipline guards.
+    #[clap(name = "bypass")]
+    BypassPermissions,
+    /// Internal: set automatically in non-interactive (no-TTY) mode.
+    #[clap(skip)]
     Auto,
 }
 
@@ -22,6 +35,14 @@ pub enum PermissionDecision {
 
 pub const PERMISSION_DENIED_MSG: &str = "Permission denied by user. Do not retry this tool call. \
      Inform the user what you wanted to do and ask how to proceed.";
+
+/// File-mutation tools: write/edit file content or agent memory — no shell execution.
+pub fn is_file_mutation(tool_name: &str) -> bool {
+    matches!(
+        BuiltinTool::from_str(tool_name),
+        Some(BuiltinTool::WriteFile | BuiltinTool::EditFile | BuiltinTool::SaveMemory)
+    )
+}
 
 /// Shared tool classification: read-only tools that don't mutate state.
 pub fn is_read_only(tool_name: &str) -> bool {
@@ -72,6 +93,17 @@ impl ToolPermissionGate {
         self.mode
     }
 
+    /// Switch permission mode mid-session (e.g. from a /mode REPL command).
+    pub fn set_mode(&mut self, mode: PermissionMode) {
+        self.mode = mode;
+    }
+
+    /// Returns true when write discipline guards (Guard A/0/B/C, staleness) should be skipped.
+    /// Only BypassPermissions opts out of structural guardrails.
+    pub fn skip_write_guards(&self) -> bool {
+        self.mode == PermissionMode::BypassPermissions
+    }
+
     pub fn renderer(&self) -> &Renderer {
         &self.renderer
     }
@@ -93,8 +125,12 @@ impl ToolPermissionGate {
             }
         };
 
-        // Try connecting to the Zed approval bridge
-        if gate.mode != PermissionMode::Auto {
+        // Try connecting to the Zed approval bridge — only useful when prompting may occur
+        let needs_bridge = !matches!(
+            gate.mode,
+            PermissionMode::Auto | PermissionMode::DontAsk | PermissionMode::BypassPermissions
+        );
+        if needs_bridge {
             let cwd = std::env::current_dir().unwrap_or_default();
             gate.bridge_client = ApprovalClient::try_connect(&cwd);
             if gate.bridge_client.is_some() {
@@ -111,7 +147,18 @@ impl ToolPermissionGate {
         args: &serde_json::Value,
     ) -> PermissionDecision {
         match self.mode {
-            PermissionMode::Auto => PermissionDecision::Allow,
+            // Auto/DontAsk/BypassPermissions: allow everything without prompting
+            PermissionMode::Auto | PermissionMode::DontAsk | PermissionMode::BypassPermissions => {
+                PermissionDecision::Allow
+            }
+            // AcceptEdits: auto-allow reads and file mutations; prompt for shell/other tools
+            PermissionMode::AcceptEdits => {
+                if is_read_only(tool_name) || is_file_mutation(tool_name) {
+                    PermissionDecision::Allow
+                } else {
+                    self.prompt_or_allow(tool_name, args)
+                }
+            }
             PermissionMode::Default => {
                 if is_read_only(tool_name) {
                     return PermissionDecision::Allow;
@@ -434,15 +481,133 @@ mod tests {
             PermissionMode::from_str("plan", true),
             Ok(PermissionMode::Plan)
         );
-        assert_eq!(
-            PermissionMode::from_str("auto", true),
-            Ok(PermissionMode::Auto)
-        );
-        assert_eq!(
-            PermissionMode::from_str("AUTO", true),
-            Ok(PermissionMode::Auto)
-        );
+        // "auto" is #[clap(skip)] — not parseable from CLI
+        assert!(PermissionMode::from_str("auto", true).is_err());
         assert!(PermissionMode::from_str("invalid", true).is_err());
+    }
+
+    #[test]
+    fn permission_mode_parsing_new_variants() {
+        use clap::ValueEnum;
+        assert_eq!(
+            PermissionMode::from_str("accept-edits", true),
+            Ok(PermissionMode::AcceptEdits)
+        );
+        assert_eq!(
+            PermissionMode::from_str("dont-ask", true),
+            Ok(PermissionMode::DontAsk)
+        );
+        assert_eq!(
+            PermissionMode::from_str("bypass", true),
+            Ok(PermissionMode::BypassPermissions)
+        );
+    }
+
+    #[test]
+    fn accept_edits_allows_file_mutations() {
+        let mut gate = ToolPermissionGate::new(PermissionMode::AcceptEdits, false);
+        // File mutations auto-allowed
+        assert_eq!(
+            gate.check_permission("write_file", &json!({"path": "foo.rs", "content": ""})),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            gate.check_permission("edit_file", &json!({"path": "foo.rs"})),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            gate.check_permission("save_memory", &json!({"key": "x", "value": "y"})),
+            PermissionDecision::Allow
+        );
+        // Reads auto-allowed
+        assert_eq!(
+            gate.check_permission("read_file", &json!({"path": "foo.rs"})),
+            PermissionDecision::Allow
+        );
+    }
+
+    #[test]
+    fn accept_edits_denies_shell_non_interactive() {
+        let mut gate = ToolPermissionGate::new(PermissionMode::AcceptEdits, false);
+        // Shell tools require prompt; non-interactive → deny
+        assert_eq!(
+            gate.check_permission("bash", &json!({"command": "ls"})),
+            PermissionDecision::Deny
+        );
+        assert_eq!(
+            gate.check_permission("run_command", &json!({"command": "ls"})),
+            PermissionDecision::Deny
+        );
+    }
+
+    #[test]
+    fn dont_ask_allows_everything() {
+        let mut gate = ToolPermissionGate::new(PermissionMode::DontAsk, false);
+        assert_eq!(
+            gate.check_permission("bash", &json!({"command": "rm -rf /"})),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            gate.check_permission("write_file", &json!({"path": "foo.rs", "content": ""})),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            gate.check_permission("read_file", &json!({"path": "foo.rs"})),
+            PermissionDecision::Allow
+        );
+    }
+
+    #[test]
+    fn bypass_allows_everything() {
+        let mut gate = ToolPermissionGate::new(PermissionMode::BypassPermissions, false);
+        assert_eq!(
+            gate.check_permission("bash", &json!({"command": "rm -rf /"})),
+            PermissionDecision::Allow
+        );
+        assert_eq!(
+            gate.check_permission("write_file", &json!({"path": "foo.rs", "content": ""})),
+            PermissionDecision::Allow
+        );
+    }
+
+    #[test]
+    fn bypass_skip_write_guards() {
+        let gate = ToolPermissionGate::new(PermissionMode::BypassPermissions, false);
+        assert!(gate.skip_write_guards());
+
+        let gate2 = ToolPermissionGate::new(PermissionMode::DontAsk, false);
+        assert!(!gate2.skip_write_guards());
+
+        let gate3 = ToolPermissionGate::new(PermissionMode::AcceptEdits, false);
+        assert!(!gate3.skip_write_guards());
+    }
+
+    #[test]
+    fn is_file_mutation_classification() {
+        assert!(is_file_mutation("write_file"));
+        assert!(is_file_mutation("edit_file"));
+        assert!(is_file_mutation("save_memory"));
+        assert!(!is_file_mutation("bash"));
+        assert!(!is_file_mutation("run_command"));
+        assert!(!is_file_mutation("read_file"));
+        assert!(!is_file_mutation("glob_files"));
+        assert!(!is_file_mutation("spawn_agent"));
+    }
+
+    #[test]
+    fn set_mode_switches_behavior() {
+        let mut gate = ToolPermissionGate::new(PermissionMode::Plan, false);
+        // Plan mode denies writes
+        assert_eq!(
+            gate.check_permission("write_file", &json!({"path": "foo.rs"})),
+            PermissionDecision::Deny
+        );
+        // Switch to DontAsk — now allows everything
+        gate.set_mode(PermissionMode::DontAsk);
+        assert_eq!(
+            gate.check_permission("write_file", &json!({"path": "foo.rs"})),
+            PermissionDecision::Allow
+        );
     }
 
     #[test]

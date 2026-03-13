@@ -884,3 +884,276 @@ async fn test_workspace_overview() {
     assert_eq!(overview.active_threads.len(), 1);
     assert_eq!(overview.recent_memories.len(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// Lifecycle → Inbox tests (Epic 2)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_checkout_creates_completed_inbox_entry() {
+    let (store, ws) = setup().await;
+
+    // Checkin agent (opens a session)
+    store
+        .checkin(ws.id, "test-agent", vec!["rust".into()], None)
+        .await
+        .expect("checkin");
+
+    // Checkout — should produce a Completed inbox entry
+    store
+        .checkout(
+            ws.id,
+            "test-agent",
+            "Finished the work",
+            vec!["Found a bug in auth".into()],
+            vec!["src/main.rs".into()],
+            vec!["Write tests".into()],
+        )
+        .await
+        .expect("checkout");
+
+    let entries = store
+        .list_inbox_entries(ws.id, crate::store::InboxFilters::default())
+        .await
+        .expect("list inbox");
+
+    let completed: Vec<_> = entries
+        .iter()
+        .filter(|e| e.entry_type == InboxEntryType::Completed)
+        .collect();
+
+    assert_eq!(completed.len(), 1, "expected exactly one Completed entry");
+    let entry = &completed[0];
+    assert_eq!(entry.title, "test-agent");
+    assert_eq!(entry.severity, InboxSeverity::Info);
+    assert!(
+        entry.body.contains("Finished the work"),
+        "body should contain summary"
+    );
+    assert!(
+        entry.body.contains("src/main.rs"),
+        "body should contain files_touched"
+    );
+    assert!(
+        entry.body.contains("Found a bug in auth"),
+        "body should contain findings"
+    );
+}
+
+#[tokio::test]
+async fn test_checkout_with_thread_sets_ref() {
+    let (store, ws) = setup().await;
+
+    let thread = store
+        .create_thread(ws.id, "my-thread", "desc", vec![])
+        .await
+        .expect("create thread");
+
+    store
+        .checkin(ws.id, "agent-x", vec![], Some(thread.id))
+        .await
+        .expect("checkin");
+
+    store
+        .checkout(ws.id, "agent-x", "done", vec![], vec![], vec![])
+        .await
+        .expect("checkout");
+
+    let entries = store
+        .list_inbox_entries(ws.id, crate::store::InboxFilters::default())
+        .await
+        .expect("list inbox");
+
+    let completed: Vec<_> = entries
+        .iter()
+        .filter(|e| e.entry_type == InboxEntryType::Completed)
+        .collect();
+
+    assert_eq!(completed.len(), 1);
+    let entry = &completed[0];
+    assert_eq!(entry.ref_type.as_deref(), Some("thread"));
+    assert_eq!(entry.ref_id, Some(thread.id));
+}
+
+#[tokio::test]
+async fn test_reap_creates_blocked_inbox_entries() {
+    let (store, ws) = setup().await;
+
+    // Checkin two agents
+    store
+        .checkin(ws.id, "agent-a", vec![], None)
+        .await
+        .expect("checkin a");
+    store
+        .checkin(ws.id, "agent-b", vec![], None)
+        .await
+        .expect("checkin b");
+
+    // Set old heartbeats directly via pool so they fall below the threshold
+    let old_ts = (chrono::Utc::now() - chrono::Duration::seconds(3600)).to_rfc3339();
+    sqlx::query("UPDATE agents SET last_heartbeat = $1 WHERE workspace_id = $2")
+        .bind(&old_ts)
+        .bind(ws.id.to_string())
+        .execute(&store.pool)
+        .await
+        .expect("set old heartbeat");
+
+    // Reap with 60s timeout — both agents should be reaped
+    let reaped = store
+        .reap_dead_agents(ws.id, 60)
+        .await
+        .expect("reap dead agents");
+    assert_eq!(reaped.len(), 2);
+
+    let entries = store
+        .list_inbox_entries(ws.id, crate::store::InboxFilters::default())
+        .await
+        .expect("list inbox");
+
+    let blocked: Vec<_> = entries
+        .iter()
+        .filter(|e| e.entry_type == InboxEntryType::Blocked)
+        .collect();
+
+    assert_eq!(blocked.len(), 2, "expected one Blocked entry per reaped agent");
+    for entry in &blocked {
+        assert_eq!(entry.severity, InboxSeverity::Warning);
+        assert_eq!(entry.source_agent.as_deref(), Some("system"));
+        assert!(entry.title.contains("reaped (heartbeat timeout)"));
+    }
+}
+
+#[tokio::test]
+async fn test_guardrail_cost_spike_at_80_percent() {
+    let (store, ws) = setup().await;
+
+    let thread = store
+        .create_thread(ws.id, "cost-thread", "", vec![])
+        .await
+        .expect("create thread");
+
+    // Set guardrails with a $10 budget
+    store
+        .set_guardrails(
+            ws.id,
+            "cost-thread",
+            ThreadGuardrails {
+                id: uuid::Uuid::new_v4(),
+                thread_id: thread.id,
+                workspace_id: ws.id,
+                owner_agent_id: None,
+                locked: false,
+                allowed_files: vec![],
+                allowed_tools: vec![],
+                cost_budget_usd: Some(10.0),
+                cost_spent_usd: 0.0,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            },
+        )
+        .await
+        .expect("set guardrails");
+
+    // Increment to just below 80% ($7.99) — no spike yet
+    store
+        .increment_guardrail_cost(ws.id, "cost-thread", 7.99)
+        .await
+        .expect("increment below 80%");
+
+    let entries_before = store
+        .list_inbox_entries(ws.id, crate::store::InboxFilters::default())
+        .await
+        .expect("list inbox");
+    let spikes_before: Vec<_> = entries_before
+        .iter()
+        .filter(|e| e.entry_type == InboxEntryType::CostSpike)
+        .collect();
+    assert_eq!(spikes_before.len(), 0, "no spike below 80%");
+
+    // Increment past 80% (0.02 more → $8.01)
+    store
+        .increment_guardrail_cost(ws.id, "cost-thread", 0.02)
+        .await
+        .expect("increment past 80%");
+
+    let entries_after = store
+        .list_inbox_entries(ws.id, crate::store::InboxFilters::default())
+        .await
+        .expect("list inbox");
+    let spikes_after: Vec<_> = entries_after
+        .iter()
+        .filter(|e| e.entry_type == InboxEntryType::CostSpike)
+        .collect();
+    assert_eq!(spikes_after.len(), 1, "one spike at 80% threshold");
+    assert_eq!(spikes_after[0].severity, InboxSeverity::Warning);
+    assert!(spikes_after[0].title.contains("80%"));
+    assert_eq!(spikes_after[0].ref_type.as_deref(), Some("thread"));
+    assert_eq!(spikes_after[0].ref_id, Some(thread.id));
+
+    // Increment again (small amount, still between 80-95%) — no duplicate
+    store
+        .increment_guardrail_cost(ws.id, "cost-thread", 0.10)
+        .await
+        .expect("increment small");
+
+    let entries_nodupe = store
+        .list_inbox_entries(ws.id, crate::store::InboxFilters::default())
+        .await
+        .expect("list inbox");
+    let spikes_nodupe: Vec<_> = entries_nodupe
+        .iter()
+        .filter(|e| e.entry_type == InboxEntryType::CostSpike)
+        .collect();
+    assert_eq!(spikes_nodupe.len(), 1, "no duplicate spike between 80-95%");
+}
+
+#[tokio::test]
+async fn test_guardrail_cost_spike_at_95_percent() {
+    let (store, ws) = setup().await;
+
+    let thread = store
+        .create_thread(ws.id, "critical-thread", "", vec![])
+        .await
+        .expect("create thread");
+
+    store
+        .set_guardrails(
+            ws.id,
+            "critical-thread",
+            ThreadGuardrails {
+                id: uuid::Uuid::new_v4(),
+                thread_id: thread.id,
+                workspace_id: ws.id,
+                owner_agent_id: None,
+                locked: false,
+                allowed_files: vec![],
+                allowed_tools: vec![],
+                cost_budget_usd: Some(10.0),
+                cost_spent_usd: 0.0,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            },
+        )
+        .await
+        .expect("set guardrails");
+
+    // Jump straight past 95% in one increment
+    store
+        .increment_guardrail_cost(ws.id, "critical-thread", 9.6)
+        .await
+        .expect("increment past 95%");
+
+    let entries = store
+        .list_inbox_entries(ws.id, crate::store::InboxFilters::default())
+        .await
+        .expect("list inbox");
+    let spikes: Vec<_> = entries
+        .iter()
+        .filter(|e| e.entry_type == InboxEntryType::CostSpike)
+        .collect();
+
+    // Should produce exactly one spike (the 95% critical one — 80% was skipped atomically)
+    assert_eq!(spikes.len(), 1);
+    assert_eq!(spikes[0].severity, InboxSeverity::Critical);
+    assert!(spikes[0].title.contains("95%"));
+}

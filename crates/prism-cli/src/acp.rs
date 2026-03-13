@@ -1019,6 +1019,12 @@ fn tool_title(bt: Option<BuiltinTool>, name: &str, args: &serde_json::Value) -> 
             let title = args["title"].as_str().unwrap_or("(no title)");
             format!("Report finding [{confidence}]: {title}")
         }
+        Some(BuiltinTool::RequestReview) => {
+            format!(
+                "Request review: {}",
+                common::truncate_with_ellipsis(args["title"].as_str().unwrap_or("(no title)"), 60)
+            )
+        }
         None => name.to_string(),
     }
 }

@@ -7,6 +7,7 @@ use crate::agent::Agent;
 use crate::config::Config;
 use crate::mcp::McpRegistry;
 use crate::memory::MemoryManager;
+use crate::permissions::PermissionMode;
 use crate::session::Session;
 use crate::skills::{SkillRegistry, parse_skill_invocation};
 
@@ -14,14 +15,21 @@ enum MetaCommand {
     Clear,
     Compact,
     Help,
+    Mode(Option<String>),
 }
 
 impl MetaCommand {
     fn parse(input: &str) -> Option<Self> {
-        match input.trim() {
+        let trimmed = input.trim();
+        match trimmed {
             "/clear" => Some(Self::Clear),
             "/compact" => Some(Self::Compact),
             "/help" => Some(Self::Help),
+            "/mode" => Some(Self::Mode(None)),
+            _ if trimmed.starts_with("/mode ") => {
+                let arg = trimmed["/mode ".len()..].trim().to_string();
+                Some(Self::Mode(Some(arg)))
+            }
             _ => None,
         }
     }
@@ -29,14 +37,18 @@ impl MetaCommand {
 
 fn print_help() {
     eprintln!("Meta-commands:");
-    eprintln!("  /help     Show this help");
-    eprintln!("  /clear    Reset conversation (keeps session ID, rebuilds system prompt)");
-    eprintln!("  /compact  Compress context window (LLM summarization or FIFO trim)");
-    eprintln!("  Ctrl+C    Exit");
+    eprintln!("  /help                Show this help");
+    eprintln!("  /clear               Reset conversation (keeps session ID, rebuilds system prompt)");
+    eprintln!("  /compact             Compress context window (LLM summarization or FIFO trim)");
+    eprintln!("  /mode [<mode>]       Show or switch permission mode");
+    eprintln!("                       Modes: default, accept-edits, plan, dont-ask, bypass");
+    eprintln!("  Ctrl+C               Exit");
     eprintln!();
     eprintln!("Skill invocations: /<skill-name> [args]");
     eprintln!("Just type a task to start an agent turn.");
 }
+
+
 
 pub async fn run_interactive(
     client: PrismClient,
@@ -183,6 +195,25 @@ pub async fn run_interactive(
                 }
                 MetaCommand::Compact => {
                     agent.compact().await;
+                }
+                MetaCommand::Mode(None) => {
+                    use clap::ValueEnum;
+                    let mode = agent.permission_mode();
+                    let name = mode
+                        .to_possible_value()
+                        .map(|pv| pv.get_name().to_string())
+                        .unwrap_or_else(|| "auto".to_string());
+                    eprintln!("[mode] current: {name}");
+                    eprintln!("       available: default, accept-edits, plan, dont-ask, bypass");
+                }
+                MetaCommand::Mode(Some(arg)) => {
+                    use clap::ValueEnum;
+                    if let Ok(mode) = PermissionMode::from_str(&arg, true) {
+                        agent.set_permission_mode(mode);
+                        eprintln!("[mode] switched to: {arg}");
+                    } else {
+                        eprintln!("[error] unknown mode '{arg}'. Available: default, accept-edits, plan, dont-ask, bypass");
+                    }
                 }
             }
             continue;

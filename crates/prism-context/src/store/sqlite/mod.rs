@@ -416,6 +416,19 @@ impl Store for SqliteStore {
         self.dismiss_inbox_entry_impl(workspace_id, id).await
     }
 
+    async fn get_inbox_entry(&self, workspace_id: Uuid, id: Uuid) -> Result<InboxEntry> {
+        self.get_inbox_entry_impl(workspace_id, id).await
+    }
+
+    async fn resolve_inbox_entry(
+        &self,
+        workspace_id: Uuid,
+        id: Uuid,
+        resolution: &str,
+    ) -> Result<InboxEntry> {
+        self.resolve_inbox_entry_impl(workspace_id, id, resolution).await
+    }
+
     async fn send_message(
         &self,
         workspace_id: Uuid,

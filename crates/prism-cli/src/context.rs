@@ -346,6 +346,12 @@ pub enum InboxAction {
     Read { id: String },
     /// Dismiss an entry
     Dismiss { id: String },
+    /// Resolve an approval entry (unparks a waiting agent)
+    Resolve {
+        id: String,
+        #[arg(long, default_value = "approved")]
+        response: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -992,6 +998,14 @@ pub async fn run(cmd: ContextCmd) -> Result<()> {
                     .await
                     .map_err(|e| anyhow!("{e}"))?;
                 println!("{{\"dismissed\":\"{id}\"}}");
+            }
+            InboxAction::Resolve { id, response } => {
+                let entry_id: Uuid = id.parse().map_err(|e| anyhow!("invalid id: {e}"))?;
+                let entry = store
+                    .resolve_inbox_entry(workspace_id, entry_id, &response)
+                    .await
+                    .map_err(|e| anyhow!("{e}"))?;
+                print_json(&entry);
             }
         },
         ContextCmd::Messages { unread } => {

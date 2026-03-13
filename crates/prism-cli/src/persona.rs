@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 use crate::config::{Config, SandboxMode};
+use crate::permissions::PermissionMode;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Persona {
@@ -34,6 +35,9 @@ pub struct Persona {
     /// Sandbox mode override.
     #[serde(default)]
     pub sandbox_mode: Option<String>,
+    /// Permission mode override (default, accept-edits, plan, dont-ask, bypass).
+    #[serde(default)]
+    pub permission_mode: Option<String>,
 }
 
 impl Persona {
@@ -64,6 +68,12 @@ impl Persona {
         }
         if let Some(ref mode) = self.sandbox_mode {
             config.session.sandbox_mode = SandboxMode::from_str(mode);
+        }
+        if let Some(ref mode_str) = self.permission_mode {
+            use clap::ValueEnum;
+            if let Ok(mode) = PermissionMode::from_str(mode_str, true) {
+                config.extensions.permission_mode = Some(mode);
+            }
         }
     }
 }
@@ -157,6 +167,7 @@ mod tests {
             allowed_tools: None,
             denied_tools: None,
             sandbox_mode: None,
+            permission_mode: None,
         };
 
         persona.apply(&mut config);
@@ -179,6 +190,7 @@ mod tests {
             allowed_tools: None,
             denied_tools: Some(vec!["write_file".to_string()]),
             sandbox_mode: None,
+            permission_mode: None,
         };
 
         persona.apply(&mut config);

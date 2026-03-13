@@ -228,6 +228,8 @@ impl SqliteStore {
         .fetch_one(&mut *tx)
         .await?;
 
+        let session = row_to_agent_session(&row)?;
+
         // Set state=idle, clear current_thread_id on checkout
         sqlx::query(
             "UPDATE agents SET current_thread_id = NULL, state = 'idle', updated_at = $1
@@ -239,8 +241,37 @@ impl SqliteStore {
         .execute(&mut *tx)
         .await?;
 
+        // Insert Completed inbox entry (atomic with checkout)
+        let mut body_parts: Vec<String> = Vec::new();
+        if !summary.is_empty() {
+            body_parts.push(summary.to_string());
+        }
+        if !files_touched.is_empty() {
+            body_parts.push(format!("Files: {}", files_touched.join(", ")));
+        }
+        if !findings.is_empty() {
+            body_parts.push(format!("Findings: {}", findings.join("; ")));
+        }
+        let body = body_parts.join("\n\n");
+        let (ref_type, ref_id) = match session.thread_id {
+            Some(tid) => (Some("thread"), Some(tid)),
+            None => (None, None),
+        };
+        super::inbox::insert_inbox_entry_tx(
+            &mut tx,
+            workspace_id,
+            InboxEntryType::Completed,
+            name,
+            &body,
+            InboxSeverity::Info,
+            Some(name),
+            ref_type,
+            ref_id,
+        )
+        .await?;
+
         tx.commit().await?;
-        row_to_agent_session(&row)
+        Ok(session)
     }
 
     pub(crate) async fn list_agents_impl(&self, workspace_id: Uuid) -> Result<Vec<AgentStatus>> {
@@ -313,6 +344,8 @@ impl SqliteStore {
         let now = now_rfc3339();
         let threshold = (chrono::Utc::now() - chrono::Duration::seconds(timeout_secs)).to_rfc3339();
 
+        let mut tx = self.pool.begin().await?;
+
         // Atomically mark stale agents as dead and return their names.
         let rows = sqlx::query(
             "UPDATE agents SET state = 'dead', updated_at = $1
@@ -325,7 +358,7 @@ impl SqliteStore {
         .bind(&now)
         .bind(workspace_id.to_string())
         .bind(&threshold)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await?;
 
         let names: Vec<String> = rows
@@ -335,18 +368,35 @@ impl SqliteStore {
 
         if !names.is_empty() {
             // Close open sessions for reaped agents
-            let now_close = now_rfc3339();
             sqlx::query(
                 "UPDATE agent_sessions SET ended_at = $1, summary = 'auto-closed: agent reaped'
                  WHERE agent_id IN (SELECT id FROM agents WHERE workspace_id = $2 AND state = 'dead')
                    AND ended_at IS NULL",
             )
-            .bind(&now_close)
+            .bind(&now)
             .bind(workspace_id.to_string())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
+
+            // Insert Blocked inbox entry for each reaped agent
+            for agent_name in &names {
+                let title = format!("Agent '{agent_name}' reaped (heartbeat timeout)");
+                super::inbox::insert_inbox_entry_tx(
+                    &mut tx,
+                    workspace_id,
+                    InboxEntryType::Blocked,
+                    &title,
+                    "Agent heartbeat missed; marked dead and session auto-closed.",
+                    InboxSeverity::Warning,
+                    Some("system"),
+                    None,
+                    None,
+                )
+                .await?;
+            }
         }
 
+        tx.commit().await?;
         Ok(names)
     }
 

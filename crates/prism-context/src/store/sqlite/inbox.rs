@@ -23,10 +23,10 @@ impl SqliteStore {
         let row = sqlx::query(
             "INSERT INTO inbox_entries
                  (id, workspace_id, entry_type, title, body, severity,
-                  source_agent, ref_type, ref_id, read, dismissed, created_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0,0,$10)
+                  source_agent, ref_type, ref_id, read, dismissed, resolved, created_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0,0,0,$10)
              RETURNING id, workspace_id, entry_type, title, body, severity,
-                       source_agent, ref_type, ref_id, read, dismissed, created_at",
+                       source_agent, ref_type, ref_id, read, dismissed, resolved, resolution, created_at",
         )
         .bind(id.to_string())
         .bind(workspace_id.to_string())
@@ -67,7 +67,7 @@ impl SqliteStore {
         let where_clause = clauses.join(" AND ");
         let sql = format!(
             "SELECT id, workspace_id, entry_type, title, body, severity,
-                    source_agent, ref_type, ref_id, read, dismissed, created_at
+                    source_agent, ref_type, ref_id, read, dismissed, resolved, resolution, created_at
              FROM inbox_entries
              WHERE {where_clause}
              ORDER BY created_at DESC
@@ -120,6 +120,83 @@ impl SqliteStore {
         }
         Ok(())
     }
+
+    pub(crate) async fn get_inbox_entry_impl(
+        &self,
+        workspace_id: Uuid,
+        id: Uuid,
+    ) -> Result<InboxEntry> {
+        let row = sqlx::query(
+            "SELECT id, workspace_id, entry_type, title, body, severity,
+                    source_agent, ref_type, ref_id, read, dismissed, resolved, resolution, created_at
+             FROM inbox_entries
+             WHERE workspace_id = $1 AND id = $2",
+        )
+        .bind(workspace_id.to_string())
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| Error::NotFound(format!("inbox entry {id} not found")))?;
+
+        row_to_inbox_entry(&row)
+    }
+
+    pub(crate) async fn resolve_inbox_entry_impl(
+        &self,
+        workspace_id: Uuid,
+        id: Uuid,
+        resolution: &str,
+    ) -> Result<InboxEntry> {
+        let row = sqlx::query(
+            "UPDATE inbox_entries SET resolved = 1, resolution = $1, read = 1
+             WHERE workspace_id = $2 AND id = $3
+             RETURNING id, workspace_id, entry_type, title, body, severity,
+                       source_agent, ref_type, ref_id, read, dismissed, resolved, resolution, created_at",
+        )
+        .bind(resolution)
+        .bind(workspace_id.to_string())
+        .bind(id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| Error::NotFound(format!("inbox entry {id} not found")))?;
+
+        row_to_inbox_entry(&row)
+    }
+}
+
+/// Insert an inbox entry within an existing transaction.
+pub(super) async fn insert_inbox_entry_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    workspace_id: Uuid,
+    entry_type: InboxEntryType,
+    title: &str,
+    body: &str,
+    severity: InboxSeverity,
+    source_agent: Option<&str>,
+    ref_type: Option<&str>,
+    ref_id: Option<Uuid>,
+) -> crate::error::Result<()> {
+    let now = now_rfc3339();
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO inbox_entries
+             (id, workspace_id, entry_type, title, body, severity,
+              source_agent, ref_type, ref_id, read, dismissed, resolved, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,0,0,0,$10)",
+    )
+    .bind(id.to_string())
+    .bind(workspace_id.to_string())
+    .bind(entry_type.to_string())
+    .bind(title)
+    .bind(body)
+    .bind(severity.to_string())
+    .bind(source_agent)
+    .bind(ref_type)
+    .bind(ref_id.map(|u| u.to_string()))
+    .bind(&now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 row_to_struct! {
@@ -147,6 +224,10 @@ row_to_struct! {
         ref_id: opt_uuid "ref_id",
         read: bool "read",
         dismissed: bool "dismissed",
+        resolved: bool "resolved",
+        resolution: custom "resolution" => {
+            row.try_get::<Option<String>, _>("resolution")?
+        },
         created_at: time "created_at",
     }
 }

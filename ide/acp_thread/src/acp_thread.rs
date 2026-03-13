@@ -1896,16 +1896,16 @@ impl AcpThread {
                 .await
                 .context("failed to get old checkpoint")
                 .log_err();
-            this.update(cx, |this, cx| {
+            let connection = this.update(cx, |this, _cx| {
                 if let Some((_ix, message)) = this.last_user_message() {
                     message.checkpoint = old_checkpoint.map(|git_checkpoint| Checkpoint {
                         git_checkpoint,
                         show: false,
                     });
                 }
-                this.connection.prompt(message_id, request, cx)
-            })?
-            .await
+                this.connection.clone()
+            })?;
+            cx.update(|cx| connection.prompt(message_id, request, cx)).await
         })
     }
 
