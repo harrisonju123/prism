@@ -264,6 +264,62 @@ impl WriteCoalesceTracker {
     }
 }
 
+/// Fires a nudge when the agent produces N consecutive long-text turns without tool calls,
+/// indicating it is restating context rather than executing.
+struct VerbosityTracker {
+    /// Consecutive turns where assistant text exceeded `char_threshold` with no tool calls.
+    consecutive_verbose_turns: u32,
+    /// Character count threshold for "verbose" (default ~2000 chars ≈ ~500 tokens).
+    char_threshold: usize,
+    /// How many consecutive verbose turns before nudge fires.
+    turn_threshold: u32,
+    /// True after nudge fired for the current streak; clears when streak resets.
+    streak_nudged: bool,
+}
+
+impl VerbosityTracker {
+    fn new(char_threshold: usize, turn_threshold: u32) -> Self {
+        Self {
+            consecutive_verbose_turns: 0,
+            char_threshold,
+            turn_threshold,
+            streak_nudged: false,
+        }
+    }
+
+    /// Record a turn. Returns `Some(nudge)` when threshold is hit for the first time in a streak.
+    /// Increments streak when text exceeds the threshold (regardless of tool calls).
+    /// Resets streak when the turn had tool calls with short/no text (pure execution mode).
+    fn record_turn(&mut self, text_len: usize, had_tool_calls: bool) -> Option<String> {
+        if self.turn_threshold == 0 {
+            return None; // disabled
+        }
+
+        if text_len > self.char_threshold {
+            // Long text output — verbose turn regardless of tool calls
+            self.consecutive_verbose_turns += 1;
+        } else if had_tool_calls {
+            // Tool calls with terse text — execution mode, reset streak
+            self.consecutive_verbose_turns = 0;
+            self.streak_nudged = false;
+        }
+
+        if self.consecutive_verbose_turns >= self.turn_threshold && !self.streak_nudged {
+            self.streak_nudged = true;
+            Some(format!(
+                "[Verbosity Check] Your last {} responses were long text blocks.\n\
+                 You are likely restating context the user already has. Instead:\n\
+                 - State only what CHANGED since your last response\n\
+                 - If planning, write the plan to a file — don't repeat it in chat\n\
+                 - If ready to implement, start using tools instead of describing what you'll do",
+                self.turn_threshold
+            ))
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FinishReason {
     Stop,
@@ -761,6 +817,16 @@ impl Agent {
             .and_then(|s| s.parse().ok())
             .unwrap_or(3u32);
         let mut write_coalesce = WriteCoalesceTracker::new(write_coalesce_window);
+        let mut verbosity_tracker = VerbosityTracker::new(
+            std::env::var("PRISM_VERBOSITY_CHAR_THRESHOLD")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(2000),
+            std::env::var("PRISM_VERBOSITY_TURN_THRESHOLD")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(3),
+        );
         let decision_threshold = decision_checkpoint_threshold();
         let q_interval = question_checkpoint_interval();
         // Exponential moving average of per-turn cost — used for CostSpike detection.
@@ -2026,6 +2092,15 @@ If you have questions, ask them now. If you're confident, continue."
                     {
                         tracing::info!("exploration budget nudge triggered");
                         self.permission_gate.renderer().exploration_nudge();
+                        self.session.push_message(common::user_message(nudge));
+                    }
+
+                    // Verbosity guardrail: nudge after N consecutive turns of long text with no tool calls
+                    if let Some(nudge) =
+                        verbosity_tracker.record_turn(content_buf.trim().len(), /* had_tool_calls */ true)
+                    {
+                        tracing::info!("verbosity nudge triggered");
+                        self.permission_gate.renderer().verbosity_nudge();
                         self.session.push_message(common::user_message(nudge));
                     }
                 }
@@ -3471,6 +3546,60 @@ mod tests {
         // Substantive text output counts as a non-exploration turn
         budget.record_turn(true, true);
         assert!(budget.record_turn(true, false).is_none());
+    }
+
+    #[test]
+    fn verbosity_tracker_fires_at_threshold() {
+        let mut tracker = VerbosityTracker::new(100, 3);
+        // Short text — no increment
+        assert!(tracker.record_turn(50, false).is_none());
+        // Verbose turns
+        assert!(tracker.record_turn(200, false).is_none());
+        assert!(tracker.record_turn(200, false).is_none());
+        let nudge = tracker.record_turn(200, false);
+        assert!(nudge.is_some());
+        assert!(nudge.unwrap().contains("Verbosity Check"));
+    }
+
+    #[test]
+    fn verbosity_tracker_fires_only_once_per_streak() {
+        let mut tracker = VerbosityTracker::new(100, 2);
+        tracker.record_turn(200, false);
+        let first = tracker.record_turn(200, false);
+        assert!(first.is_some());
+        // Continues verbose — no second nudge
+        let second = tracker.record_turn(200, false);
+        assert!(second.is_none());
+    }
+
+    #[test]
+    fn verbosity_tracker_resets_on_execution_turn() {
+        let mut tracker = VerbosityTracker::new(100, 2);
+        tracker.record_turn(200, false);
+        tracker.record_turn(200, false); // fires nudge
+        // Execution turn: tool calls + short text resets streak
+        tracker.record_turn(50, true);
+        assert!(tracker.record_turn(200, false).is_none());
+        // Fires again after a full new streak
+        let nudge = tracker.record_turn(200, false);
+        assert!(nudge.is_some());
+    }
+
+    #[test]
+    fn verbosity_tracker_disabled_when_threshold_zero() {
+        let mut tracker = VerbosityTracker::new(100, 0);
+        for _ in 0..20 {
+            assert!(tracker.record_turn(9999, false).is_none());
+        }
+    }
+
+    #[test]
+    fn verbosity_tracker_verbose_with_tool_calls_increments_streak() {
+        // Long text alongside tool calls still counts as verbose
+        let mut tracker = VerbosityTracker::new(100, 2);
+        tracker.record_turn(200, true); // verbose + tool calls
+        let nudge = tracker.record_turn(200, true);
+        assert!(nudge.is_some());
     }
 
     #[test]

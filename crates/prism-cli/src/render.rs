@@ -277,6 +277,18 @@ impl Renderer {
         }
     }
 
+    pub fn verbosity_nudge(&self) {
+        if self.colored {
+            eprintln!(
+                "{}[verbosity nudge]{}",
+                SetForegroundColor(Color::Yellow),
+                ResetColor,
+            );
+        } else {
+            eprintln!("[verbosity nudge]");
+        }
+    }
+
     // ── REPL polish ──────────────────────────────────────────────────
 
     /// Print a thin separator line after each agent turn.
