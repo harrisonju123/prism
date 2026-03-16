@@ -954,8 +954,6 @@ pub struct Thread {
     turn_start_cumulative_cost: f64,
     /// Per-file last-read mtimes for staleness guard
     file_read_mtimes: std::collections::HashMap<String, std::time::SystemTime>,
-    /// Handoff constraints: if set, only these tools/files may be used
-    handoff_constraints: Option<prism_context::model::HandoffConstraints>,
 }
 
 impl Thread {
@@ -1085,7 +1083,6 @@ impl Thread {
             rolling_avg_turn_cost: 0.0,
             turn_start_cumulative_cost: 0.0,
             file_read_mtimes: std::collections::HashMap::new(),
-            handoff_constraints: None,
         }
     }
 
@@ -1348,7 +1345,6 @@ impl Thread {
             rolling_avg_turn_cost: 0.0,
             turn_start_cumulative_cost: 0.0,
             file_read_mtimes: std::collections::HashMap::new(),
-            handoff_constraints: None,
         }
     }
 
@@ -2627,45 +2623,6 @@ impl Thread {
                     tool_use.input = args;
                 }
                 PreToolAction::Allow => {}
-            }
-        }
-
-        // Handoff constraint enforcement
-        if let Some(ref constraints) = self.handoff_constraints {
-            let name_str = tool_use.name.as_ref();
-            if !constraints.allowed_tools.is_empty()
-                && !constraints.allowed_tools.iter().any(|t| t == name_str)
-            {
-                return Some(Task::ready(LanguageModelToolResult {
-                    content: LanguageModelToolResultContent::Text(Arc::from(format!(
-                        "tool '{name_str}' not allowed by handoff constraints (allowed: {})",
-                        constraints.allowed_tools.join(", ")
-                    ))),
-                    tool_use_id: tool_use.id,
-                    tool_name: tool_use.name,
-                    is_error: true,
-                    output: None,
-                }));
-            }
-            let file_path_arg = tool_use
-                .input
-                .get("path")
-                .or_else(|| tool_use.input.get("file_path"))
-                .and_then(|v| v.as_str());
-            if let Some(fp) = file_path_arg {
-                if !constraints.allowed_files.is_empty()
-                    && !constraints.allowed_files.iter().any(|f| f == fp)
-                {
-                    return Some(Task::ready(LanguageModelToolResult {
-                        content: LanguageModelToolResultContent::Text(Arc::from(format!(
-                            "file '{fp}' not allowed by handoff constraints"
-                        ))),
-                        tool_use_id: tool_use.id,
-                        tool_name: tool_use.name,
-                        is_error: true,
-                        output: None,
-                    }));
-                }
             }
         }
 
