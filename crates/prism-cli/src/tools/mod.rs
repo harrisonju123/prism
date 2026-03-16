@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod computer;
 mod files;
 mod search;
@@ -5,6 +6,7 @@ mod shell;
 mod web;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::config::{Config, SandboxMode};
 use prism_types::{Tool, ToolFunction};
@@ -970,6 +972,80 @@ mod tests {
         let text = result.into_text();
         assert!(text.contains("Hint:"), "expected hint, got: {text}");
     }
+}
+
+/// For cacheable read-only tools, returns `(cache_key, resolved_path)`.
+/// Returns `None` for non-cacheable tools. Single authoritative match for the cacheable set.
+fn cache_entry_for(
+    name: &str,
+    args: &serde_json::Value,
+    session_cwd: Option<&Path>,
+) -> Option<(String, String)> {
+    match name {
+        "read_file" => {
+            let resolved = resolve_path(args["path"].as_str(), session_cwd);
+            let offset = args["offset"].as_i64().unwrap_or(0);
+            let limit = args["limit"].as_i64().unwrap_or(-1);
+            Some((format!("read_file\0{resolved}\0{offset}\0{limit}"), resolved))
+        }
+        "list_dir" => {
+            let resolved = resolve_path(args["path"].as_str(), session_cwd);
+            Some((format!("list_dir\0{resolved}"), resolved))
+        }
+        "glob_files" => {
+            let resolved = resolve_path(args["dir"].as_str(), session_cwd);
+            let pattern = args["pattern"].as_str().unwrap_or("");
+            let max = args["max_results"].as_i64().unwrap_or(-1);
+            let sort = args["sort_by"].as_str().unwrap_or("");
+            Some((
+                format!("glob_files\0{pattern}\0{resolved}\0{max}\0{sort}"),
+                resolved,
+            ))
+        }
+        "grep_files" => {
+            let resolved = resolve_path(args["dir"].as_str(), session_cwd);
+            let pattern = args["pattern"].as_str().unwrap_or("");
+            let glob = args["file_glob"].as_str().unwrap_or("");
+            let max = args["max_results"].as_i64().unwrap_or(-1);
+            let mode = args["output_mode"].as_str().unwrap_or("content");
+            let ctx = args["context"].as_i64().unwrap_or(0);
+            Some((
+                format!("grep_files\0{pattern}\0{resolved}\0{glob}\0{max}\0{mode}\0{ctx}"),
+                resolved,
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Wrapper around `dispatch` that checks the session-scoped `ToolResultCache` before
+/// executing read-only tools and stores results on miss.
+pub async fn dispatch_cached(
+    name: &str,
+    args: &serde_json::Value,
+    config: &Config,
+    session_cwd: Option<&Path>,
+    mcp: Option<&McpRegistry>,
+    additional_dirs: &[PathBuf],
+    tool_cache: &Arc<cache::ToolResultCache>,
+) -> ToolResult {
+    if let Some((key, resolved)) = cache_entry_for(name, args, session_cwd) {
+        if let Some(cached) = tool_cache.get(&key) {
+            return ToolResult::Text(cached);
+        }
+        // Cache miss — run the real dispatch and store the result.
+        let result = dispatch(name, args, config, session_cwd, mcp, additional_dirs).await;
+        if let ToolResult::Text(ref text) = result {
+            // Don't cache errors in any format:
+            //   JSON:       {"error": "..."}   (dispatch permission/path checks)
+            //   Plain-text: "error reading ...", "error listing ...", "error: ..."
+            if !text.starts_with("{\"error\"") && !text.starts_with("error") {
+                tool_cache.insert(key, text.clone(), resolved);
+            }
+        }
+        return result;
+    }
+    dispatch(name, args, config, session_cwd, mcp, additional_dirs).await
 }
 
 fn make_tool(name: &str, description: &str, parameters: serde_json::Value) -> Tool {

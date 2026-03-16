@@ -37,6 +37,7 @@ similar      = "2"
 crossterm    = { version = "0.28", default-features = false }
 base64       = "0.22"
 toml         = "0.8"
+dashmap      = { workspace = true }
 shellexpand  = "3"
 
 [dev-dependencies]

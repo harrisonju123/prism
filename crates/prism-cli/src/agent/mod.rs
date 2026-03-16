@@ -33,6 +33,7 @@ use crate::permissions::{
 use crate::session::Session;
 use crate::skills::SkillRegistry;
 use crate::tools::{self, BuiltinTool};
+use crate::tools::cache::ToolResultCache;
 
 /// Strip cwd prefix to produce a relative path; falls back to absolute if outside cwd.
 fn normalize_path(path: &str) -> String {
@@ -457,6 +458,8 @@ pub struct Agent {
     accumulated_guardrail_cost: f64,
     /// Constraints from the active handoff — enforced in the tool dispatch loop.
     handoff_constraints: Option<prism_context::model::HandoffConstraints>,
+    /// Session-scoped cache for read-only tool results (read_file, list_dir, glob_files, grep_files).
+    tool_cache: Arc<ToolResultCache>,
 }
 
 const PRISM_THREAD_ENV: &str = "PRISM_THREAD";
@@ -514,6 +517,7 @@ impl Agent {
             last_checkpoint_file_count: 0,
             accumulated_guardrail_cost: 0.0,
             handoff_constraints: None,
+            tool_cache: ToolResultCache::new(),
         }
     }
 
@@ -567,6 +571,7 @@ impl Agent {
             last_checkpoint_file_count: 0,
             accumulated_guardrail_cost: 0.0,
             handoff_constraints: None,
+            tool_cache: ToolResultCache::new(),
         }
     }
 
@@ -1854,16 +1859,18 @@ If you have questions, ask them now. If you're confident, continue."
                                 let cfg = task_config.clone();
                                 let cwd = run_cwd.clone();
                                 let extra_dirs = self.additional_dirs.clone();
+                                let cache = Arc::clone(&self.tool_cache);
                                 joinset_pending.push((index, id.clone()));
                                 joinset.spawn(async move {
                                     let t0 = std::time::Instant::now();
-                                    let tool_result = tools::dispatch(
+                                    let tool_result = tools::dispatch_cached(
                                         &name,
                                         &args,
                                         &cfg,
                                         Some(&cwd),
                                         mcp.as_deref(),
                                         &extra_dirs,
+                                        &cache,
                                     )
                                     .await;
                                     let result = match tool_result {
@@ -1989,6 +1996,10 @@ If you have questions, ask them now. If you're confident, continue."
                                             self.files_read_mtime.insert(normed.clone(), mtime);
                                         }
                                     }
+                                    // Invalidate cached reads for the written file and any
+                                    // glob/grep entries whose search root covers this path.
+                                    self.tool_cache.invalidate_path(&normed);
+                                    self.tool_cache.invalidate_dir_containing(&normed);
                                     if let Some(nudge) = write_coalesce.record_write(&normed, turns)
                                     {
                                         tracing::info!(path = %normed, "write coalesce nudge triggered");
@@ -2140,6 +2151,9 @@ If you have questions, ask them now. If you're confident, continue."
 
         self.emit_implicit_feedback(stop_reason, turns, total_cost_usd)
             .await;
+
+        let (cache_hits, cache_misses) = self.tool_cache.stats();
+        tracing::debug!(cache_hits, cache_misses, "tool result cache stats for session");
 
         // Collect once for both file persistence and memory extraction
         let files_vec: Vec<String> = self.files_touched.iter().cloned().collect();

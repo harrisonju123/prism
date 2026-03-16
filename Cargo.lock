@@ -14089,6 +14089,7 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm",
+ "dashmap",
  "dirs 4.0.0",
  "futures 0.3.32",
  "globset",
