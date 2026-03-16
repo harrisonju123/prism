@@ -206,7 +206,7 @@ pub async fn run_interactive(
 
     // Register HUMAN_AGENT as a first-class agent so it appears in uh agents and can receive messages.
     if let Some((store, ws_id)) = agent.store_context() {
-        let _ = store.checkin(ws_id, HUMAN_AGENT, vec![], None).await;
+        let _ = store.checkin(ws_id, HUMAN_AGENT, vec![], None, None, None).await;
     }
 
     // Install a ctrl-c handler that sets the shared flag. Fires during agent turns

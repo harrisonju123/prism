@@ -130,6 +130,8 @@ pub trait Store: Send + Sync {
         name: &str,
         capabilities: Vec<String>,
         thread_id: Option<Uuid>,
+        branch: Option<String>,
+        worktree_path: Option<String>,
     ) -> Result<CheckinContext>;
     async fn checkout(
         &self,

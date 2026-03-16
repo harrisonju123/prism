@@ -370,6 +370,10 @@ pub struct Agent {
     pub last_heartbeat: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_agent_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub branch: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub worktree_path: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -392,6 +396,10 @@ pub struct AgentSession {
     pub files_touched: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next_steps: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub branch: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub worktree_path: String,
     pub created_at: DateTime<Utc>,
 }
 
@@ -454,6 +462,10 @@ pub struct AgentStatus {
     pub last_heartbeat: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

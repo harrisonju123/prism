@@ -98,7 +98,7 @@ impl SqliteStore {
         thread_id: Uuid,
     ) -> Result<Vec<AgentSession>> {
         let rows = sqlx::query(
-            "SELECT id, agent_id, workspace_id, thread_id, started_at, ended_at, summary, findings, files_touched, next_steps, created_at
+            "SELECT id, agent_id, workspace_id, thread_id, started_at, ended_at, summary, findings, files_touched, next_steps, branch, worktree_path, created_at
              FROM agent_sessions WHERE workspace_id = $1 AND thread_id = $2
              ORDER BY started_at DESC LIMIT 10",
         )
@@ -137,7 +137,7 @@ impl SqliteStore {
         limit: i64,
     ) -> Result<Vec<AgentSession>> {
         let rows = sqlx::query(
-            "SELECT id, agent_id, workspace_id, thread_id, started_at, ended_at, summary, findings, files_touched, next_steps, created_at
+            "SELECT id, agent_id, workspace_id, thread_id, started_at, ended_at, summary, findings, files_touched, next_steps, branch, worktree_path, created_at
              FROM agent_sessions WHERE workspace_id = $1 AND ended_at IS NOT NULL
              ORDER BY ended_at DESC LIMIT $2",
         )

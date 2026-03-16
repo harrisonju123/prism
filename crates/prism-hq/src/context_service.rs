@@ -141,7 +141,7 @@ impl ContextHandle {
         let wid = self.workspace_id;
         self.handle.block_on(async move {
             store
-                .checkin(wid, &name, capabilities, thread_id)
+                .checkin(wid, &name, capabilities, thread_id, None, None)
                 .await
                 .map_err(|e| anyhow::anyhow!("{e}"))
         })

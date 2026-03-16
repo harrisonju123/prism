@@ -144,6 +144,11 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE threads DROP COLUMN depends_on;
      ALTER TABLE threads DROP COLUMN confidence;
      ALTER TABLE threads DROP COLUMN cost_spent_usd;",
+    // Migration 15: branch + worktree_path on agents and sessions
+    "ALTER TABLE agents ADD COLUMN branch TEXT NOT NULL DEFAULT '';
+     ALTER TABLE agents ADD COLUMN worktree_path TEXT NOT NULL DEFAULT '';
+     ALTER TABLE agent_sessions ADD COLUMN branch TEXT NOT NULL DEFAULT '';
+     ALTER TABLE agent_sessions ADD COLUMN worktree_path TEXT NOT NULL DEFAULT '';",
 ];
 
 pub fn latest_version() -> i64 {

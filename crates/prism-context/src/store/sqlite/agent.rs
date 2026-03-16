@@ -15,21 +15,27 @@ impl SqliteStore {
         name: &str,
         capabilities: Vec<String>,
         thread_id: Option<Uuid>,
+        branch: Option<String>,
+        worktree_path: Option<String>,
     ) -> Result<CheckinContext> {
         let mut tx = self.pool.begin().await?;
         let now = now_rfc3339();
         let caps = json_array_to_str(&capabilities);
+        let branch_val = branch.unwrap_or_default();
+        let worktree_val = worktree_path.unwrap_or_default();
 
         // Upsert agent (set state=idle on checkin)
         let agent_id = Uuid::new_v4();
         sqlx::query(
-            "INSERT INTO agents (id, workspace_id, name, state, capabilities, current_thread_id, last_checkin, last_heartbeat, created_at, updated_at)
-             VALUES ($1, $2, $3, 'idle', $4, $5, $6, $7, $8, $9)
+            "INSERT INTO agents (id, workspace_id, name, state, capabilities, current_thread_id, last_checkin, last_heartbeat, branch, worktree_path, created_at, updated_at)
+             VALUES ($1, $2, $3, 'idle', $4, $5, $6, $7, $8, $9, $10, $11)
              ON CONFLICT (workspace_id, name) DO UPDATE
              SET capabilities = excluded.capabilities,
                  current_thread_id = excluded.current_thread_id,
                  last_checkin = excluded.last_checkin,
                  last_heartbeat = excluded.last_heartbeat,
+                 branch = excluded.branch,
+                 worktree_path = excluded.worktree_path,
                  state = 'idle',
                  updated_at = excluded.updated_at",
         )
@@ -40,6 +46,8 @@ impl SqliteStore {
         .bind(thread_id.map(|u| u.to_string()))
         .bind(&now)
         .bind(&now)
+        .bind(&branch_val)
+        .bind(&worktree_val)
         .bind(&now)
         .bind(&now)
         .execute(&mut *tx)
@@ -61,7 +69,7 @@ impl SqliteStore {
 
         // Read back agent
         let a_row = sqlx::query(
-            "SELECT id, workspace_id, name, state, capabilities, current_thread_id, last_checkin, last_heartbeat, parent_agent_id, created_at, updated_at
+            "SELECT id, workspace_id, name, state, capabilities, current_thread_id, last_checkin, last_heartbeat, parent_agent_id, branch, worktree_path, created_at, updated_at
              FROM agents WHERE workspace_id = $1 AND name = $2",
         )
         .bind(workspace_id.to_string())
@@ -73,15 +81,17 @@ impl SqliteStore {
         // Create session
         let session_id = Uuid::new_v4();
         let s_row = sqlx::query(
-            "INSERT INTO agent_sessions (id, agent_id, workspace_id, thread_id, started_at, ended_at, summary, findings, files_touched, next_steps, created_at)
-             VALUES ($1, $2, $3, $4, $5, NULL, '', '[]', '[]', '[]', $6)
-             RETURNING id, agent_id, workspace_id, thread_id, started_at, ended_at, summary, findings, files_touched, next_steps, created_at",
+            "INSERT INTO agent_sessions (id, agent_id, workspace_id, thread_id, started_at, ended_at, summary, findings, files_touched, next_steps, branch, worktree_path, created_at)
+             VALUES ($1, $2, $3, $4, $5, NULL, '', '[]', '[]', '[]', $6, $7, $8)
+             RETURNING id, agent_id, workspace_id, thread_id, started_at, ended_at, summary, findings, files_touched, next_steps, branch, worktree_path, created_at",
         )
         .bind(session_id.to_string())
         .bind(agent.id.to_string())
         .bind(workspace_id.to_string())
         .bind(thread_id.map(|u| u.to_string()))
         .bind(&now)
+        .bind(&branch_val)
+        .bind(&worktree_val)
         .bind(&now)
         .fetch_one(&mut *tx)
         .await?;
@@ -117,7 +127,7 @@ impl SqliteStore {
 
         // Get recent sessions (last 5 across all agents)
         let sess_rows = sqlx::query(
-            "SELECT id, agent_id, workspace_id, thread_id, started_at, ended_at, summary, findings, files_touched, next_steps, created_at
+            "SELECT id, agent_id, workspace_id, thread_id, started_at, ended_at, summary, findings, files_touched, next_steps, branch, worktree_path, created_at
              FROM agent_sessions WHERE workspace_id = $1 AND ended_at IS NOT NULL
              ORDER BY ended_at DESC LIMIT 5",
         )
@@ -132,6 +142,7 @@ impl SqliteStore {
         // Get other agents' statuses
         let agent_rows = sqlx::query(
             "SELECT a.name, a.state, a.current_thread_id, a.last_checkin, a.last_heartbeat,
+                    a.branch, a.worktree_path,
                     COALESCE(t.name, '') AS current_thread_name,
                     COALESCE(p.name, '') AS parent_agent_name,
                     EXISTS(SELECT 1 FROM agent_sessions s WHERE s.agent_id = a.id AND s.ended_at IS NULL) AS session_open
@@ -229,7 +240,7 @@ impl SqliteStore {
             "UPDATE agent_sessions
              SET ended_at = $1, summary = $2, findings = $3, files_touched = $4, next_steps = $5
              WHERE id = $6
-             RETURNING id, agent_id, workspace_id, thread_id, started_at, ended_at, summary, findings, files_touched, next_steps, created_at",
+             RETURNING id, agent_id, workspace_id, thread_id, started_at, ended_at, summary, findings, files_touched, next_steps, branch, worktree_path, created_at",
         )
         .bind(&now)
         .bind(summary)
@@ -257,7 +268,7 @@ impl SqliteStore {
         let body = serde_json::json!({
             "task_name": name,
             "description": "",
-            "branch": name,
+            "branch": if session.branch.is_empty() { name } else { &session.branch },
             "diff_preview": "",
             "session_cost_usd": serde_json::Value::Null,
             "test_summary": serde_json::Value::Null,
@@ -305,6 +316,7 @@ impl SqliteStore {
     pub(crate) async fn list_agents_impl(&self, workspace_id: Uuid) -> Result<Vec<AgentStatus>> {
         let rows = sqlx::query(
             "SELECT a.name, a.state, a.current_thread_id, a.last_checkin, a.last_heartbeat,
+                    a.branch, a.worktree_path,
                     COALESCE(t.name, '') AS current_thread_name,
                     COALESCE(p.name, '') AS parent_agent_name,
                     EXISTS(SELECT 1 FROM agent_sessions s WHERE s.agent_id = a.id AND s.ended_at IS NULL) AS session_open
@@ -545,6 +557,8 @@ row_to_struct! {
         last_checkin: opt_time "last_checkin",
         last_heartbeat: opt_time "last_heartbeat",
         parent_agent_id: opt_uuid "parent_agent_id",
+        branch: str "branch",
+        worktree_path: str "worktree_path",
         created_at: time "created_at",
         updated_at: time "updated_at",
     }
@@ -562,6 +576,8 @@ row_to_struct! {
         findings: json_array "findings",
         files_touched: json_array "files_touched",
         next_steps: json_array "next_steps",
+        branch: str "branch",
+        worktree_path: str "worktree_path",
         created_at: time "created_at",
     }
 }
@@ -582,6 +598,14 @@ row_to_struct! {
         last_heartbeat: opt_time "last_heartbeat",
         parent_agent: custom "parent_agent_name" => {
             let s: String = row.try_get::<String, _>("parent_agent_name")?;
+            if s.is_empty() { None } else { Some(s) }
+        },
+        branch: custom "branch" => {
+            let s: String = row.try_get::<String, _>("branch")?;
+            if s.is_empty() { None } else { Some(s) }
+        },
+        worktree_path: custom "worktree_path" => {
+            let s: String = row.try_get::<String, _>("worktree_path")?;
             if s.is_empty() { None } else { Some(s) }
         },
     }

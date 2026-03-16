@@ -207,8 +207,10 @@ impl Store for SqliteStore {
         name: &str,
         capabilities: Vec<String>,
         thread_id: Option<Uuid>,
+        branch: Option<String>,
+        worktree_path: Option<String>,
     ) -> Result<CheckinContext> {
-        self.checkin_impl(workspace_id, name, capabilities, thread_id)
+        self.checkin_impl(workspace_id, name, capabilities, thread_id, branch, worktree_path)
             .await
     }
 

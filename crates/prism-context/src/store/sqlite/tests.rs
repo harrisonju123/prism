@@ -332,7 +332,7 @@ async fn test_agent_checkin_checkout() {
 
     // Checkin
     let ctx = store
-        .checkin(ws.id, "claude-1", vec!["rust".into()], Some(t.id))
+        .checkin(ws.id, "claude-1", vec!["rust".into()], Some(t.id), None, None)
         .await
         .expect("checkin");
     assert_eq!(ctx.agent.name, "claude-1");
@@ -370,7 +370,7 @@ async fn test_agent_heartbeat_and_state() {
 
     // Checkin first
     store
-        .checkin(ws.id, "claude-1", vec![], None)
+        .checkin(ws.id, "claude-1", vec![], None, None, None)
         .await
         .expect("checkin");
 
@@ -394,11 +394,11 @@ async fn test_handoff_lifecycle() {
 
     // Create two agents
     store
-        .checkin(ws.id, "parent", vec![], None)
+        .checkin(ws.id, "parent", vec![], None, None, None)
         .await
         .expect("checkin parent");
     store
-        .checkin(ws.id, "child", vec![], None)
+        .checkin(ws.id, "child", vec![], None, None, None)
         .await
         .expect("checkin child");
 
@@ -442,8 +442,8 @@ async fn test_handoff_lifecycle() {
 async fn test_handoff_start_and_fail() {
     let (store, ws) = setup().await;
 
-    store.checkin(ws.id, "parent", vec![], None).await.unwrap();
-    store.checkin(ws.id, "child", vec![], None).await.unwrap();
+    store.checkin(ws.id, "parent", vec![], None, None, None).await.unwrap();
+    store.checkin(ws.id, "child", vec![], None, None, None).await.unwrap();
 
     let h = store
         .create_handoff(
@@ -480,7 +480,7 @@ async fn test_handoff_start_and_fail() {
 async fn test_handoff_cancel() {
     let (store, ws) = setup().await;
 
-    store.checkin(ws.id, "parent", vec![], None).await.unwrap();
+    store.checkin(ws.id, "parent", vec![], None, None, None).await.unwrap();
 
     let h = store
         .create_handoff(
@@ -505,8 +505,8 @@ async fn test_handoff_timeout_reap() {
 
     let (store, ws) = setup().await;
 
-    store.checkin(ws.id, "parent", vec![], None).await.unwrap();
-    store.checkin(ws.id, "child", vec![], None).await.unwrap();
+    store.checkin(ws.id, "parent", vec![], None, None, None).await.unwrap();
+    store.checkin(ws.id, "child", vec![], None, None, None).await.unwrap();
 
     // Create handoff with 1-second timeout
     let constraints = HandoffConstraints {
@@ -547,7 +547,7 @@ async fn test_handoff_timeout_reap() {
 async fn test_handoff_constraint_enforcement() {
     let (store, ws) = setup().await;
 
-    store.checkin(ws.id, "parent", vec![], None).await.unwrap();
+    store.checkin(ws.id, "parent", vec![], None, None, None).await.unwrap();
 
     let constraints = HandoffConstraints {
         allowed_tools: vec!["read_file".to_string()],
@@ -588,13 +588,13 @@ async fn test_guardrails() {
         .await
         .expect("create thread");
     store
-        .checkin(ws.id, "agent-a", vec![], None)
+        .checkin(ws.id, "agent-a", vec![], None, None, None)
         .await
         .expect("checkin");
 
     // Look up agent-a's id for owner
     let ctx = store
-        .checkin(ws.id, "agent-a", vec![], None)
+        .checkin(ws.id, "agent-a", vec![], None, None, None)
         .await
         .expect("checkin");
     let owner_id = ctx.agent.id;
@@ -667,7 +667,7 @@ async fn test_guardrails() {
 
     // Check: non-owner on locked thread
     store
-        .checkin(ws.id, "agent-b", vec![], None)
+        .checkin(ws.id, "agent-b", vec![], None, None, None)
         .await
         .expect("checkin b");
     let check4 = store
@@ -715,7 +715,7 @@ async fn test_guardrail_null_file_path_passes_when_files_restricted() {
         .expect("set guardrails");
 
     store
-        .checkin(ws.id, "agent-x", vec![], None)
+        .checkin(ws.id, "agent-x", vec![], None, None, None)
         .await
         .expect("checkin");
 
@@ -765,11 +765,11 @@ async fn test_decision_notifications() {
 
     // Create two agents with open sessions
     store
-        .checkin(ws.id, "agent-a", vec![], None)
+        .checkin(ws.id, "agent-a", vec![], None, None, None)
         .await
         .expect("checkin a");
     store
-        .checkin(ws.id, "agent-b", vec![], None)
+        .checkin(ws.id, "agent-b", vec![], None, None, None)
         .await
         .expect("checkin b");
 
@@ -1036,7 +1036,7 @@ async fn test_checkout_creates_completed_inbox_entry() {
 
     // Checkin agent (opens a session)
     store
-        .checkin(ws.id, "test-agent", vec!["rust".into()], None)
+        .checkin(ws.id, "test-agent", vec!["rust".into()], None, None, None)
         .await
         .expect("checkin");
 
@@ -1091,7 +1091,7 @@ async fn test_checkout_with_thread_sets_ref() {
         .expect("create thread");
 
     store
-        .checkin(ws.id, "agent-x", vec![], Some(thread.id))
+        .checkin(ws.id, "agent-x", vec![], Some(thread.id), None, None)
         .await
         .expect("checkin");
 
@@ -1122,11 +1122,11 @@ async fn test_reap_creates_blocked_inbox_entries() {
 
     // Checkin two agents
     store
-        .checkin(ws.id, "agent-a", vec![], None)
+        .checkin(ws.id, "agent-a", vec![], None, None, None)
         .await
         .expect("checkin a");
     store
-        .checkin(ws.id, "agent-b", vec![], None)
+        .checkin(ws.id, "agent-b", vec![], None, None, None)
         .await
         .expect("checkin b");
 

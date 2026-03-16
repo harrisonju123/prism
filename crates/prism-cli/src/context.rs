@@ -105,6 +105,12 @@ pub enum ContextCmd {
         capabilities: Option<Vec<String>>,
         #[arg(long)]
         thread: Option<String>,
+        /// Git branch (auto-detected if omitted)
+        #[arg(long)]
+        branch: Option<String>,
+        /// Worktree path (auto-detected if omitted)
+        #[arg(long)]
+        worktree_path: Option<String>,
     },
     /// Agent checkout
     Checkout {
@@ -438,6 +444,24 @@ pub enum FilesAction {
 // Helpers
 // ---------------------------------------------------------------------------
 
+fn git_query(args: &[&str]) -> Option<String> {
+    let out = process::Command::new("git").args(args).output().ok()?;
+    if out.status.success() {
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !s.is_empty() { Some(s) } else { None }
+    } else {
+        None
+    }
+}
+
+fn detect_git_branch() -> Option<String> {
+    git_query(&["rev-parse", "--abbrev-ref", "HEAD"])
+}
+
+fn detect_worktree_path() -> Option<String> {
+    git_query(&["rev-parse", "--show-toplevel"])
+}
+
 fn print_json(val: &impl Serialize) {
     println!(
         "{}",
@@ -558,7 +582,7 @@ pub async fn run(cmd: ContextCmd) -> Result<()> {
                 } else {
                     let owner_agent_id = if let Some(ref owner_name) = owner {
                         let ctx = store
-                            .checkin(workspace_id, owner_name, vec![], None)
+                            .checkin(workspace_id, owner_name, vec![], None, None, None)
                             .await
                             .map_err(|e| anyhow!("{e}"))?;
                         Some(ctx.agent.id)
@@ -748,6 +772,8 @@ pub async fn run(cmd: ContextCmd) -> Result<()> {
             name,
             capabilities,
             thread,
+            branch,
+            worktree_path,
         } => {
             let agent = name.unwrap_or_else(|| agent_name_from_env());
             let thread_id = if let Some(ref tname) = thread {
@@ -755,12 +781,16 @@ pub async fn run(cmd: ContextCmd) -> Result<()> {
             } else {
                 None
             };
+            let resolved_branch = branch.or_else(detect_git_branch);
+            let resolved_worktree = worktree_path.or_else(detect_worktree_path);
             let ctx = store
                 .checkin(
                     workspace_id,
                     &agent,
                     capabilities.unwrap_or_default(),
                     thread_id,
+                    resolved_branch,
+                    resolved_worktree,
                 )
                 .await
                 .map_err(|e| anyhow!("{e}"))?;

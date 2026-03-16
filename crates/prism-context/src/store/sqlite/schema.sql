@@ -73,6 +73,8 @@ CREATE TABLE IF NOT EXISTS agents (
     last_checkin      TEXT,
     last_heartbeat    TEXT,
     parent_agent_id   TEXT REFERENCES agents(id) ON DELETE SET NULL,
+    branch            TEXT NOT NULL DEFAULT '',
+    worktree_path     TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL,
     UNIQUE(workspace_id, name)
@@ -91,6 +93,8 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
     findings      TEXT NOT NULL DEFAULT '[]',
     files_touched TEXT NOT NULL DEFAULT '[]',
     next_steps    TEXT NOT NULL DEFAULT '[]',
+    branch        TEXT NOT NULL DEFAULT '',
+    worktree_path TEXT NOT NULL DEFAULT '',
     created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent ON agent_sessions(agent_id);
