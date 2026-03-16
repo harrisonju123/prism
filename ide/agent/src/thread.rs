@@ -2905,6 +2905,14 @@ impl Thread {
         self.title.clone().unwrap_or("New Thread".into())
     }
 
+    /// Returns all files touched during this session (written + read), for checkout.
+    pub fn session_files_touched(&self) -> Vec<String> {
+        let mut files: HashSet<String> =
+            self.guardrails.session_files_touched().into_iter().collect();
+        files.extend(self.file_read_mtimes.keys().cloned());
+        files.into_iter().collect()
+    }
+
     pub fn is_generating_summary(&self) -> bool {
         self.pending_summary_generation.is_some()
     }

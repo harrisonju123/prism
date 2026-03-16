@@ -485,6 +485,7 @@ pub struct Guardrails {
     pub turn_count: u32,
     turn_files_written: Vec<String>,
     turn_tool_names: Vec<String>,
+    session_files_touched: HashSet<String>,
 }
 
 impl Guardrails {
@@ -499,6 +500,7 @@ impl Guardrails {
             turn_count: 0,
             turn_files_written: Vec::new(),
             turn_tool_names: Vec::new(),
+            session_files_touched: HashSet::new(),
         }
     }
 
@@ -512,7 +514,12 @@ impl Guardrails {
     }
 
     pub fn mark_write(&mut self, path: String) {
+        self.session_files_touched.insert(path.clone());
         self.turn_files_written.push(path);
+    }
+
+    pub fn session_files_touched(&self) -> Vec<String> {
+        self.session_files_touched.iter().cloned().collect()
     }
 
     pub fn record_tool(&mut self, name: &str) {

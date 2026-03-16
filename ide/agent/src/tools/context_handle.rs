@@ -12,6 +12,7 @@ use prism_context::store::Store as _;
 use uuid::Uuid;
 
 pub const AGENT_SOURCE: &str = "zed-agent";
+const AGENT_CAPABILITIES: &[&str] = &["rust", "ide", "zed"];
 
 /// Active context thread (id + name), always set together.
 pub struct ContextThread {
@@ -72,6 +73,56 @@ impl ContextHandle {
     pub async fn heartbeat(&self) -> anyhow::Result<()> {
         let name = Self::agent_name();
         self.store.heartbeat(self.workspace_id, &name).await?;
+        Ok(())
+    }
+
+    /// Register a checkin with prism-context (creates/updates the agent session).
+    pub async fn checkin(&self) -> anyhow::Result<()> {
+        let name = Self::agent_name();
+        let thread_id = self.context_thread.read().as_ref().map(|t| t.id);
+        let branch = tokio::process::Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .await
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
+                } else {
+                    None
+                }
+            });
+        self.store
+            .checkin(
+                self.workspace_id,
+                &name,
+                AGENT_CAPABILITIES.iter().map(|s| s.to_string()).collect(),
+                thread_id,
+                branch,
+                None,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Record a checkout with prism-context (closes the agent session).
+    pub async fn checkout(
+        &self,
+        summary: &str,
+        findings: Vec<String>,
+        files_touched: Vec<String>,
+    ) -> anyhow::Result<()> {
+        let name = Self::agent_name();
+        self.store
+            .checkout(
+                self.workspace_id,
+                &name,
+                summary,
+                findings,
+                files_touched,
+                vec![],
+            )
+            .await?;
         Ok(())
     }
 

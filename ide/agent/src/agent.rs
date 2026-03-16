@@ -467,6 +467,16 @@ impl NativeAgent {
             }
         });
 
+        // Fire checkin so the IDE session is visible in prism-context (best-effort).
+        if let Some(ctx) = context_handle.clone() {
+            cx.background_spawn(async move {
+                if let Err(e) = ctx.checkin().await {
+                    log::warn!("prism-context: checkin failed: {e}");
+                }
+            })
+            .detach();
+        }
+
         // Capture the skill registry from the thread (populated by add_default_tools)
         // so build_available_commands can expose user-invocable skills as slash commands.
         if self.skill_registry.is_none() {
@@ -1759,7 +1769,7 @@ impl acp_thread::AgentConnection for NativeAgentConnection {
                 ));
             }
 
-            // Auto-extract memories from session findings on close (fire-and-forget)
+            // Auto-extract memories + checkout on close (fire-and-forget)
             if let Some(session) = agent.sessions.get(session_id) {
                 let thread = session.thread.read(cx);
                 let context_handle = thread.context_handle().cloned();
@@ -1784,20 +1794,26 @@ impl acp_thread::AgentConnection for NativeAgentConnection {
                         _ => None,
                     })
                     .collect();
+                let files_touched = thread.session_files_touched();
+                let title = thread.title().to_string();
 
                 if let Some(ctx) = context_handle {
                     let ws_id = ctx.workspace_id;
+                    let agent_name = ContextHandle::agent_name();
                     cx.background_spawn(async move {
                         prism_context::memory_extract::auto_extract_memories(
                             &ctx.store,
                             ws_id,
-                            "zed-agent",
+                            &agent_name,
                             &[],
                             &[],
                             &findings,
                             None,
                         )
                         .await;
+                        if let Err(e) = ctx.checkout(&title, findings, files_touched).await {
+                            log::warn!("prism-context: checkout failed: {e}");
+                        }
                     })
                     .detach();
                 }
