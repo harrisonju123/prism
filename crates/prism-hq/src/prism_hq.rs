@@ -49,6 +49,7 @@ use notifications::status_toast::{StatusToast, ToastIcon};
 use running_agents::RunningAgentsEvent;
 use ui::{Color, IconName};
 use workspace::Workspace;
+use project::Event as ProjectEvent;
 
 pub fn init(cx: &mut App) {
     // Initialize HqState polling — starts the 3-second context polling loop.
@@ -68,6 +69,27 @@ pub fn init(cx: &mut App) {
                 if let Err(e) = ContextService::init(&root, cx) {
                     log::warn!("prism-context service init failed: {e}");
                 }
+            } else {
+                // Worktrees not yet loaded — wait for one to appear.
+                let project = workspace.project().clone();
+                cx.subscribe(&project, |workspace, _project, event, cx| {
+                    if let ProjectEvent::WorktreeAdded(_) = event {
+                        if cx.try_global::<ContextService>().is_none() {
+                            let root = workspace
+                                .project()
+                                .read(cx)
+                                .visible_worktrees(cx)
+                                .next()
+                                .map(|wt| wt.read(cx).abs_path().to_path_buf());
+                            if let Some(root) = root {
+                                if let Err(e) = ContextService::init(&root, cx) {
+                                    log::warn!("prism-context service init failed: {e}");
+                                }
+                            }
+                        }
+                    }
+                })
+                .detach();
             }
         }
     })

@@ -14119,6 +14119,7 @@ dependencies = [
  "prism-client",
  "prism-context",
  "prism-types",
+ "project",
  "serde",
  "serde_json",
  "settings",

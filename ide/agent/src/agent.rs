@@ -45,6 +45,7 @@ use futures::{FutureExt as _, StreamExt as _, future};
 use gpui::{
     App, AppContext, AsyncApp, Context, Entity, SharedString, Subscription, Task, WeakEntity,
 };
+use gpui_tokio::Tokio;
 use language_model::{IconOrSvg, LanguageModel, LanguageModelProvider, LanguageModelRegistry};
 use project::{Project, ProjectItem, ProjectPath, Worktree};
 use prompt_store::{
@@ -495,8 +496,11 @@ impl NativeAgent {
         });
 
         // Fire checkin and reap dead peers in a single background task (best-effort).
-        if let Some(ctx) = context_handle.clone() {
-            cx.background_spawn(async move {
+        // Use Tokio::spawn_result (not cx.background_spawn) because sqlx requires a Tokio
+        // runtime context; gpui's background_spawn dispatches to GCD threads on macOS which
+        // have no Tokio runtime, causing a panic on SqlitePool::begin().
+        if let Some(ctx) = context_handle {
+            Tokio::spawn_result(cx, async move {
                 if let Err(e) = ctx.checkin().await {
                     log::warn!("prism-context: checkin failed: {e}");
                 }
@@ -509,6 +513,7 @@ impl NativeAgent {
                     }
                     _ => {}
                 }
+                Ok::<(), anyhow::Error>(())
             })
             .detach();
         }
