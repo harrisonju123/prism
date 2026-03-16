@@ -88,7 +88,6 @@ use workspace::notifications::{
     NotificationId, SuppressEvent, dismiss_app_notification, show_app_notification,
 };
 
-use prism_hq::NavigatorPanel;
 use workspace::{
     AppState, MultiWorkspace, NewFile, NewWindow, OpenLog, Panel, Toast, Workspace,
     WorkspaceSettings, create_and_open_local_file,
@@ -500,10 +499,7 @@ impl Render for PrismRoutingIndicator {
                             }
                         }
 
-                        menu.separator().action(
-                            "Open PrisM Dashboard",
-                            prism_hq::DashboardToggleFocus.boxed_clone(),
-                        )
+                        menu
                     }))
                 })
                 .trigger(
@@ -593,10 +589,7 @@ impl Render for CostGaugeStatusItem {
             ui::Button::new("prism-cost-gauge", label)
                 .label_size(ui::LabelSize::Small)
                 .color(color)
-                .tooltip(ui::Tooltip::text(tooltip))
-                .on_click(|_, window, cx| {
-                    window.dispatch_action(prism_hq::DashboardToggleFocus.boxed_clone(), cx);
-                }),
+                .tooltip(ui::Tooltip::text(tooltip)),
         )
     }
 }
@@ -738,6 +731,7 @@ pub fn initialize_workspace(
             cx.new(|_| line_ending_selector::LineEndingIndicator::default());
         let routing_indicator = cx.new(|cx| PrismRoutingIndicator::new(cx));
         let cost_gauge = cx.new(|cx| CostGaugeStatusItem::new(cx));
+        let prism_status = cx.new(|cx| prism_hq::PrismStatusIndicator::new(cx));
         workspace.status_bar().update(cx, |status_bar, cx| {
             status_bar.add_left_item(search_button, window, cx);
             status_bar.add_left_item(lsp_button, window, cx);
@@ -745,6 +739,7 @@ pub fn initialize_workspace(
             status_bar.add_left_item(activity_indicator, window, cx);
             status_bar.add_left_item(routing_indicator, window, cx);
             status_bar.add_left_item(cost_gauge, window, cx);
+            status_bar.add_left_item(prism_status, window, cx);
             status_bar.add_right_item(edit_prediction_ui, window, cx);
             status_bar.add_right_item(active_buffer_encoding, window, cx);
             status_bar.add_right_item(active_buffer_language, window, cx);
@@ -758,14 +753,6 @@ pub fn initialize_workspace(
         let panels_task = initialize_panels(prompt_builder.clone(), window, cx);
         workspace.set_panels_task(panels_task);
         register_actions(app_state.clone(), workspace, window, cx);
-
-        // Open the Command Center as the initial center-pane tab in every fresh workspace.
-        // If the workspace already has items (e.g. restored from a previous session), skip.
-        if workspace.active_pane().read(cx).items().count() == 0 {
-            if let Some(hq_state) = prism_hq::HqState::global(cx) {
-                prism_hq::open_command_center(workspace, hq_state, window, cx);
-            }
-        }
 
         if !workspace.has_active_modal(window, cx) {
             workspace.focus_handle(cx).focus(window, cx);
@@ -903,16 +890,6 @@ fn initialize_panels(
             cx.clone(),
         );
         let debug_panel = DebugPanel::load(workspace_handle.clone(), cx);
-        let prism_dashboard =
-            prism_hq::PrismDashboardPanel::load(workspace_handle.clone(), cx.clone());
-        let hq_navigator =
-            NavigatorPanel::load(workspace_handle.clone(), cx.clone());
-        let agent_roster =
-            prism_hq::AgentRosterPanel::load(workspace_handle.clone(), cx.clone());
-        let task_board =
-            prism_hq::TaskBoardPanel::load(workspace_handle.clone(), cx.clone());
-        let session_history =
-            prism_hq::SessionHistoryPanel::load(workspace_handle.clone(), cx.clone());
 
         async fn add_panel_when_ready(
             panel_task: impl Future<Output = anyhow::Result<Entity<impl workspace::Panel>>> + 'static,
@@ -937,11 +914,6 @@ fn initialize_panels(
             add_panel_when_ready(channels_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(notification_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(debug_panel, workspace_handle.clone(), cx.clone()),
-            add_panel_when_ready(prism_dashboard, workspace_handle.clone(), cx.clone()),
-            add_panel_when_ready(hq_navigator, workspace_handle.clone(), cx.clone()),
-            add_panel_when_ready(agent_roster, workspace_handle.clone(), cx.clone()),
-            add_panel_when_ready(task_board, workspace_handle.clone(), cx.clone()),
-            add_panel_when_ready(session_history, workspace_handle.clone(), cx.clone()),
             initialize_agent_panel(workspace_handle, prompt_builder, cx.clone()).map(|r| r.log_err()),
         );
 

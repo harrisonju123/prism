@@ -14111,7 +14111,6 @@ dependencies = [
  "futures 0.3.32",
  "gpui",
  "gpui_tokio",
- "http_client",
  "language_models",
  "log",
  "menu",
