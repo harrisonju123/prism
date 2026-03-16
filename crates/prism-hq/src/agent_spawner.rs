@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use gpui::AppContext as _;
 
-use crate::running_agents::RunningAgents;
+use crate::running_agents::{AgentOutput, RunningAgent, RunningAgents};
 
 /// Spawn a new prism agent in a fresh git worktree and register it in the agent roster.
 ///
@@ -40,26 +40,24 @@ pub async fn spawn_agent_in_worktree(
     Ok(())
 }
 
-/// Register the agent in RunningAgents and notify the IDE agent panel to open a new session.
+/// Register the agent slot in RunningAgents so the IDE roster shows it.
 ///
-/// The IDE agent (ide/agent) handles session creation natively via its panel. This function
-/// registers the agent slot so the running-agents roster shows it, then logs that the IDE panel
-/// should be used to start the actual session.
+/// Post-consolidation, agents run natively in the IDE — there is no subprocess to stream
+/// output from. We simply insert the entry so the roster is populated; the Agent panel
+/// opens the actual session.
 fn register_agent(agent_name: String, cx: &mut gpui::AsyncApp) {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-
-    let name = agent_name.clone();
     cx.update(|cx| {
         if let Some(running_agents) = RunningAgents::global(cx) {
-            let weak = running_agents.downgrade();
-            running_agents.update(cx, |ra, cx| {
-                ra.register(name, rx, weak, cx);
+            running_agents.update(cx, |ra, _cx| {
+                ra.processes.insert(
+                    agent_name.clone(),
+                    RunningAgent {
+                        agent_name,
+                        output: AgentOutput::new_empty(),
+                        is_running: false,
+                    },
+                );
             });
         }
     });
-
-    // Send a single status line so the roster entry doesn't appear blank.
-    let _ = tx.send(format!(
-        "[prism-hq] agent '{agent_name}' registered — open the Agent panel to start a session"
-    ));
 }

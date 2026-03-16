@@ -907,6 +907,12 @@ fn initialize_panels(
             prism_hq::PrismDashboardPanel::load(workspace_handle.clone(), cx.clone());
         let hq_navigator =
             NavigatorPanel::load(workspace_handle.clone(), cx.clone());
+        let agent_roster =
+            prism_hq::AgentRosterPanel::load(workspace_handle.clone(), cx.clone());
+        let task_board =
+            prism_hq::TaskBoardPanel::load(workspace_handle.clone(), cx.clone());
+        let session_history =
+            prism_hq::SessionHistoryPanel::load(workspace_handle.clone(), cx.clone());
 
         async fn add_panel_when_ready(
             panel_task: impl Future<Output = anyhow::Result<Entity<impl workspace::Panel>>> + 'static,
@@ -933,6 +939,9 @@ fn initialize_panels(
             add_panel_when_ready(debug_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(prism_dashboard, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(hq_navigator, workspace_handle.clone(), cx.clone()),
+            add_panel_when_ready(agent_roster, workspace_handle.clone(), cx.clone()),
+            add_panel_when_ready(task_board, workspace_handle.clone(), cx.clone()),
+            add_panel_when_ready(session_history, workspace_handle.clone(), cx.clone()),
             initialize_agent_panel(workspace_handle, prompt_builder, cx.clone()).map(|r| r.log_err()),
         );
 

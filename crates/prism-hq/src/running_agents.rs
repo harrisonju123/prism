@@ -21,6 +21,10 @@ impl AgentOutput {
         ))))
     }
 
+    pub fn new_empty() -> Self {
+        Self::new()
+    }
+
     pub fn push(&self, line: String) {
         let mut buf = self.0.lock().unwrap();
         if buf.len() >= MAX_OUTPUT_LINES {
