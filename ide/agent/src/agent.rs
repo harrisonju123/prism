@@ -1,5 +1,7 @@
+mod compression;
 mod db;
 mod edit_agent;
+mod hooks;
 mod legacy_thread;
 mod native_agent_server;
 pub mod outline;
@@ -252,6 +254,8 @@ pub struct NativeAgent {
     fs: Arc<dyn Fs>,
     _subscriptions: Vec<Subscription>,
     context_handle: Option<Arc<ContextHandle>>,
+    /// Skill registry for the project (populated on first session)
+    skill_registry: Option<Arc<prism_context::skills::SkillRegistry>>,
 }
 
 impl NativeAgent {
@@ -312,6 +316,7 @@ impl NativeAgent {
                 fs,
                 _subscriptions: subscriptions,
                 context_handle,
+                skill_registry: None,
             }
         }))
     }
@@ -447,6 +452,15 @@ impl NativeAgent {
                 cx,
             )
         });
+
+        // Capture the skill registry from the thread (populated by add_default_tools)
+        // so build_available_commands can expose user-invocable skills as slash commands.
+        if self.skill_registry.is_none() {
+            self.skill_registry = thread_handle.read(cx).skill_registry().cloned();
+            if self.skill_registry.is_some() {
+                log::debug!("Captured skill registry from thread");
+            }
+        }
 
         let subscriptions = vec![
             cx.subscribe(&thread_handle, Self::handle_thread_title_updated),
@@ -837,6 +851,26 @@ impl NativeAgent {
                 })
                 .collect::<Vec<_>>(),
         );
+
+        // Add user-invocable skills as slash commands
+        if let Some(skill_registry) = &self.skill_registry {
+            let mut skill_names: Vec<&str> = skill_registry.names();
+            skill_names.sort();
+            for name in skill_names {
+                if let Some(skill) = skill_registry.get(name) {
+                    if skill.user_invocable {
+                        let command = acp::AvailableCommand::new(
+                            name.to_string(),
+                            skill.description.clone(),
+                        )
+                        .input(acp::AvailableCommandInput::Unstructured(
+                            acp::UnstructuredCommandInput::new("<args>"),
+                        ));
+                        commands.push(command);
+                    }
+                }
+            }
+        }
 
         commands
     }
@@ -1372,23 +1406,22 @@ impl NativeAgentConnection {
             return Task::ready(Err(anyhow!("Session not found")));
         };
 
-        let summary_task = thread.update(cx, |thread, cx| thread.summary(cx));
-
-        cx.spawn(async move |cx| {
-            let summary = summary_task.await;
-            let text = match summary {
-                Some(s) => format!("**Conversation summary:**\n\n{s}"),
-                None => "No summarization model is configured. Set one in AI settings to use `/compact`.".to_string(),
-            };
-            acp_thread.update(cx, |thread, cx| {
-                thread.push_assistant_content_block(
-                    acp::ContentBlock::Text(acp::TextContent::new(text)),
-                    false,
-                    cx,
-                );
-            });
-            Ok(acp::PromptResponse::new(acp::StopReason::EndTurn))
-        })
+        let removed = thread.update(cx, |thread, _cx| thread.compact_messages());
+        let text = if removed > 0 {
+            format!(
+                "Compacted conversation: removed {removed} older messages, keeping recent context."
+            )
+        } else {
+            "Nothing to compact — conversation is within limits.".to_string()
+        };
+        acp_thread.update(cx, |thread, cx| {
+            thread.push_assistant_content_block(
+                acp::ContentBlock::Text(acp::TextContent::new(text)),
+                false,
+                cx,
+            );
+        });
+        Task::ready(Ok(acp::PromptResponse::new(acp::StopReason::EndTurn)))
     }
 
     fn handle_model(
@@ -1711,6 +1744,51 @@ impl acp_thread::AgentConnection for NativeAgentConnection {
                     &root,
                 ));
             }
+
+            // Auto-extract memories from session findings on close (fire-and-forget)
+            if let Some(session) = agent.sessions.get(session_id) {
+                let thread = session.thread.read(cx);
+                let context_handle = thread.context_handle().cloned();
+                let findings: Vec<String> = thread
+                    .messages()
+                    .iter()
+                    .filter_map(|m| match m {
+                        Message::Agent(a) => {
+                            let text: String = a
+                                .content
+                                .iter()
+                                .filter_map(|c| match c {
+                                    AgentMessageContent::Text(t) if t.len() < 500 => {
+                                        Some(t.clone())
+                                    }
+                                    _ => None,
+                                })
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            if text.is_empty() { None } else { Some(text) }
+                        }
+                        _ => None,
+                    })
+                    .collect();
+
+                if let Some(ctx) = context_handle {
+                    let ws_id = ctx.workspace_id;
+                    cx.background_spawn(async move {
+                        prism_context::memory_extract::auto_extract_memories(
+                            &ctx.store,
+                            ws_id,
+                            "zed-agent",
+                            &[],
+                            &[],
+                            &findings,
+                            None,
+                        )
+                        .await;
+                    })
+                    .detach();
+                }
+            }
+
             agent.sessions.remove(session_id);
         });
         Task::ready(Ok(()))
@@ -1754,6 +1832,24 @@ impl acp_thread::AgentConnection for NativeAgentConnection {
                         params.prompt,
                         cx,
                     );
+                }
+
+                // Check user-invocable skill commands
+                let skill_match = self.0.read(cx).skill_registry.as_ref().and_then(|reg| {
+                    reg.get(parsed_command.prompt_name).and_then(|skill| {
+                        if skill.user_invocable {
+                            Some(skill.expand(parsed_command.arg_value.trim()))
+                        } else {
+                            None
+                        }
+                    })
+                });
+                if let Some(skill_content) = skill_match {
+                    return self.run_turn(session_id, cx, move |thread, cx| {
+                        thread.update(cx, |thread, cx| {
+                            thread.send(id, vec![UserMessageContent::Text(skill_content)], cx)
+                        })
+                    });
                 }
             }
 

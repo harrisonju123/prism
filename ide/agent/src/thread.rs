@@ -3,11 +3,13 @@ use crate::{
     DbLanguageModel, DbThread, DeletePathTool, DiagnosticsTool, EditFileTool, FetchTool,
     FindPathTool, GrepTool, ListDirectoryTool, MovePathTool, NowTool, OpenTool, ProjectSnapshot,
     ReadFileTool, RecallTool, RecordDecisionTool, RequestReviewTool, RestoreFileFromDiskTool,
-    SaveFileTool, SaveMemoryTool, SpawnAgentTool, StreamingEditFileTool, SystemPromptTemplate,
-    Template, Templates, TerminalTool, ToolPermissionDecision, WebSearchTool,
+    SaveFileTool, SaveMemoryTool, SkillTool, SpawnAgentTool, StreamingEditFileTool,
+    SystemPromptTemplate, Template, Templates, TerminalTool, ToolPermissionDecision, WebSearchTool,
     decide_permission_from_settings,
 };
+use crate::compression::ContextCompressor;
 use crate::guardrails::{Guardrails, has_completion_signals, is_read_only_tool};
+use crate::hooks::{HookRunner, PreToolAction};
 use acp_thread::{MentionUri, UserMessageId};
 use action_log::ActionLog;
 use feature_flags::{FeatureFlagAppExt as _, StreamingEditFileToolFeatureFlag};
@@ -43,6 +45,9 @@ use language_model::{
     LanguageModelToolUseId, Role, SelectedModel, Speed, StopReason, TokenUsage,
     ZED_CLOUD_PROVIDER_ID,
 };
+use gpui_tokio::Tokio;
+use prism_context::skills::SkillRegistry;
+use prism_context::store::{MemoryFilters, Store as _};
 use project::Project;
 use prompt_store::ProjectContext;
 use schemars::{JsonSchema, Schema};
@@ -927,6 +932,20 @@ pub struct Thread {
     context_thread_id: Option<String>,
     /// Guardrails that prevent common LLM failure modes
     guardrails: Guardrails,
+    /// Skill registry discovered from worktree .prism/skills
+    skill_registry: Option<Arc<SkillRegistry>>,
+    /// Skill injection content queued after tool results
+    pub(crate) pending_skill_injections: Vec<String>,
+    /// Context handle for SQLite-backed memory/decision store
+    context_handle: Option<Arc<ContextHandle>>,
+    /// Cached memories loaded at turn start
+    cached_memories: Option<String>,
+    /// Hook runner for pre/post tool hooks
+    hook_runner: Option<Arc<HookRunner>>,
+    /// Context compressor for /compact and auto-trim
+    compressor: ContextCompressor,
+    /// Maximum messages before auto-compress is triggered
+    max_messages: usize,
 }
 
 impl Thread {
@@ -1045,6 +1064,13 @@ impl Thread {
             running_subagents: Vec::new(),
             context_thread_id: None,
             guardrails: Guardrails::new(),
+            skill_registry: None,
+            pending_skill_injections: Vec::new(),
+            context_handle: None,
+            cached_memories: None,
+            hook_runner: None,
+            compressor: ContextCompressor::default(),
+            max_messages: 200,
         }
     }
 
@@ -1058,6 +1084,27 @@ impl Thread {
 
     pub fn set_context_thread_id(&mut self, id: String) {
         self.context_thread_id = Some(id);
+    }
+
+    pub fn skill_registry(&self) -> Option<&Arc<SkillRegistry>> {
+        self.skill_registry.as_ref()
+    }
+
+    pub fn context_handle(&self) -> Option<&Arc<ContextHandle>> {
+        self.context_handle.as_ref()
+    }
+
+    pub fn messages(&self) -> &[Message] {
+        &self.messages
+    }
+
+    /// FIFO-compress the message history. Returns the number of messages removed.
+    pub fn compact_messages(&mut self) -> usize {
+        let before = self.messages.len();
+        self.compressor.trim_fifo(&mut self.messages);
+        let after = self.messages.len();
+        // Removed count = before - after + 1 (for the placeholder inserted)
+        before.saturating_sub(after)
     }
 
     /// Returns true if this thread was imported from a shared thread.
@@ -1275,6 +1322,13 @@ impl Thread {
             running_subagents: Vec::new(),
             context_thread_id: db_thread.context_thread_id,
             guardrails: Guardrails::new(),
+            skill_registry: None,
+            pending_skill_injections: Vec::new(),
+            context_handle: None,
+            cached_memories: None,
+            hook_runner: None,
+            compressor: ContextCompressor::default(),
+            max_messages: 200,
         }
     }
 
@@ -1522,7 +1576,21 @@ impl Thread {
             self.add_tool(SaveMemoryTool::new(ctx.clone()));
             self.add_tool(RecallTool::new(ctx.clone()));
             self.add_tool(RecordDecisionTool::new(ctx.clone()));
-            self.add_tool(RequestReviewTool::new(ctx));
+            self.add_tool(RequestReviewTool::new(ctx.clone()));
+            self.context_handle = Some(ctx);
+        }
+
+        // Discover and register skills from the project worktree
+        if let Some(worktree) = self.project.read(cx).visible_worktrees(cx).next() {
+            let root = worktree.read(cx).abs_path().to_path_buf();
+            let registry = Arc::new(SkillRegistry::discover(&root));
+            if !registry.is_empty() {
+                self.skill_registry = Some(registry.clone());
+                self.add_tool(SkillTool::new(registry, cx.weak_entity()));
+            }
+
+            // Discover hook config from worktree root
+            self.hook_runner = HookRunner::load(&root);
         }
     }
 
@@ -1884,6 +1952,36 @@ impl Thread {
     ) -> Result<()> {
         let mut attempt = 0;
         let mut intent = CompletionIntent::UserPrompt;
+
+        // Load memories once at the start of the turn (before any LLM call)
+        let needs_load = this.read_with(cx, |t, _| {
+            t.cached_memories.is_none() && t.context_handle.is_some()
+        })?;
+        if needs_load {
+            let ctx_opt = this.read_with(cx, |t, _| t.context_handle.clone())?;
+            if let Some(ctx) = ctx_opt {
+                let ws_id = ctx.workspace_id;
+                let ctx_arc = ctx.clone();
+                let memories_task = cx.update(|cx| {
+                    Tokio::spawn_result(cx, async move {
+                        let memories = ctx_arc
+                            .store
+                            .load_memories(ws_id, MemoryFilters::default())
+                            .await
+                            .unwrap_or_default();
+                        let buf = memories
+                            .iter()
+                            .map(|m| format!("**{}**: {}\n\n", m.key, m.value))
+                            .collect::<String>();
+                        Ok::<String, anyhow::Error>(buf)
+                    })
+                });
+                if let Ok(memories) = memories_task.await {
+                    this.update(cx, |t, _| t.cached_memories = Some(memories))?;
+                }
+            }
+        }
+
         loop {
             // Pre-turn guardrail injections
             this.update(cx, |this, _cx| {
@@ -2048,6 +2146,16 @@ impl Thread {
                 Self::process_tool_result(this, event_stream, cx, tool_result)?;
             }
 
+            // Inject any pending skill content as user messages
+            this.update(cx, |this, _| {
+                for content in this.pending_skill_injections.drain(..) {
+                    this.messages.push(Message::User(UserMessage {
+                        id: UserMessageId::new(),
+                        content: vec![UserMessageContent::Text(content)],
+                    }));
+                }
+            })?;
+
             this.update(cx, |this, cx| {
                 this.flush_pending_message(cx);
                 if this.title.is_none() && this.pending_title_generation.is_none() {
@@ -2155,7 +2263,12 @@ impl Thread {
                 .raw_output(tool_result.output.clone()),
             None,
         );
+        let invalidate_memories =
+            !tool_result.is_error && tool_result.tool_name.as_ref() == SaveMemoryTool::NAME;
         this.update(cx, |this, _cx| {
+            if invalidate_memories {
+                this.cached_memories = None;
+            }
             this.pending_message()
                 .tool_results
                 .insert(tool_result.tool_use_id.clone(), tool_result);
@@ -2336,7 +2449,7 @@ impl Thread {
 
     fn handle_tool_use_event(
         &mut self,
-        tool_use: LanguageModelToolUse,
+        mut tool_use: LanguageModelToolUse,
         event_stream: &ThreadEventStream,
         cancellation_rx: watch::Receiver<bool>,
         cx: &mut Context<Self>,
@@ -2410,6 +2523,25 @@ impl Thread {
             return None;
         }
 
+        // Pre-tool hooks
+        if let Some(runner) = &self.hook_runner {
+            match runner.run_pre_hooks(tool_use.name.as_ref(), &tool_use.input) {
+                PreToolAction::Deny { message } => {
+                    return Some(Task::ready(LanguageModelToolResult {
+                        content: LanguageModelToolResultContent::Text(Arc::from(message)),
+                        tool_use_id: tool_use.id,
+                        tool_name: tool_use.name,
+                        is_error: true,
+                        output: None,
+                    }));
+                }
+                PreToolAction::Modify { args } => {
+                    tool_use.input = args;
+                }
+                PreToolAction::Allow => {}
+            }
+        }
+
         // Write guards (Guard A, B, C) — only for create/overwrite operations
         if let Some(denial) = self.check_write_guards(&tool_use, cx) {
             return Some(Task::ready(LanguageModelToolResult {
@@ -2455,6 +2587,7 @@ impl Thread {
             acp::ToolCallUpdateFields::new().status(acp::ToolCallStatus::InProgress),
         );
         let supports_images = self.model().is_some_and(|model| model.supports_images());
+        let hook_runner = self.hook_runner.clone();
         let tool_result = tool.run(tool_input, tool_event_stream, cx);
         cx.foreground_executor().spawn(async move {
             let (is_error, output) = match tool_result.await {
@@ -2473,11 +2606,27 @@ impl Thread {
                 Err(output) => (true, output),
             };
 
+            // Run post-tool hooks to optionally modify the result
+            let content = if let Some(runner) = &hook_runner {
+                if let LanguageModelToolResultContent::Text(ref text) = output.llm_output {
+                    let modified = runner.run_post_hooks(tool_name.as_ref(), text);
+                    if modified != text.as_ref() {
+                        LanguageModelToolResultContent::Text(Arc::from(modified))
+                    } else {
+                        output.llm_output
+                    }
+                } else {
+                    output.llm_output
+                }
+            } else {
+                output.llm_output
+            };
+
             LanguageModelToolResult {
                 tool_use_id,
                 tool_name,
                 is_error,
-                content: output.llm_output,
+                content,
                 output: Some(output.raw_output),
             }
         })
@@ -2972,7 +3121,7 @@ impl Thread {
             self.messages.len()
         );
 
-        let system_prompt = SystemPromptTemplate {
+        let mut system_prompt = SystemPromptTemplate {
             project: self.project_context.read(cx),
             available_tools,
             model_name: self.model.as_ref().map(|m| m.name().0.to_string()),
@@ -2980,6 +3129,23 @@ impl Thread {
         .render(&self.templates)
         .context("failed to build system prompt")
         .expect("Invalid template");
+
+        // Append skill registry section to system prompt
+        if let Some(registry) = &self.skill_registry {
+            let section = registry.system_prompt_section();
+            if !section.is_empty() {
+                system_prompt.push_str(section);
+            }
+        }
+
+        // Append cached memories to system prompt
+        if let Some(memories) = &self.cached_memories {
+            if !memories.is_empty() {
+                system_prompt.push_str("\n\n## Memories\n\n");
+                system_prompt.push_str(memories);
+            }
+        }
+
         let mut messages = vec![LanguageModelRequestMessage {
             role: Role::System,
             content: vec![system_prompt.into()],

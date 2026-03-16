@@ -1,4 +1,5 @@
 mod ask_human_tool;
+mod skill_tool;
 mod codebase_search_tool;
 mod context_handle;
 mod context_server_registry;
@@ -32,6 +33,7 @@ use crate::AgentTool;
 use language_model::{LanguageModelRequestTool, LanguageModelToolSchemaFormat};
 
 pub use ask_human_tool::*;
+pub use skill_tool::*;
 pub use codebase_search_tool::*;
 pub use context_handle::*;
 pub use context_server_registry::*;
