@@ -33,12 +33,12 @@ impl RenderOnce for EndTrialUpsell {
             )
             .child(PlanDefinitions.pro_plan())
             .child(
-                Button::new("cta-button", "Upgrade to Prism Pro")
+                Button::new("cta-button", "Add API Key")
                     .full_width()
                     .style(ButtonStyle::Tinted(ui::TintColor::Accent))
                     .on_click(move |_, _window, cx| {
-                        telemetry::event!("Upgrade To Pro Clicked", state = "end-of-trial");
-                        cx.open_url(&zed_urls::upgrade_to_zed_pro_url(cx))
+                        telemetry::event!("BYOK Setup Clicked", state = "end-of-trial");
+                        cx.open_url(zed_urls::PRISM_QUICK_START)
                     }),
             );
 

@@ -182,8 +182,8 @@ fn rollout_workflows_to_extension(fetch_repos_job: &NamedJob) -> NamedJob {
             .add_with((
                 "body",
                 indoc::indoc! {r#"
-                    This PR updates the CI workflow files from the main Zed repository
-                    based on the commit zed-industries/zed@${{ github.sha }}
+                    This PR updates the CI workflow files from the main PrisM repository
+                    based on the commit harrisonju123/PrisM@${{ github.sha }}
                 "#},
             ))
             .add_with(("commit-message", title))

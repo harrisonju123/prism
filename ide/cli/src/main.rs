@@ -803,13 +803,12 @@ mod linux {
                 let cli = env::current_exe()?;
                 let dir = cli.parent().context("no parent path for cli")?;
 
-                // libexec is the standard, lib/zed is for Arch (and other non-libexec distros),
-                // ./prism/./zed is for the target directory in development builds.
+                // libexec is the standard, lib/prism is for Arch (and other non-libexec distros),
+                // ./prism is for the target directory in development builds.
                 let possible_locations = [
-                    "../libexec/zed-editor",
-                    "../lib/zed/zed-editor",
+                    "../libexec/prism-editor",
+                    "../lib/prism/prism-editor",
                     "./prism",
-                    "./zed",
                 ];
                 possible_locations
                     .iter()
@@ -936,6 +935,7 @@ mod flatpak {
 
     const EXTRA_LIB_ENV_NAME: &str = "PRISM_FLATPAK_LIB_PATH";
     const NO_ESCAPE_ENV_NAME: &str = "PRISM_FLATPAK_NO_ESCAPE";
+    const PRISM_FLATPAK_ID_PREFIX: &str = "dev.prism.Prism";
 
     /// Adds bundled libraries to LD_LIBRARY_PATH if running under flatpak
     pub fn ld_extra_libs() {
@@ -957,7 +957,7 @@ mod flatpak {
         if let Some(flatpak_dir) = get_flatpak_dir() {
             let mut args = vec!["/usr/bin/flatpak-spawn".into(), "--host".into()];
             args.append(&mut get_xdg_env_args());
-            args.push("--env=ZED_UPDATE_EXPLANATION=Please use flatpak to update zed".into());
+            args.push("--env=PRISM_UPDATE_EXPLANATION=Please use flatpak to update PrisM".into());
             args.push(
                 format!(
                     "--env={EXTRA_LIB_ENV_NAME}={}",
@@ -965,7 +965,7 @@ mod flatpak {
                 )
                 .into(),
             );
-            args.push(flatpak_dir.join("bin").join("zed").into());
+            args.push(flatpak_dir.join("bin").join("prism").into());
 
             let mut is_app_location_set = false;
             for arg in &env::args_os().collect::<Vec<_>>()[1..] {
@@ -975,7 +975,7 @@ mod flatpak {
 
             if !is_app_location_set {
                 args.push("--zed".into());
-                args.push(flatpak_dir.join("libexec").join("zed-editor").into());
+                args.push(flatpak_dir.join("libexec").join("prism-editor").into());
             }
 
             let error = exec::execvp("/usr/bin/flatpak-spawn", args);
@@ -986,14 +986,14 @@ mod flatpak {
 
     pub fn set_bin_if_no_escape(mut args: super::Args) -> super::Args {
         if env::var(NO_ESCAPE_ENV_NAME).is_ok()
-            && env::var("FLATPAK_ID").is_ok_and(|id| id.starts_with("dev.zed.Zed"))
+            && env::var("FLATPAK_ID").is_ok_and(|id| id.starts_with(PRISM_FLATPAK_ID_PREFIX))
             && args.zed.is_none()
         {
-            args.zed = Some("/app/libexec/zed-editor".into());
+            args.zed = Some("/app/libexec/prism-editor".into());
             unsafe {
                 env::set_var(
                     "PRISM_UPDATE_EXPLANATION",
-                    "Please use flatpak to update zed",
+                    "Please use flatpak to update PrisM",
                 )
             };
         }
@@ -1006,7 +1006,7 @@ mod flatpak {
         }
 
         if let Ok(flatpak_id) = env::var("FLATPAK_ID") {
-            if !flatpak_id.starts_with("dev.zed.Zed") {
+            if !flatpak_id.starts_with(PRISM_FLATPAK_ID_PREFIX) {
                 return None;
             }
 
@@ -1147,10 +1147,10 @@ mod windows {
                 let cli = std::env::current_exe()?;
                 let dir = cli.parent().context("no parent path for cli")?;
 
-                // ../PrisM.exe is the standard, lib/zed is for MSYS2, ./prism.exe is for the target
+                // ../PrisM.exe is the standard, lib/prism is for MSYS2, ./prism.exe is for the target
                 // directory in development builds.
                 let possible_locations =
-                    ["../PrisM.exe", "../lib/zed/zed-editor.exe", "./prism.exe"];
+                    ["../PrisM.exe", "../lib/prism/prism-editor.exe", "./prism.exe"];
                 possible_locations
                     .iter()
                     .find_map(|p| dir.join(p).canonicalize().ok().filter(|path| path != &cli))

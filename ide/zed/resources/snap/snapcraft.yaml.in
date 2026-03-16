@@ -17,7 +17,7 @@ contact: https://github.com/harrisonju123/PrisM
 parts:
   prism:
     plugin: dump
-    source: "https://github.com/harrisonju123/PrisM/releases/download/v$RELEASE_VERSION/zed-linux-x86_64.tar.gz"
+    source: "https://github.com/harrisonju123/PrisM/releases/download/v$RELEASE_VERSION/prism-linux-x86_64.tar.gz"
 
     organize:
       # These renames seem to not be necessary, but it's tidier.
@@ -53,7 +53,7 @@ parts:
 
 apps:
   prism:
-    command: usr/bin/zed
-    common-id: dev.zed.Zed
+    command: usr/bin/prism
+    common-id: dev.prism.Prism
     environment:
-      ZED_BUNDLE_TYPE: snap
+      PRISM_BUNDLE_TYPE: snap

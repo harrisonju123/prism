@@ -68,7 +68,7 @@
         <com:Extension Category="windows.comServer">
           <com:ComServer>
             <com:SurrogateServer DisplayName="Prism Nightly">
-              <com:Class Id="266f2cfe-1653-42af-b55c-fe3590c83871" Path="zed_explorer_command_injector.dll" ThreadingModel="STA"/>
+              <com:Class Id="266f2cfe-1653-42af-b55c-fe3590c83871" Path="prism_explorer_command_injector.dll" ThreadingModel="STA"/>
             </com:SurrogateServer>
           </com:ComServer>
         </com:Extension>

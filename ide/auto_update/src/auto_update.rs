@@ -1,5 +1,5 @@
 use anyhow::{Context as _, Result};
-use client::Client;
+use client::{Client, zed_urls};
 use db::kvp::KEY_VALUE_STORE;
 use futures_lite::StreamExt;
 use gpui::{
@@ -243,10 +243,8 @@ pub fn release_notes_url(cx: &mut App) -> Option<String> {
             let path = format!("/releases/{release_channel}/{current_version}");
             auto_updater.client.http_client().build_url(&path)
         }
-        ReleaseChannel::Nightly => {
-            "https://github.com/zed-industries/zed/commits/nightly/".to_string()
-        }
-        ReleaseChannel::Dev => "https://github.com/zed-industries/zed/commits/main/".to_string(),
+        ReleaseChannel::Nightly => zed_urls::PRISM_COMMITS_NIGHTLY.to_string(),
+        ReleaseChannel::Dev => zed_urls::PRISM_COMMITS_MAIN.to_string(),
     };
     Some(url)
 }

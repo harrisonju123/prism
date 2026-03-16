@@ -192,10 +192,10 @@ impl RenderOnce for AiUpsellCard {
                                             .style(ButtonStyle::Tinted(ui::TintColor::Accent))
                                             .on_click(move |_, _window, cx| {
                                                 telemetry::event!(
-                                                    "Upgrade To Pro Clicked",
+                                                    "BYOK Setup Clicked",
                                                     state = "young-account"
                                                 );
-                                                cx.open_url(&zed_urls::upgrade_to_zed_pro_url(cx))
+                                                cx.open_url(zed_urls::PRISM_REPO)
                                             }),
                                     ),
                             )
@@ -210,7 +210,7 @@ impl RenderOnce for AiUpsellCard {
                             .child(
                                 footer_container
                                     .child(
-                                        Button::new("start_trial", "Start Pro Trial")
+                                        Button::new("add_api_key", "Add API Key")
                                             .full_width()
                                             .style(ButtonStyle::Tinted(ui::TintColor::Accent))
                                             .when_some(self.tab_index, |this, tab_index| {
@@ -218,14 +218,14 @@ impl RenderOnce for AiUpsellCard {
                                             })
                                             .on_click(move |_, _window, cx| {
                                                 telemetry::event!(
-                                                    "Start Trial Clicked",
+                                                    "BYOK Setup Clicked",
                                                     state = "post-sign-in"
                                                 );
-                                                cx.open_url(&zed_urls::start_trial_url(cx))
+                                                cx.open_url(zed_urls::PRISM_QUICK_START)
                                             }),
                                     )
                                     .child(
-                                        Label::new("14 days, no credit card required")
+                                        Label::new("Bring your own API key — no subscription required")
                                             .size(LabelSize::Small)
                                             .color(Color::Muted),
                                     ),
@@ -278,7 +278,7 @@ impl RenderOnce for AiUpsellCard {
                         .on_click({
                             let callback = self.sign_in.clone();
                             move |_, window, cx| {
-                                telemetry::event!("Start Trial Clicked", state = "pre-sign-in");
+                                telemetry::event!("BYOK Setup Clicked", state = "pre-sign-in");
                                 callback(window, cx)
                             }
                         }),

@@ -13,7 +13,7 @@ Keywords=prism;zed;
 # To add Prism to "Open Folder With..." context menu, add `inode/directory` to the MimeType field (semicolon separated)
 # Arch linux users have reported this setting Prism as default file browser. See https://github.com/harrisonju123/PrisM/issues and related issues.
 # If this happens to you, an unconfirmed fix may be to install Arch's `gnome-defaults-list` package.
-MimeType=text/plain;application/x-zerosize;x-scheme-handler/zed;
+MimeType=text/plain;application/x-zerosize;x-scheme-handler/prism;
 Actions=NewWorkspace;
 
 [Desktop Action NewWorkspace]

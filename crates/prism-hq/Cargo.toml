@@ -4,6 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 publish = false
 description = "Agent HQ UI for PrisM — non-file Items and Panels for workspace supervision"
+license = "Apache-2.0"
 
 [lib]
 path = "src/prism_hq.rs"

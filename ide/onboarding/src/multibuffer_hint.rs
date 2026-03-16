@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use client::zed_urls;
 use db::kvp::KEY_VALUE_STORE;
 use gpui::{App, EntityId, EventEmitter, Subscription};
 use ui::{IconButtonShape, Tooltip, prelude::*};
@@ -163,7 +164,7 @@ impl Render for MultibufferHint {
                             .icon_color(Color::Muted)
                             .icon_position(IconPosition::End)
                             .on_click(move |_event, _, cx| {
-                                cx.open_url("https://zed.dev/docs/multibuffers")
+                                cx.open_url(zed_urls::PRISM_REPO)
                             }),
                     ),
             )

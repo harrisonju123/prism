@@ -1,0 +1,169 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g. v0.1.0)'
+        required: true
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-macos:
+    name: Build macOS
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: aarch64
+            runner: macos-14
+          - arch: x86_64
+            runner: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: prism-release-macos-${{ matrix.arch }}
+
+      - name: Determine release channel
+        run: script/determine-release-channel
+
+      - name: Bundle macOS app
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_NOTARIZATION_KEY: ${{ secrets.APPLE_NOTARIZATION_KEY }}
+          APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
+          APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
+        run: script/bundle-mac ${{ matrix.arch }}-apple-darwin
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: Prism-${{ matrix.arch }}.dmg
+          path: target/${{ matrix.arch }}-apple-darwin/release/dmg/Prism-${{ matrix.arch }}.dmg
+
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: prism-release-linux-${{ matrix.arch }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config clang mold
+
+      - name: Set up aarch64 cross-compilation
+        if: matrix.arch == 'aarch64'
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          rustup target add aarch64-unknown-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+
+      - name: Build gateway binary
+        run: |
+          TARGET=${{ matrix.arch }}-unknown-linux-gnu
+          cargo build --release -p prism --bin prism-server --target $TARGET
+          mv target/$TARGET/release/prism-server target/release/prism-server-linux-${{ matrix.arch }}
+
+      - name: Upload gateway binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: prism-server-linux-${{ matrix.arch }}
+          path: target/release/prism-server-linux-${{ matrix.arch }}
+
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: prism-release-windows
+
+      - name: Build gateway binary
+        run: cargo build --release -p prism --bin prism-server
+
+      - name: Bundle Windows installer
+        shell: pwsh
+        run: ./script/bundle-windows.ps1
+
+      - name: Upload Windows binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: Prism-x86_64.exe
+          path: target/release/Prism-x86_64.exe
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-macos, build-linux, build-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Flatten artifacts
+        run: find artifacts/ -mindepth 2 -type f -exec mv {} artifacts/ \;
+
+      - name: Get version
+        id: version
+        run: echo "VERSION=${{ github.event.inputs.version || github.ref_name }}" >> $GITHUB_OUTPUT
+
+      - name: Create release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.VERSION }}
+          name: PrisM ${{ steps.version.outputs.VERSION }}
+          body: |
+            ## PrisM ${{ steps.version.outputs.VERSION }}
+
+            See [CHANGELOG.md](https://github.com/harrisonju123/PrisM/blob/main/CHANGELOG.md) for details.
+
+            ### Downloads
+
+            | Platform | Arch | Download |
+            |----------|------|----------|
+            | macOS | Apple Silicon (M1+) | Prism-aarch64.dmg |
+            | macOS | Intel | Prism-x86_64.dmg |
+            | Linux | x86_64 | prism-server-linux-x86_64 |
+            | Linux | aarch64 | prism-server-linux-aarch64 |
+
+            ### Gateway Quick Start
+
+            ```bash
+            # Run the gateway (no auth, minimal config)
+            export LITELLM_BASE_URL=https://your-litellm.internal/v1
+            export LITELLM_API_KEY=sk-...
+            ./prism-server
+            ```
+          files: artifacts/*
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-pre') || contains(github.ref_name, '-nightly') }}

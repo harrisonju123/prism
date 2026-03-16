@@ -1,3 +1,6 @@
+const PAYMENT_REQUIRED_MESSAGE: &str =
+    "You reached the API rate limit for your provider. Add or rotate your API key in PrisM settings.";
+
 use acp_thread::ContentBlock;
 use cloud_api_types::{SubmitAgentThreadFeedbackBody, SubmitAgentThreadFeedbackCommentsBody};
 use editor::actions::OpenExcerpts;
@@ -1146,8 +1149,7 @@ impl ThreadView {
                 ThreadError::PaymentRequired => (
                     "payment_required",
                     None,
-                    "You reached your free usage limit. Upgrade to Prism Pro for more prompts."
-                        .into(),
+                    PAYMENT_REQUIRED_MESSAGE.into(),
                 ),
                 ThreadError::Refusal => {
                     let model_or_agent_name = self.current_model_name(cx);
@@ -7220,31 +7222,28 @@ impl ThreadView {
     }
 
     fn render_payment_required_error(&self, cx: &mut Context<Self>) -> Callout {
-        const ERROR_MESSAGE: &str =
-            "You reached your free usage limit. Upgrade to Prism Pro for more prompts.";
-
         Callout::new()
             .severity(Severity::Error)
             .icon(IconName::XCircle)
-            .title("Free Usage Exceeded")
-            .description(ERROR_MESSAGE)
+            .title("API Rate Limit Reached")
+            .description(PAYMENT_REQUIRED_MESSAGE)
             .actions_slot(
                 h_flex()
                     .gap_0p5()
                     .child(self.upgrade_button(cx))
-                    .child(self.create_copy_button(ERROR_MESSAGE)),
+                    .child(self.create_copy_button(PAYMENT_REQUIRED_MESSAGE)),
             )
             .dismiss_action(self.dismiss_error_button(cx))
     }
 
     fn upgrade_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        Button::new("upgrade", "Upgrade")
+        Button::new("add_api_key", "Add API Key")
             .label_size(LabelSize::Small)
             .style(ButtonStyle::Tinted(ui::TintColor::Accent))
             .on_click(cx.listener({
                 move |this, _, _, cx| {
                     this.clear_thread_error(cx);
-                    cx.open_url(&zed_urls::upgrade_to_zed_pro_url(cx));
+                    cx.open_url(zed_urls::PRISM_QUICK_START);
                 }
             }))
     }

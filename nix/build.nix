@@ -79,12 +79,12 @@ let
   gpu-lib = if withGLES then libglvnd else vulkan-loader;
   commonArgs =
     let
-      zedCargoLock = builtins.fromTOML (builtins.readFile ../crates/zed/Cargo.toml);
+      prismEditorCargoLock = builtins.fromTOML (builtins.readFile ../ide/zed/Cargo.toml);
       stdenv' = stdenv;
     in
     rec {
       pname = "prism-editor";
-      version = zedCargoLock.package.version + "-nightly";
+      version = prismEditorCargoLock.package.version + "-nightly";
       src = builtins.path {
         path = ../.;
         filter = mkIncludeFilter ../.;
@@ -133,7 +133,7 @@ let
       ++ lib.optionals stdenv'.hostPlatform.isDarwin [
         (cargo-bundle.overrideAttrs (
           new: old: {
-            version = "0.6.1-zed";
+            version = "0.6.1-prism";
             src = fetchFromGitHub {
               owner = "harrisonju123";
               repo = "cargo-bundle";
@@ -218,7 +218,7 @@ let
             ../assets/fonts/ibm-plex-sans
           ];
         };
-        ZED_UPDATE_EXPLANATION = "Prism has been installed using Nix. Auto-updates have thus been disabled.";
+        PRISM_UPDATE_EXPLANATION = "Prism has been installed using Nix. Auto-updates have thus been disabled.";
         RELEASE_VERSION = version;
         LK_CUSTOM_WEBRTC = pkgs.callPackage ./livekit-libwebrtc/package.nix { };
         PROTOC = "${protobuf}/bin/protoc";
@@ -302,7 +302,7 @@ craneLib.buildPackage (
     # TODO: put this in a separate derivation that depends on src to avoid running it on every build
     preBuild = ''
       ALLOW_MISSING_LICENSES=yes bash script/generate-licenses
-      echo nightly > crates/zed/RELEASE_CHANNEL
+      echo nightly > ide/zed/RELEASE_CHANNEL
     '';
 
     installPhase =
@@ -310,7 +310,7 @@ craneLib.buildPackage (
         ''
           runHook preInstall
 
-          pushd crates/zed
+          pushd ide/zed
           sed -i "s/package.metadata.bundle-nightly/package.metadata.bundle/" Cargo.toml
           export CARGO_BUNDLE_SKIP_BUILD=true
           app_path="$(cargo bundle --profile $CARGO_PROFILE | xargs)"
@@ -324,7 +324,7 @@ craneLib.buildPackage (
 
           # Physical location of the CLI must be inside the app bundle as this is used
           # to determine which app to start
-          ln -s "$out/Applications/Prism Nightly.app/Contents/MacOS/cli" $out/bin/zed
+          ln -s "$out/Applications/Prism Nightly.app/Contents/MacOS/cli" $out/bin/prism
 
           runHook postInstall
         ''
@@ -333,26 +333,25 @@ craneLib.buildPackage (
           runHook preInstall
 
           mkdir -p $out/bin $out/libexec
-          cp $TARGET_DIR/zed $out/libexec/zed-editor
-          cp $TARGET_DIR/cli  $out/bin/zed
-          ln -s $out/bin/zed $out/bin/zeditor  # home-manager expects the CLI binary to be here
+          cp $TARGET_DIR/zed $out/libexec/prism-editor
+          cp $TARGET_DIR/cli  $out/bin/prism
+          ln -s $out/bin/prism $out/bin/zeditor  # home-manager expects the CLI binary to be here
 
 
-          install -D "crates/zed/resources/app-icon-nightly@2x.png" \
-            "$out/share/icons/hicolor/1024x1024@2x/apps/zed.png"
-          install -D crates/zed/resources/app-icon-nightly.png \
-            $out/share/icons/hicolor/512x512/apps/zed.png
+          install -D "ide/zed/resources/app-icon-nightly@2x.png" \
+            "$out/share/icons/hicolor/1024x1024@2x/apps/prism.png"
+          install -D ide/zed/resources/app-icon-nightly.png \
+            $out/share/icons/hicolor/512x512/apps/prism.png
 
-          # TODO: icons should probably be named "zed-nightly"
           (
             export DO_STARTUP_NOTIFY="true"
-            export APP_CLI="zed"
-            export APP_ICON="zed"
+            export APP_CLI="prism"
+            export APP_ICON="prism"
             export APP_NAME="Prism Nightly"
             export APP_ARGS="%U"
             mkdir -p "$out/share/applications"
-            ${lib.getExe envsubst} < "crates/zed/resources/zed.desktop.in" > "$out/share/applications/dev.zed.Zed-Nightly.desktop"
-            chmod +x "$out/share/applications/dev.zed.Zed-Nightly.desktop"
+            ${lib.getExe envsubst} < "ide/zed/resources/zed.desktop.in" > "$out/share/applications/dev.prism.Prism-Nightly.desktop"
+            chmod +x "$out/share/applications/dev.prism.Prism-Nightly.desktop"
           )
 
           runHook postInstall
@@ -360,7 +359,7 @@ craneLib.buildPackage (
 
     # TODO: why isn't this also done on macOS?
     postFixup = lib.optionalString stdenv.hostPlatform.isLinux ''
-      wrapProgram $out/libexec/zed-editor --suffix PATH : ${lib.makeBinPath [ nodejs_22 ]}
+      wrapProgram $out/libexec/prism-editor --suffix PATH : ${lib.makeBinPath [ nodejs_22 ]}
     '';
 
     meta = {
@@ -368,7 +367,7 @@ craneLib.buildPackage (
       homepage = "https://github.com/harrisonju123/PrisM";
       changelog = "https://github.com/harrisonju123/PrisM/releases";
       license = lib.licenses.gpl3Only;
-      mainProgram = "zed";
+      mainProgram = "prism";
       platforms = lib.platforms.linux ++ lib.platforms.darwin;
     };
   }

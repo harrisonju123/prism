@@ -11,8 +11,34 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  zed:
-    name: Zed (macOS)
+  gateway:
+    name: PrisM Gateway
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: prism-gateway
+
+      - name: Format check
+        run: cargo fmt --check -p prism -p prism-cli -p prism-context -p prism-client -p prism-types -p prism-hq
+
+      - name: Clippy
+        run: cargo clippy -p prism --features full -p prism-cli -p prism-context -p prism-client -p prism-types -p prism-hq -- -W clippy::all
+
+      - name: Test (gateway)
+        run: cargo test -p prism --features full
+
+      - name: Test (prism-context)
+        run: cargo test -p prism-context
+
+  ide:
+    name: PrisM IDE (macOS)
     runs-on: macos-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
@@ -22,13 +48,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: zed-macos
+          key: prism-ide-macos
 
-      - name: Reconcile Cargo.toml
-        run: ./scripts/reconcile-cargo.sh
-
-      - name: Cargo check (zed)
+      - name: Cargo check (ide/zed)
         run: cargo check -p zed
-
-      - name: Verify PrisM patches
-        run: make verify-patches

@@ -1459,7 +1459,7 @@ impl ExtensionsPage {
     }
 
     fn render_acp_registry_upsell(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let registry_url = zed_urls::acp_registry_blog(cx);
+        let registry_url = zed_urls::PRISM_REPO;
 
         let view_registry = Button::new("view_registry", "View Registry")
             .style(ButtonStyle::Tinted(ui::TintColor::Warning))

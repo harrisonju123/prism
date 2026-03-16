@@ -545,7 +545,7 @@ impl Render for AgentRegistryPage {
                                     .icon_color(Color::Muted)
                                     .icon_size(IconSize::Small)
                                     .on_click(move |_, _, cx| {
-                                        cx.open_url(&zed_urls::acp_registry_blog(cx))
+                                        cx.open_url(zed_urls::PRISM_REPO)
                                     }),
                             ),
                     )

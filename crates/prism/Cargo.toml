@@ -3,6 +3,7 @@ name = "prism"
 version = "0.1.0"
 edition.workspace = true
 description = "High-performance Rust LLM gateway"
+license = "Apache-2.0"
 
 [lib]
 name = "prism"

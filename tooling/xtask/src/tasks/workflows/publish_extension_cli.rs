@@ -171,7 +171,7 @@ fn create_pull_request_extensions(
             .add(
                 "body",
                 indoc! {r#"
-                    This PR bumps the extension CLI version to https://github.com/zed-industries/zed/commit/${{ github.sha }}.
+                    This PR bumps the extension CLI version to https://github.com/harrisonju123/PrisM/commit/${{ github.sha }}.
                 "#},
             )
             .add("commit-message", title)

@@ -30,7 +30,7 @@ fn run_bump_patch_version(branch: &WorkflowInput) -> steps::NamedJob {
 
     fn bump_patch_version(token: &StepOutput) -> Step<Run> {
         named::bash(indoc::indoc! {r#"
-            channel="$(cat crates/zed/RELEASE_CHANNEL)"
+            channel="$(cat ide/zed/RELEASE_CHANNEL)"
 
             tag_suffix=""
             case $channel in
@@ -68,7 +68,7 @@ fn run_bump_patch_version(branch: &WorkflowInput) -> steps::NamedJob {
     named::job(
         Job::default()
             .cond(Expression::new(
-                "github.repository_owner == 'zed-industries'",
+                "github.repository_owner == 'harrisonju123'",
             ))
             .runs_on(runners::LINUX_XL)
             .add_step(authenticate)

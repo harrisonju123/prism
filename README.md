@@ -79,7 +79,7 @@ make dev
 - Docker + Docker Compose
 
 ### Prerequisites (both)
-- Rust 1.70+ (via `rustup`)
+- Rust 1.93+ (via `rustup`)
 
 ### Basic Commands
 
@@ -92,44 +92,7 @@ make run-zed            # build and launch Zed IDE
 make dogfood            # workspace overview (prism context context)
 make health             # curl health endpoint
 make models             # curl models endpoint
-make request-replay     # generate request replay artifacts from OpenAPI
 ```
-
-### Request Replay (agent-first endpoint testing)
-
-Request Replay turns "test an endpoint" into a repeatable, AI-friendly workflow. It generates
-versioned request templates (happy path + edge case), expected response schema references, and
-a replayable runner that can target `local`, `dev`, or `staging`.
-
-**Generate artifacts:**
-- `make request-replay` (auto-discovers OpenAPI or generates via swaggo)
-- Output goes to `request-replay/` (committed to the repo)
-
-**Agent skill (IDE + agents):**
-- Run `/request-replay` to execute OpenAPI discovery + replay in one flow.
-- The skill runs: `prism request-replay openapi`, `prism request-replay generate`, then a happy-path replay.
-
-**Agent hook (automatic):**
-- Configure a repo hook to run `prism request-replay openapi` + `prism request-replay generate` after endpoint changes.
-- This keeps `request-replay/` artifacts current without manual steps.
-
-**OpenAPI discovery (Rust/Go-friendly):**
-- `prism request-replay openapi --output-dir request-replay`
-- Priority order:
-  1. `PRISM_OPENAPI_PATH` (file)
-  2. `PRISM_OPENAPI_URL` (URL)
-  3. repo scan for `openapi.json|yaml` or `swagger.json|yaml`
-  4. scrape a running server (`/openapi.json`, `/swagger.json`, etc.)
-  5. Go: run `swag init` (uses `PRISM_SWAG_INIT_CMD` if provided)
-
-**Replay a request:**
-- `prism request-replay run <request-id> --env local`
-- Uses `PRISM_API_KEY` for auth (or the scheme declared in OpenAPI)
-
-**Configure environments:**
-- `PRISM_LOCAL_URL` (default: `http://localhost:9100`)
-- `PRISM_DEV_URL`
-- `PRISM_STAGING_URL`
 
 ## Architecture
 
@@ -273,8 +236,6 @@ The gateway and coordination layer are the foundation. The IDE panels are the in
 **Routing / Telemetry** — flight recorder for every model call: which model was chosen, why, what it cost, how long it took, and what permissions were required. Cost budgets enforced per-key and per-session.
 
 **Memory / State Browser** — a living runbook. Rules, decisions, failures, and current truths stored as structured knowledge. Agents read from it; humans edit it. Not a chat log — a structured belief store.
-
-**Request Replay** — agent-first endpoint testing that replaces Postman. Generate versioned request templates from OpenAPI, replay against any environment, diff responses across deploys.
 
 ## Development Workflow
 
@@ -529,6 +490,68 @@ prism context context   # workspace overview
 - **PrisM Architecture:** see `CLAUDE.md` for full design details
 - **IDE crates:** `ide/` (fully integrated Zed editor, 225 crates)
 
+## Download
+
+Pre-built binaries are available on the [GitHub Releases](https://github.com/harrisonju123/PrisM/releases) page.
+
+| Platform | Download |
+|----------|----------|
+| macOS (Apple Silicon) | `Prism-aarch64.dmg` |
+| macOS (Intel) | `Prism-x86_64.dmg` |
+| Linux (x86_64) | `prism-server-linux-x86_64` |
+| Linux (aarch64) | `prism-server-linux-aarch64` |
+
+## Getting Started
+
+### End Users (Gateway Only)
+
+1. Download `prism-server` for your platform from [Releases](https://github.com/harrisonju123/PrisM/releases)
+2. Create a minimal config file:
+
+```toml
+# config/prism.toml
+[gateway]
+address = "0.0.0.0:9100"
+
+[keys]
+enabled = false
+
+[providers.openai]
+api_key = "${OPENAI_API_KEY}"
+
+[models.default]
+provider = "openai"
+model = "gpt-4o-mini"
+tier = 3
+```
+
+3. Run: `OPENAI_API_KEY=sk-... ./prism-server`
+4. Point any OpenAI-compatible client to `http://localhost:9100/v1`
+
+### IDE (Zed-based)
+
+1. Download the `.dmg` (macOS) from [Releases](https://github.com/harrisonju123/PrisM/releases)
+2. Open PrisM IDE
+3. Go to Language Models settings and add your API key
+
+## Supported Providers
+
+PrisM supports any OpenAI-compatible endpoint plus native Anthropic:
+
+| Provider | Config key | Notes |
+|----------|------------|-------|
+| OpenAI | `providers.openai` | `OPENAI_API_KEY` |
+| Anthropic | `providers.anthropic` | `ANTHROPIC_API_KEY` |
+| LiteLLM | `providers.litellm` | Any LiteLLM proxy |
+| Groq | `providers.groq` | `GROQ_API_KEY` (free tier) |
+| Azure OpenAI | `providers.azure` | `AZURE_OPENAI_API_KEY` |
+| Custom | `providers.<name>` | Any OpenAI-compatible endpoint |
+
 ## License
 
-[License info to be added]
+PrisM uses a dual license:
+
+- **crates/** (gateway, CLI, context): [Apache License 2.0](LICENSE-APACHE)
+- **ide/** (editor, derived from Zed): [GNU General Public License v3.0](LICENSE-GPL)
+
+See [LICENSE](LICENSE) for the full dual-license explainer.

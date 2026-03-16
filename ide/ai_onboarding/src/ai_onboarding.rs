@@ -113,20 +113,20 @@ impl ZedAiOnboarding {
             .gap_1()
             .child(Headline::new("Welcome to Prism AI"))
             .child(
-                Label::new("Sign in to try Prism Pro for 14 days, no credit card required.")
+                Label::new("PrisM routes your requests to any LLM provider using your own API keys.")
                     .color(Color::Muted)
                     .mb_2(),
             )
             .child(PlanDefinitions.pro_plan())
             .child(
-                Button::new("sign_in", "Try Prism Pro for Free")
+                Button::new("sign_in", "Get Started with PrisM")
                     .disabled(signing_in)
                     .full_width()
                     .style(ButtonStyle::Tinted(ui::TintColor::Accent))
                     .on_click({
                         let callback = self.sign_in.clone();
                         move |_, window, cx| {
-                            telemetry::event!("Start Trial Clicked", state = "pre-sign-in");
+                            telemetry::event!("BYOK Setup Started", state = "pre-sign-in");
                             callback(window, cx)
                         }
                     }),
@@ -165,10 +165,10 @@ impl ZedAiOnboarding {
                                 .style(ButtonStyle::Tinted(ui::TintColor::Accent))
                                 .on_click(move |_, _window, cx| {
                                     telemetry::event!(
-                                        "Upgrade To Pro Clicked",
+                                        "BYOK Setup Clicked",
                                         state = "young-account"
                                     );
-                                    cx.open_url(&zed_urls::upgrade_to_zed_pro_url(cx))
+                                    cx.open_url(zed_urls::PRISM_REPO)
                                 }),
                         ),
                 )
@@ -226,10 +226,10 @@ impl ZedAiOnboarding {
                                 .style(ButtonStyle::Tinted(ui::TintColor::Accent))
                                 .on_click(move |_, _window, cx| {
                                     telemetry::event!(
-                                        "Start Trial Clicked",
+                                        "BYOK Setup Clicked",
                                         state = "post-sign-in"
                                     );
-                                    cx.open_url(&zed_urls::start_trial_url(cx))
+                                    cx.open_url(zed_urls::PRISM_QUICK_START)
                                 }),
                         ),
                 )

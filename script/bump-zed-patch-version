@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-channel=$(cat crates/zed/RELEASE_CHANNEL)
+channel=$(cat ide/zed/RELEASE_CHANNEL)
 
 tag_suffix=""
 case $channel in
