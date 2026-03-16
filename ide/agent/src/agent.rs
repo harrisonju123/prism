@@ -60,6 +60,7 @@ use std::sync::Arc;
 use util::ResultExt;
 use util::path_list::PathList;
 use util::rel_path::RelPath;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProjectSnapshot {
@@ -389,6 +390,11 @@ impl NativeAgent {
 
             if let Some(task_id) = maybe_task_id {
                 if let Some(task_name) = prism_session::auto_claim_task(&task_id, &agent_name) {
+                    if let Ok(uuid) = task_id.parse::<Uuid>() {
+                        if let Some(ref ctx) = self.context_handle {
+                            ctx.set_context_thread(uuid, task_name.clone());
+                        }
+                    }
                     session_file.task_id = Some(task_id);
                     session_file.task_name = Some(task_name);
                 }
@@ -441,6 +447,10 @@ impl NativeAgent {
         let weak = cx.weak_entity();
         let weak_thread = thread_handle.downgrade();
         let context_handle = self.context_handle.clone();
+        let context_thread_id_for_thread = self
+            .context_handle
+            .as_ref()
+            .and_then(|ctx| ctx.context_thread.read().as_ref().map(|t| t.id.to_string()));
         thread_handle.update(cx, |thread, cx| {
             thread.set_summarization_model(summarization_model, cx);
             thread.add_default_tools(
@@ -451,7 +461,10 @@ impl NativeAgent {
                 }) as _,
                 context_handle,
                 cx,
-            )
+            );
+            if let Some(id) = context_thread_id_for_thread {
+                thread.set_context_thread_id(id);
+            }
         });
 
         // Capture the skill registry from the thread (populated by add_default_tools)

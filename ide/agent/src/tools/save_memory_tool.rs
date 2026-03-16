@@ -67,7 +67,7 @@ impl AgentTool for SaveMemoryTool {
                 .await
                 .map_err(|e| format!("Failed to receive tool input: {e}"))?;
 
-            let thread_id = *context.context_thread_id.read();
+            let thread_id = context.context_thread.read().as_ref().map(|t| t.id);
             let ws_id = context.workspace_id;
             let key = input.key.clone();
             let value = input.value.clone();

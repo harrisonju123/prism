@@ -13,10 +13,16 @@ use uuid::Uuid;
 
 pub const AGENT_SOURCE: &str = "zed-agent";
 
+/// Active context thread (id + name), always set together.
+pub struct ContextThread {
+    pub id: Uuid,
+    pub name: String,
+}
+
 pub struct ContextHandle {
     pub store: SqliteStore,
     pub workspace_id: Uuid,
-    pub context_thread_id: RwLock<Option<Uuid>>,
+    pub context_thread: RwLock<Option<ContextThread>>,
 }
 
 pub fn try_init_context_handle(project: &Entity<Project>, cx: &App) -> Option<Arc<ContextHandle>> {
@@ -45,11 +51,16 @@ pub fn try_init_context_handle(project: &Entity<Project>, cx: &App) -> Option<Ar
     Some(Arc::new(ContextHandle {
         store,
         workspace_id,
-        context_thread_id: RwLock::new(None),
+        context_thread: RwLock::new(None),
     }))
 }
 
 impl ContextHandle {
+    /// Set the active context thread (id + name) on this handle atomically.
+    pub fn set_context_thread(&self, id: Uuid, name: String) {
+        *self.context_thread.write() = Some(ContextThread { id, name });
+    }
+
     /// Returns the agent name from env (PRISM_AGENT_NAME or UH_AGENT_NAME fallback).
     pub fn agent_name() -> String {
         std::env::var("PRISM_AGENT_NAME")
@@ -89,9 +100,8 @@ impl ContextHandle {
         tool_name: &str,
         file_path: Option<&str>,
     ) -> anyhow::Result<Option<String>> {
-        let thread_id = self.context_thread_id.read().clone();
-        let thread_name = match thread_id {
-            Some(id) => id.to_string(),
+        let thread_name = match self.context_thread.read().as_ref().map(|t| t.name.clone()) {
+            Some(name) => name,
             None => return Ok(None),
         };
         let agent_name = Self::agent_name();
@@ -118,7 +128,7 @@ impl ContextHandle {
 
     /// Create (or debounce-update) a cost spike inbox event.
     pub async fn create_cost_spike_entry(&self, title: &str, near_cap: bool) -> anyhow::Result<()> {
-        let thread_id = self.context_thread_id.read().clone();
+        let thread_id = self.context_thread.read().as_ref().map(|t| t.id);
         let severity = if near_cap {
             InboxSeverity::Critical
         } else {
