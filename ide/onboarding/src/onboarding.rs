@@ -51,7 +51,7 @@ pub struct ImportCursorSettings {
 }
 
 pub const FIRST_OPEN: &str = "first_open";
-pub const DOCS_URL: &str = "https://prism.dev/docs/";
+pub const DOCS_URL: &str = "https://prism-ide.dev/docs/";
 
 actions!(
     onboarding,

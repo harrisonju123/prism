@@ -15,7 +15,7 @@ use util::ResultExt;
 
 use super::QuickActionBar;
 
-const ZED_REPL_DOCUMENTATION: &str = "https://prism.dev/docs/repl";
+const ZED_REPL_DOCUMENTATION: &str = "https://prism-ide.dev/docs/repl";
 
 struct ReplMenuState {
     tooltip: SharedString,

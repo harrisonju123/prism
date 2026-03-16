@@ -18,7 +18,7 @@ PrisM inverts the model. The **agent thread** is the primary unit of work. Code 
 6. **Memory** — rules, decisions, failures, and current truths stored as structured knowledge, not chat logs.
 7. **Automation** — hooks, personas, and sandboxing so agents operate within defined boundaries without needing human approval for every action.
 
-**What's built today:** LLM gateway (smart routing, cost tracking, observability), agent coordination (threads, memory, decisions), full IDE integration (225 Zed editor crates), and an agent CLI with personas and sandboxing.
+**What's built today:** LLM gateway (smart routing, cost tracking, observability), agent coordination (threads, memory, decisions), full IDE integration (225 editor crates), and an agent CLI with personas and sandboxing.
 
 ---
 
@@ -54,7 +54,7 @@ curl http://localhost:9100/v1/chat/completions \
   -d '{"model":"cheap","messages":[{"role":"user","content":"hello"}]}'
 ```
 
-**Zed → Language Models → OpenAI Compatible:**
+**Prism IDE → Language Models → OpenAI Compatible:**
 - API URL: `http://localhost:9100/v1`
 - API key: (anything, or blank)
 - Model: `cheap` or `smart` (defined in `config/prism.toml`)
@@ -88,7 +88,7 @@ make check              # cargo check (workspace)
 make ci                 # fmt + lint + test (full quality gate)
 make run-prism          # cargo run -p prism --bin prism-server
 make install-prism-cli  # install prism CLI to ~/.cargo/bin
-make run-zed            # build and launch Zed IDE
+make run-prism-ide      # build and launch PrisM IDE
 make dogfood            # workspace overview (prism context context)
 make health             # curl health endpoint
 make models             # curl models endpoint
@@ -106,7 +106,7 @@ PrisM/
 │   ├── prism-client/       # HTTP client for IDE integration
 │   ├── prism-cli/          # CLI agent powered by PrisM (personas, sandboxing, tools)
 │   ├── prism-context/      # Agent coordination library (threads, memory, decisions)
-│   └── prism-hq/           # All Zed IDE panels (agent roster, task board, dashboard)
+│   └── prism-hq/           # All PrisM IDE panels (agent roster, task board, dashboard)
 ├── config/
 │   ├── prism.min.toml      # Minimal dogfood config (no Docker)
 │   └── prism.dev.toml      # Full dev config template
@@ -213,7 +213,7 @@ prism context agents                        # who's doing what
 
 ### prism-client
 
-**Purpose:** HTTP client for IDE integration (e.g., Zed language models)
+**Purpose:** HTTP client for IDE integration (e.g., PrisM language models)
 
 - SSE streaming support for long-running requests
 - Transparent authentication (API key injection)
@@ -488,7 +488,7 @@ prism context context   # workspace overview
 ## Project Links
 
 - **PrisM Architecture:** see `CLAUDE.md` for full design details
-- **IDE crates:** `ide/` (fully integrated Zed editor, 225 crates)
+- **IDE crates:** `ide/` (PrisM IDE, 225 crates)
 
 ## Download
 
@@ -528,7 +528,7 @@ tier = 3
 3. Run: `OPENAI_API_KEY=sk-... ./prism-server`
 4. Point any OpenAI-compatible client to `http://localhost:9100/v1`
 
-### IDE (Zed-based)
+### IDE
 
 1. Download the `.dmg` (macOS) from [Releases](https://github.com/harrisonju123/PrisM/releases)
 2. Open PrisM IDE

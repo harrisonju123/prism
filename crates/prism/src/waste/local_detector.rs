@@ -199,7 +199,7 @@ async fn detect_overspend_local(
     let medians: std::collections::HashMap<String, f64> = by_task
         .into_iter()
         .map(|(k, mut v)| {
-            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v.sort_by(|a, b| a.total_cmp(b));
             let median = if v.is_empty() {
                 0.0
             } else {
@@ -302,7 +302,7 @@ async fn detect_redundant_calls_local(
             confidence: 0.95,
         });
     }
-    items.sort_by(|a, b| b.savings.partial_cmp(&a.savings).unwrap());
+    items.sort_by(|a, b| b.savings.total_cmp(&a.savings));
     Ok(items)
 }
 
@@ -364,7 +364,7 @@ async fn detect_cache_misses_local(
             confidence: 0.9,
         });
     }
-    items.sort_by(|a, b| b.savings.partial_cmp(&a.savings).unwrap());
+    items.sort_by(|a, b| b.savings.total_cmp(&a.savings));
     Ok(items)
 }
 
@@ -428,7 +428,7 @@ async fn detect_context_bloat_local(
             confidence: 0.7,
         });
     }
-    items.sort_by(|a, b| b.savings.partial_cmp(&a.savings).unwrap());
+    items.sort_by(|a, b| b.savings.total_cmp(&a.savings));
     Ok(items)
 }
 
@@ -501,6 +501,6 @@ async fn detect_agent_loops_local(
             confidence: 0.8,
         });
     }
-    items.sort_by(|a, b| b.savings.partial_cmp(&a.savings).unwrap());
+    items.sort_by(|a, b| b.savings.total_cmp(&a.savings));
     Ok(items)
 }

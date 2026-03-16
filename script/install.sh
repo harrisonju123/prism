@@ -83,7 +83,7 @@ linux() {
         cp "$PRISM_BUNDLE_PATH" "$temp/prism-linux-$arch.tar.gz"
     else
         echo "Downloading Prism version: $PRISM_VERSION"
-        curl "https://cloud.zed.dev/releases/$channel/$PRISM_VERSION/download?asset=zed&arch=$arch&os=linux&source=install.sh" > "$temp/prism-linux-$arch.tar.gz"
+        curl "https://releases.prism-ide.dev/$channel/$PRISM_VERSION/prism-linux-$arch.tar.gz" > "$temp/prism-linux-$arch.tar.gz"
     fi
 
     suffix=""
@@ -143,7 +143,7 @@ linux() {
 
 macos() {
     echo "Downloading Prism version: $PRISM_VERSION"
-    curl "https://cloud.zed.dev/releases/$channel/$PRISM_VERSION/download?asset=zed&os=macos&arch=$arch&source=install.sh" > "$temp/Prism-$arch.dmg"
+    curl "https://releases.prism-ide.dev/$channel/$PRISM_VERSION/Prism-$arch.dmg" > "$temp/Prism-$arch.dmg"
     hdiutil attach -quiet "$temp/Prism-$arch.dmg" -mountpoint "$temp/mount"
     app="$(cd "$temp/mount/"; echo *.app)"
     echo "Installing $app"

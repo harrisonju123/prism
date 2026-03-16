@@ -798,7 +798,7 @@ pub async fn chat_completions(
                 }
 
                 if succeeded {
-                    fallback_result.unwrap()
+                    fallback_result.ok_or(PrismError::Internal("fallback succeeded but result is None".into()))?
                 } else {
                     return Err(last_err);
                 }

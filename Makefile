@@ -115,10 +115,12 @@ check-all: check-prism check-zed
 build-zed:
 	$(CARGO) build -p zed -p cli --release
 
-# Run Zed from source (debug build — faster compile, slower runtime)
+# Run PrisM IDE from source (debug build — faster compile, slower runtime)
 # cli must be built first so "Install CLI" can find the auxiliary executable
-run-zed:
-	$(CARGO) build -p cli && $(CARGO) run -p zed
+run-zed: run-prism-ide
+
+run-prism-ide:
+	$(CARGO) build -p cli && $(CARGO) run -p zed --bin prism-ide
 
 # Remove build artifacts not accessed in the last 7 days, cap cache at 20GB
 # Requires: cargo install cargo-sweep (auto-installed on first run)

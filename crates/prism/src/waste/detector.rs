@@ -180,7 +180,7 @@ async fn detect_redundant_calls(
         }
     }
 
-    items.sort_by(|a, b| b.savings.partial_cmp(&a.savings).unwrap());
+    items.sort_by(|a, b| b.savings.total_cmp(&a.savings));
     Ok(items)
 }
 
@@ -280,7 +280,7 @@ async fn detect_cache_misses(
         }
     }
 
-    items.sort_by(|a, b| b.savings.partial_cmp(&a.savings).unwrap());
+    items.sort_by(|a, b| b.savings.total_cmp(&a.savings));
     Ok(items)
 }
 
@@ -384,7 +384,7 @@ async fn detect_context_bloat(
         }
     }
 
-    items.sort_by(|a, b| b.savings.partial_cmp(&a.savings).unwrap());
+    items.sort_by(|a, b| b.savings.total_cmp(&a.savings));
     Ok(items)
 }
 
@@ -509,7 +509,7 @@ async fn detect_agent_loops(
         }
     }
 
-    items.sort_by(|a, b| b.savings.partial_cmp(&a.savings).unwrap());
+    items.sort_by(|a, b| b.savings.total_cmp(&a.savings));
     Ok(items)
 }
 

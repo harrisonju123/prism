@@ -30,7 +30,7 @@ echo "Postgres ready."
 
 # 6. Build + start prism in background
 echo "Starting prism (building if needed)..."
-cargo run -p prism 2>&1 &
+cargo run -p prism --bin prism-server 2>&1 &
 PRISM_PID=$!
 
 # 7. Wait for health endpoint (up to 60s)

@@ -214,8 +214,8 @@ impl HttpClientWithUrl {
     pub fn build_prism_api_url(&self, path: &str, query: &[(&str, &str)]) -> Result<Url> {
         let base_url = self.base_url();
         let base_api_url = match base_url.as_ref() {
-            "https://zed.dev" => "https://api.zed.dev",
-            "https://staging.zed.dev" => "https://api-staging.zed.dev",
+            "https://prism-ide.dev" => "https://api.prism-ide.dev",
+            "https://staging.prism-ide.dev" => "https://api-staging.prism-ide.dev",
             "http://localhost:3000" => "http://localhost:8080",
             other => other,
         };
@@ -226,12 +226,12 @@ impl HttpClientWithUrl {
         )?)
     }
 
-    /// Legacy: builds a Zed Cloud URL. Unreachable when server_url is not zed.dev.
+    /// Builds a Prism Cloud URL.
     pub fn build_zed_cloud_url(&self, path: &str) -> Result<Url> {
         let base_url = self.base_url();
         let base_api_url = match base_url.as_ref() {
-            "https://zed.dev" => "https://cloud.zed.dev",
-            "https://staging.zed.dev" => "https://cloud.zed.dev",
+            "https://prism-ide.dev" => "https://cloud.prism-ide.dev",
+            "https://staging.prism-ide.dev" => "https://cloud.prism-ide.dev",
             "http://localhost:3000" => "http://localhost:8787",
             other => other,
         };
@@ -239,12 +239,12 @@ impl HttpClientWithUrl {
         Ok(Url::parse(&format!("{}{}", base_api_url, path))?)
     }
 
-    /// Legacy: builds a Zed Cloud URL with query params. Unreachable when server_url is not zed.dev.
+    /// Builds a Prism Cloud URL with query params.
     pub fn build_zed_cloud_url_with_query(&self, path: &str, query: impl Serialize) -> Result<Url> {
         let base_url = self.base_url();
         let base_api_url = match base_url.as_ref() {
-            "https://zed.dev" => "https://cloud.zed.dev",
-            "https://staging.zed.dev" => "https://cloud.zed.dev",
+            "https://prism-ide.dev" => "https://cloud.prism-ide.dev",
+            "https://staging.prism-ide.dev" => "https://cloud.prism-ide.dev",
             "http://localhost:3000" => "http://localhost:8787",
             other => other,
         };
@@ -252,12 +252,12 @@ impl HttpClientWithUrl {
         Ok(Url::parse(&format!("{}{}?{}", base_api_url, path, query))?)
     }
 
-    /// Legacy: builds a Zed LLM URL. Unreachable when server_url is not zed.dev.
+    /// Builds a Prism LLM gateway URL.
     pub fn build_zed_llm_url(&self, path: &str, query: &[(&str, &str)]) -> Result<Url> {
         let base_url = self.base_url();
         let base_api_url = match base_url.as_ref() {
-            "https://zed.dev" => "https://cloud.zed.dev",
-            "https://staging.zed.dev" => "https://llm-staging.zed.dev",
+            "https://prism-ide.dev" => "https://cloud.prism-ide.dev",
+            "https://staging.prism-ide.dev" => "https://llm-staging.prism-ide.dev",
             "http://localhost:3000" => "http://localhost:8787",
             other => other,
         };

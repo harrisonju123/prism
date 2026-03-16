@@ -123,7 +123,13 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
-      - ./config/prism.toml:/app/prism.toml:ro
+      - ${PRISM_CONFIG:-./config/prism.example.toml}:/app/prism.toml:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9100/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
 volumes:
   clickhouse_data:

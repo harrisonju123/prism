@@ -488,7 +488,7 @@ pub struct BenchmarkConfig {
 impl Default for BenchmarkConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             sample_rate: default_sample_rate(),
             judge_model: default_judge_model(),
             max_benchmark_models: default_max_benchmark_models(),
@@ -923,7 +923,7 @@ fn default_gateway() -> GatewayConfig {
 }
 
 fn default_address() -> String {
-    "0.0.0.0:9100".into()
+    "127.0.0.1:9100".into()
 }
 
 fn default_clickhouse_url() -> String {
@@ -1172,7 +1172,7 @@ impl Default for CorsConfig {
 }
 
 fn default_cors_origins() -> Vec<String> {
-    vec!["*".into()]
+    vec![]
 }
 
 fn default_cors_methods() -> Vec<String> {
@@ -1315,7 +1315,7 @@ mod tests {
     #[test]
     fn test_defaults() {
         let config: Config = Figment::new().extract().unwrap();
-        assert_eq!(config.gateway.address, "0.0.0.0:9100");
+        assert_eq!(config.gateway.address, "127.0.0.1:9100");
         assert_eq!(config.clickhouse.url, "http://localhost:8123");
         assert_eq!(config.pipeline.batch_size, 50);
     }
@@ -1338,7 +1338,7 @@ mod tests {
     #[test]
     fn test_benchmark_defaults() {
         let config: Config = Figment::new().extract().unwrap();
-        assert!(config.benchmark.enabled);
+        assert!(!config.benchmark.enabled);
         assert!((config.benchmark.sample_rate - 0.05).abs() < f64::EPSILON);
         assert_eq!(config.benchmark.judge_model, "claude-haiku-4-5-20251001");
         assert_eq!(config.benchmark.max_benchmark_models, 3);

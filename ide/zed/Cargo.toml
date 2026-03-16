@@ -2,11 +2,11 @@
 description = "PrisM — AI agent IDE"
 edition.workspace = true
 name = "zed"
-version = "0.228.0"
+version = "0.1.0-alpha.1"
 publish.workspace = true
 license = "GPL-3.0-or-later"
 authors = ["Prism Team <hi@harrisonju.dev>"]
-default-run = "prism"
+default-run = "prism-ide"
 
 [lints]
 workspace = true
@@ -51,7 +51,7 @@ visual-tests = [
 ]
 
 [[bin]]
-name = "prism"
+name = "prism-ide"
 path = "src/main.rs"
 
 [[bin]]

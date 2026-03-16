@@ -38,7 +38,7 @@ mod tests {
     #[test]
     fn wildcard_default() {
         let config = CorsConfig::default();
-        assert_eq!(config.allowed_origins, vec!["*"]);
+        assert!(config.allowed_origins.is_empty());
         let _layer = cors_layer(&config);
     }
 

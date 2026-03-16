@@ -174,7 +174,7 @@ impl Workspace {
             cx.new(|cx| {
                 ErrorMessagePrompt::new(err.to_string(), cx).with_link_button(
                     "See docs",
-                    "https://prism.dev/docs/linux#i-cant-open-any-files",
+                    "https://prism-ide.dev/docs/linux#i-cant-open-any-files",
                 )
             })
         });

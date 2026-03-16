@@ -782,7 +782,7 @@ fn initialize_file_watcher(window: &mut Window, cx: &mut Context<Workspace>) {
             db::indoc! {r#"
             inotify_init returned {}
 
-            This may be due to system-wide limits on inotify instances. For troubleshooting see: https://prism.dev/docs/linux
+            This may be due to system-wide limits on inotify instances. For troubleshooting see: https://prism-ide.dev/docs/linux
             "#},
             e
         );
@@ -796,7 +796,7 @@ fn initialize_file_watcher(window: &mut Window, cx: &mut Context<Workspace>) {
         cx.spawn(async move |_, cx| {
             if prompt.await == Ok(0) {
                 cx.update(|cx| {
-                    cx.open_url("https://prism.dev/docs/linux#could-not-start-inotify");
+                    cx.open_url("https://prism-ide.dev/docs/linux#could-not-start-inotify");
                     cx.quit();
                 });
             }
@@ -813,7 +813,7 @@ fn initialize_file_watcher(window: &mut Window, cx: &mut Context<Workspace>) {
             db::indoc! {r#"
             ReadDirectoryChangesW initialization failed: {}
 
-            This may occur on network filesystems and WSL paths. For troubleshooting see: https://prism.dev/docs/windows
+            This may occur on network filesystems and WSL paths. For troubleshooting see: https://prism-ide.dev/docs/windows
             "#},
             e
         );
@@ -827,7 +827,7 @@ fn initialize_file_watcher(window: &mut Window, cx: &mut Context<Workspace>) {
         cx.spawn(async move |_, cx| {
             if prompt.await == Ok(0) {
                 cx.update(|cx| {
-                    cx.open_url("https://prism.dev/docs/windows");
+                    cx.open_url("https://prism-ide.dev/docs/windows");
                     cx.quit()
                 });
             }

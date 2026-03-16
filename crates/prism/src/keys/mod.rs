@@ -8,6 +8,8 @@ pub mod virtual_key;
 use std::net::IpAddr;
 use std::sync::Arc;
 
+use subtle::ConstantTimeEq;
+
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use chrono::{DateTime, Utc};
@@ -196,7 +198,7 @@ impl<S: Send + Sync> FromRequestParts<S> for MasterAuth {
             .strip_prefix("Bearer ")
             .ok_or(PrismError::Unauthorized)?;
 
-        if token != master_key.0 {
+        if token.as_bytes().ct_eq(master_key.0.as_bytes()).unwrap_u8() == 0 {
             return Err(PrismError::Unauthorized);
         }
 

@@ -149,7 +149,7 @@ impl InMemoryPromptStore {
         model_hint: Option<String>,
         metadata: serde_json::Value,
     ) -> PromptTemplate {
-        let mut store = self.templates.write().unwrap();
+        let mut store = self.templates.write().expect("templates lock poisoned");
         let versions = store.entry(name.to_string()).or_default();
 
         let version = versions.last().map(|v| v.version + 1).unwrap_or(1);
@@ -169,26 +169,26 @@ impl InMemoryPromptStore {
     }
 
     pub fn get_latest(&self, name: &str) -> Option<PromptTemplate> {
-        let store = self.templates.read().unwrap();
+        let store = self.templates.read().expect("templates lock poisoned");
         store
             .get(name)
             .and_then(|versions| versions.iter().rev().find(|v| v.active).cloned())
     }
 
     pub fn get_version(&self, name: &str, version: u32) -> Option<PromptTemplate> {
-        let store = self.templates.read().unwrap();
+        let store = self.templates.read().expect("templates lock poisoned");
         store
             .get(name)
             .and_then(|versions| versions.iter().find(|v| v.version == version).cloned())
     }
 
     pub fn get_all_versions(&self, name: &str) -> Vec<PromptTemplate> {
-        let store = self.templates.read().unwrap();
+        let store = self.templates.read().expect("templates lock poisoned");
         store.get(name).cloned().unwrap_or_default()
     }
 
     pub fn list(&self) -> Vec<PromptTemplate> {
-        let store = self.templates.read().unwrap();
+        let store = self.templates.read().expect("templates lock poisoned");
         store
             .values()
             .filter_map(|versions| versions.iter().rev().find(|v| v.active).cloned())

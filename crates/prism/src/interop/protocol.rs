@@ -14,8 +14,14 @@ pub fn sign_payload(payload: &serde_json::Value, secret: &str) -> String {
 }
 
 pub fn verify_signature(message: &ProtocolMessage, secret: &str) -> bool {
-    let expected = sign_payload(&message.payload, secret);
-    expected == message.signature
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key size");
+    let canonical = serde_json::to_string(&message.payload).unwrap_or_default();
+    mac.update(canonical.as_bytes());
+    let Ok(sig_bytes) = hex::decode(&message.signature) else {
+        return false;
+    };
+    mac.verify_slice(&sig_bytes).is_ok()
 }
 
 pub fn create_invocation(

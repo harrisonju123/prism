@@ -13,9 +13,13 @@
 .DS_Store
 .env
 .env.*
+.env.toml
 *.pem
 *.key
 credentials.json
+*.log
+.vscode/
+node_modules/
 dashboard/node_modules/
 dashboard/dist/
 dashboard/.pnpm-store/

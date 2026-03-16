@@ -231,7 +231,7 @@ impl Render for ReplSessionsPage {
                             .child(Label::new("Install Kernels"))
                             .on_click(move |_, _, cx| {
                                 cx.open_url(
-                                    "https://zed.dev/docs/repl#language-specific-instructions",
+                                    "https://prism-ide.dev/docs/repl#language-specific-instructions",
                                 )
                             }),
                     ),

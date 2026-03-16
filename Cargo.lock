@@ -14022,6 +14022,7 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "sqlx",
+ "subtle",
  "thiserror 2.0.18",
  "time",
  "tokio",
@@ -14080,7 +14081,7 @@ dependencies = [
 
 [[package]]
 name = "prism-context"
-version = "0.2.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -23605,7 +23606,7 @@ dependencies = [
 
 [[package]]
 name = "zed"
-version = "0.228.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "acp_thread",
  "acp_tools",

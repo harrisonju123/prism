@@ -115,8 +115,9 @@ impl InMemoryRateLimiter {
         }
 
         if entry.len() as u32 >= limit {
-            let oldest = entry.front().unwrap();
-            let retry_after = WINDOW_SECS.saturating_sub(now.duration_since(*oldest).as_secs());
+            let retry_after = entry.front().map(|oldest| {
+                WINDOW_SECS.saturating_sub(now.duration_since(*oldest).as_secs())
+            }).unwrap_or(1);
             RateLimitResult {
                 allowed: false,
                 retry_after_secs: Some(retry_after.max(1)),
@@ -140,8 +141,9 @@ impl InMemoryRateLimiter {
 
         let total_tokens: u32 = entry.iter().map(|(_, count)| count).sum();
         if total_tokens >= limit {
-            let oldest = entry.front().unwrap();
-            let retry_after = WINDOW_SECS.saturating_sub(now.duration_since(oldest.0).as_secs());
+            let retry_after = entry.front().map(|oldest| {
+                WINDOW_SECS.saturating_sub(now.duration_since(oldest.0).as_secs())
+            }).unwrap_or(1);
             RateLimitResult {
                 allowed: false,
                 retry_after_secs: Some(retry_after.max(1)),
