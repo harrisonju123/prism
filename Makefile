@@ -2,7 +2,7 @@ CARGO := $(HOME)/.cargo/bin/cargo
 export CARGO_TARGET_DIR ?= $(HOME)/.cache/prism-build
 
 .PHONY: build run check test lint dev fmt ci clean \
-        run-prism run-acp install-prism-cli dev-all \
+        run-prism install-prism-cli dev-all \
         docker-up docker-down docker-build docker-logs docker-deps \
         health models ctx-health \
         dev-setup dev dev-min \
@@ -42,10 +42,6 @@ clean:
 # Run individual crates
 run-prism:
 	$(CARGO) run -p prism --bin prism-server
-
-# Run prism-cli in ACP agent server mode (stdio JSON-RPC for Zed)
-run-acp:
-	$(CARGO) run -p prism-cli -- acp
 
 # Install prism CLI to ~/.cargo/bin (installs `prism` binary with `prism context` subcommands)
 install-prism-cli:
@@ -92,12 +88,6 @@ health:
 
 models:
 	curl -s http://localhost:9100/v1/models | jq .
-
-request-replay:
-	$(CARGO) run -p prism-cli -- request-replay generate
-
-request-replay-openapi:
-	$(CARGO) run -p prism-cli -- request-replay openapi --output-dir request-replay
 
 ctx-health:
 	~/.cargo/bin/prism context context

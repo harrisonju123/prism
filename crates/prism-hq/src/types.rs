@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-fn cargo_bin(name: &str) -> PathBuf {
+pub fn cargo_bin(name: &str) -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
         let p = PathBuf::from(home).join(".cargo/bin").join(name);
         if p.exists() {
@@ -8,8 +8,4 @@ fn cargo_bin(name: &str) -> PathBuf {
         }
     }
     name.into()
-}
-
-pub fn prism_binary() -> PathBuf {
-    cargo_bin("prism")
 }

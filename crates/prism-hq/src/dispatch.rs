@@ -163,14 +163,7 @@ impl TaskDispatchModal {
                     .unwrap_or_default()
                     .as_millis();
                 let agent_name = format!("agent-{millis}");
-                let result = spawn_agent_in_worktree(
-                    task_input.clone(),
-                    thread_name.clone(),
-                    agent_name.clone(),
-                    repo_root,
-                    cx,
-                )
-                .await;
+                let result = spawn_agent_in_worktree(agent_name.clone(), repo_root, cx).await;
                 (result, Some(agent_name))
             } else {
                 (Ok(()), None)

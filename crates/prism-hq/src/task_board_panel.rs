@@ -49,13 +49,11 @@ pub struct TaskBoardPanel {
     width: Option<Pixels>,
     active: bool,
     context: Option<WorkspaceContext>,
-    next_tasks: Vec<TaskSummary>,
     is_loading: bool,
     error: Option<String>,
     agents_expanded: bool,
     stale_expanded: bool,
     active_expanded: bool,
-    next_expanded: bool,
     refresh_task: Option<Task<()>>,
     pending_serialization: Task<Option<()>>,
     _auto_refresh: Task<()>,
@@ -96,13 +94,11 @@ impl TaskBoardPanel {
                 width: None,
                 active: false,
                 context: None,
-                next_tasks: Vec::new(),
                 is_loading: false,
                 error: None,
                 agents_expanded: true,
                 stale_expanded: true,
                 active_expanded: true,
-                next_expanded: true,
                 refresh_task: None,
                 pending_serialization: Task::ready(None),
                 _auto_refresh: Task::ready(()),
@@ -208,29 +204,14 @@ impl TaskBoardPanel {
                 })
                 .await;
 
-            // `prism context` stays as CLI — task querying not in Store trait
-            let next_result = cx
-                .background_spawn(async move {
-                    let output = std::process::Command::new(prism_binary())
-                        .arg("next")
-                        .output()?;
-                    if !output.status.success() {
-                        return Ok(Vec::new());
-                    }
-                    serde_json::from_slice::<Vec<TaskSummary>>(&output.stdout)
-                        .map_err(anyhow::Error::from)
-                })
-                .await;
-
             this.update(cx, |this, cx| {
                 this.is_loading = false;
-                match (context_result, next_result) {
-                    (Ok(ctx), Ok(next)) => {
+                match context_result {
+                    Ok(ctx) => {
                         this.context = Some(ctx);
-                        this.next_tasks = next;
                         this.error = None;
                     }
-                    (Err(e), _) | (_, Err(e)) => {
+                    Err(e) => {
                         this.error = Some(e.to_string());
                     }
                 }
@@ -913,7 +894,6 @@ impl Render for TaskBoardPanel {
                 };
 
                 let active_tasks = ctx.active_tasks.clone();
-                let next_tasks = self.next_tasks.clone();
                 let status_counts = ctx.tasks_by_status.clone();
                 let agents = ctx.active_agents.clone();
                 let stale_tasks = ctx.stale_tasks.clone();
@@ -921,7 +901,6 @@ impl Render for TaskBoardPanel {
                 let agents_expanded = self.agents_expanded;
                 let stale_expanded = self.stale_expanded;
                 let active_expanded = self.active_expanded;
-                let next_expanded = self.next_expanded;
 
                 container
                     // Agents section
@@ -1036,37 +1015,6 @@ impl Render for TaskBoardPanel {
                         }
                     })
                     // Up Next section
-                    .child(Self::render_section_header(
-                        "section-next",
-                        "Up Next",
-                        next_expanded,
-                        cx.listener(|this, _event, _window, cx| {
-                            this.next_expanded = !this.next_expanded;
-                            cx.notify();
-                        }),
-                        cx,
-                    ))
-                    .when(next_expanded, |this| {
-                        if next_tasks.is_empty() {
-                            this.child(
-                                v_flex().px_2().py_1().child(
-                                    Label::new("No tasks in backlog.")
-                                        .size(LabelSize::Small)
-                                        .color(Color::Muted),
-                                ),
-                            )
-                        } else {
-                            this.children(next_tasks.iter().map(|task| {
-                                let task_id = task.id.clone();
-                                Self::render_task_row(task, cx)
-                                    .id(ElementId::Name(task_id.clone().into()))
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(move |this, _event, _window, cx| {
-                                        this.open_task_detail(task_id.clone(), cx);
-                                    }))
-                            }))
-                        }
-                    })
                     // Cost section
                     .child(self.render_cost_section(cx))
                     // Agent action bar

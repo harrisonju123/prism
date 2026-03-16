@@ -128,10 +128,13 @@ crates/                  # PrisM service crates
 │       ├── proxy/               # Request forwarding, cost computation, SSE streaming
 │       ├── routing/             # Smart model routing (fitness scoring, policies)
 │       └── server/              # Axum router, CORS middleware
-├── prism-cli/           # Unified agent CLI + context subcommands
+├── prism-cli/           # Context-management CLI (no agent loop — IDE agent handles sessions)
 │   └── src/
-│       ├── main.rs              # Commands: run, personas, models, health, sessions, context, ...
-│       └── context.rs           # prism context subcommands (ported from prism-context bin)
+│       ├── main.rs              # Commands: personas, models, health, sessions, context
+│       ├── context.rs           # prism context subcommands
+│       ├── config.rs            # GatewayConfig, prism_home(), agent_name_from_env()
+│       ├── persona.rs           # Persona TOML loader (list/show)
+│       └── session.rs           # Read-only session listing (list/branches/rm)
 └── prism-hq/            # All Zed IDE panels (agent roster, task board, dashboard, etc.)
 
 ide/                     # Editor crates (forked from Zed, 225 crates)
@@ -144,7 +147,7 @@ ide/                     # Editor crates (forked from Zed, 225 crates)
 
 Workspace root: `Cargo.toml` with `[workspace] resolver = "2"`.
 Dockerfile builds `prism-server`: `cargo build --release -p prism`.
-Gateway binary is `prism-server`; agent CLI binary is `prism`.
+Gateway binary is `prism-server`; context CLI binary is `prism` (context management only — agent sessions run natively in the IDE via `ide/agent`).
 
 ## Key Patterns
 

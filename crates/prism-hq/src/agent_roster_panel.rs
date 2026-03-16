@@ -373,28 +373,13 @@ impl AgentRosterPanel {
                 });
                 open_task.await?;
 
-                // Launch prism-cli agent in the new worktree (fire-and-forget)
-                cx.background_spawn({
-                    let wt_path = wt_path.clone();
-                    let name = name.clone();
-                    async move {
-                        std::process::Command::new(prism_binary())
-                            .args([
-                                "run",
-                                "--model",
-                                "claude-sonnet-4-6",
-                                &format!(
-                                    "You are agent '{}'. Explore the codebase and await instructions.",
-                                    name
-                                ),
-                            ])
-                            .current_dir(&wt_path)
-                            .env("UH_AGENT_NAME", &name)
-                            .spawn()
-                            .log_err();
-                    }
-                })
-                .detach();
+                // Agent sessions are now created natively via the IDE Agent panel.
+                // Log the worktree path so the user knows where to open a session.
+                log::info!(
+                    "Worktree created at {}. Open the Agent panel to start a session for agent '{}'.",
+                    wt_path.display(),
+                    name
+                );
 
                 anyhow::Ok(())
             }

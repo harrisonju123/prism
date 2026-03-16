@@ -218,15 +218,9 @@ impl PlanDispatchModal {
                                 .unwrap_or_default()
                                 .as_millis();
                             let agent_name = format!("agent-{millis}");
-                            if spawn_agent_in_worktree(
-                                intent,
-                                thread_name,
-                                agent_name.clone(),
-                                root.clone(),
-                                cx,
-                            )
-                            .await
-                            .is_ok()
+                            if spawn_agent_in_worktree(agent_name.clone(), root.clone(), cx)
+                                .await
+                                .is_ok()
                             {
                                 agents.push(agent_name);
                             }
