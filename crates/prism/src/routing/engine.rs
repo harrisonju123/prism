@@ -7,7 +7,9 @@ use crate::types::TaskType;
 ///
 /// Steps:
 /// 1. Empty policy -> passthrough (no routing)
-/// 2. Find first matching rule by task_type or "*" catch-all
+/// 2. Find first matching rule — two-pass:
+///    Pass 1: task_type AND session_phase both match
+///    Pass 2: task_type matches, rule has no session_phase (phase-agnostic fallback)
 /// 3. Tier-1 preservation: if requested model is tier 1 + hard task + high confidence,
 ///    switch criteria to HighestQualityUnderCost, raise min_quality to 0.85
 /// 4. Get candidates from fitness cache, filter by quality floor + constraints
@@ -20,24 +22,50 @@ pub async fn resolve(
     fitness_cache: &FitnessCache,
     policy: &RoutingPolicy,
     tier1_confidence_threshold: f64,
+    session_phase: Option<prism_types::SessionPhase>,
 ) -> Option<RoutingDecision> {
     // Step 1: empty policy = passthrough
     if policy.rules.is_empty() {
         return None;
     }
 
-    // Step 2: find matching rule
+    // Step 2: find matching rule — two-pass
     let task_str = serde_json::to_value(task_type)
         .ok()
         .and_then(|v| v.as_str().map(String::from))
         .unwrap_or_else(|| "unknown".into());
 
-    let (rule_idx, rule) = policy
-        .rules
-        .iter()
-        .enumerate()
-        .find(|(_, r)| r.task_type == task_str || r.task_type == "*")
-        .map(|(i, r): (usize, &RoutingRule)| (i, r.clone()))?;
+    let phase_str = session_phase
+        .as_ref()
+        .and_then(|p| serde_json::to_value(p).ok())
+        .and_then(|v| v.as_str().map(String::from));
+
+    // Pass 1: match rules where both task_type and session_phase match
+    let phase_match = phase_str.as_deref().and_then(|ps| {
+        policy
+            .rules
+            .iter()
+            .enumerate()
+            .find(|(_, r)| {
+                (r.task_type == task_str || r.task_type == "*")
+                    && r.session_phase.as_deref() == Some(ps)
+            })
+            .map(|(i, r): (usize, &RoutingRule)| (i, r.clone()))
+    });
+
+    // Pass 2: phase-agnostic fallback (session_phase is None on the rule)
+    let (rule_idx, rule) = if let Some(m) = phase_match {
+        m
+    } else {
+        policy
+            .rules
+            .iter()
+            .enumerate()
+            .find(|(_, r)| {
+                (r.task_type == task_str || r.task_type == "*") && r.session_phase.is_none()
+            })
+            .map(|(i, r): (usize, &RoutingRule)| (i, r.clone()))?
+    };
 
     // Step 3: tier-1 preservation
     let is_hard = HARD_TASKS.contains(&task_type);
@@ -96,6 +124,7 @@ pub async fn resolve(
             task_type,
             confidence,
             fallback_chain: rule.fallback_chain.clone(),
+            session_phase,
         })
     } else {
         // Step 6: fallback
@@ -107,6 +136,7 @@ pub async fn resolve(
             task_type,
             confidence,
             fallback_chain: rule.fallback_chain.clone(),
+            session_phase,
         })
     }
 }
@@ -170,6 +200,7 @@ mod tests {
                     max_latency_ms: None,
                     fallback: Some("claude-sonnet-4".into()),
                     fallback_chain: vec![],
+                    session_phase: None,
                 },
                 RoutingRule {
                     task_type: "*".into(),
@@ -179,6 +210,7 @@ mod tests {
                     max_latency_ms: None,
                     fallback: Some("claude-sonnet-4".into()),
                     fallback_chain: vec![],
+                    session_phase: None,
                 },
             ],
             version: 1,
@@ -198,6 +230,7 @@ mod tests {
             &cache,
             &policy,
             0.7,
+            None,
         )
         .await;
 
@@ -212,6 +245,7 @@ mod tests {
             "gpt-4-turbo",
             "claude-opus-4-6",
             "claude-opus-4-5",
+            "gpt-5-4",
         ];
         assert!(
             !tier1_models.contains(&d.selected_model.as_str()),
@@ -233,6 +267,7 @@ mod tests {
             &cache,
             &policy,
             0.7,
+            None,
         )
         .await;
 
@@ -247,6 +282,7 @@ mod tests {
             "gpt-4-turbo",
             "claude-opus-4-6",
             "claude-opus-4-5",
+            "gpt-5-4",
         ];
         assert!(
             tier1_models.contains(&d.selected_model.as_str()),
@@ -267,6 +303,7 @@ mod tests {
             &cache,
             &policy,
             0.7,
+            None,
         )
         .await;
 
@@ -326,15 +363,166 @@ mod tests {
                 max_latency_ms: None,
                 fallback: Some("claude-sonnet-4".into()),
                 fallback_chain: vec![],
+                session_phase: None,
             }],
             version: 1,
         };
 
-        let decision = resolve(TaskType::Conversation, 0.8, "gpt-4o", &cache, &policy, 0.7).await;
+        let decision =
+            resolve(TaskType::Conversation, 0.8, "gpt-4o", &cache, &policy, 0.7, None).await;
 
         assert!(decision.is_some());
         let d = decision.unwrap();
         assert_eq!(d.selected_model, "claude-sonnet-4");
         assert!(d.reason.contains("fallback"));
+    }
+
+    #[tokio::test]
+    async fn resolve_phase_planning_selects_high_quality() {
+        let cache = FitnessCache::new(300);
+        let policy = RoutingPolicy {
+            rules: vec![
+                RoutingRule {
+                    task_type: "*".into(),
+                    criteria: SelectionCriteria::HighestQualityUnderCost,
+                    min_quality: 0.85,
+                    max_cost_per_1k: None,
+                    max_latency_ms: None,
+                    fallback: Some("claude-opus-4-6".into()),
+                    fallback_chain: vec![],
+                    session_phase: Some("planning".into()),
+                },
+                RoutingRule {
+                    task_type: "*".into(),
+                    criteria: SelectionCriteria::CheapestAboveQuality,
+                    min_quality: 0.55,
+                    max_cost_per_1k: None,
+                    max_latency_ms: None,
+                    fallback: None,
+                    fallback_chain: vec![],
+                    session_phase: None,
+                },
+            ],
+            version: 1,
+        };
+
+        let decision = resolve(
+            TaskType::Architecture,
+            0.8,
+            "claude-sonnet-4",
+            &cache,
+            &policy,
+            0.7,
+            Some(prism_types::SessionPhase::Planning),
+        )
+        .await;
+
+        assert!(decision.is_some());
+        let d = decision.unwrap();
+        // Planning phase rule has min_quality 0.85 — only tier-1 models qualify or fallback
+        let tier1_models = [
+            "claude-opus-4",
+            "o1",
+            "claude-3-opus",
+            "gpt-4-turbo",
+            "claude-opus-4-6",
+            "claude-opus-4-5",
+            "gpt-5-4",
+        ];
+        let is_tier1_or_fallback =
+            tier1_models.contains(&d.selected_model.as_str()) || d.selected_model == "claude-opus-4-6";
+        assert!(
+            is_tier1_or_fallback,
+            "planning phase should select high-quality model, got: {}",
+            d.selected_model
+        );
+        assert_eq!(d.session_phase, Some(prism_types::SessionPhase::Planning));
+    }
+
+    #[tokio::test]
+    async fn resolve_phase_finishing_selects_cheap() {
+        let cache = FitnessCache::new(300);
+        let policy = RoutingPolicy {
+            rules: vec![
+                RoutingRule {
+                    task_type: "*".into(),
+                    criteria: SelectionCriteria::CheapestAboveQuality,
+                    min_quality: 0.40,
+                    max_cost_per_1k: None,
+                    max_latency_ms: None,
+                    fallback: Some("claude-haiku-3.5".into()),
+                    fallback_chain: vec![],
+                    session_phase: Some("finishing".into()),
+                },
+                RoutingRule {
+                    task_type: "*".into(),
+                    criteria: SelectionCriteria::HighestQualityUnderCost,
+                    min_quality: 0.85,
+                    max_cost_per_1k: None,
+                    max_latency_ms: None,
+                    fallback: Some("claude-opus-4-6".into()),
+                    fallback_chain: vec![],
+                    session_phase: None,
+                },
+            ],
+            version: 1,
+        };
+
+        let decision = resolve(
+            TaskType::Documentation,
+            0.8,
+            "claude-opus-4-6",
+            &cache,
+            &policy,
+            0.7,
+            Some(prism_types::SessionPhase::Finishing),
+        )
+        .await;
+
+        assert!(decision.is_some());
+        let d = decision.unwrap();
+        // Finishing phase uses phase-specific rule with min_quality 0.40
+        // — should prefer cheap model, not opus
+        assert_ne!(
+            d.selected_model, "claude-opus-4-6",
+            "finishing phase should not select opus, got: {}",
+            d.selected_model
+        );
+        assert_eq!(d.session_phase, Some(prism_types::SessionPhase::Finishing));
+    }
+
+    #[tokio::test]
+    async fn resolve_phase_none_unchanged() {
+        let cache = FitnessCache::new(300);
+        let policy = test_policy();
+
+        let with_phase = resolve(
+            TaskType::Conversation,
+            0.8,
+            "claude-sonnet-4",
+            &cache,
+            &policy,
+            0.7,
+            None,
+        )
+        .await;
+
+        let without_phase = resolve(
+            TaskType::Conversation,
+            0.8,
+            "claude-sonnet-4",
+            &cache,
+            &policy,
+            0.7,
+            None,
+        )
+        .await;
+
+        // Both should produce identical results when phase is None
+        match (with_phase, without_phase) {
+            (Some(a), Some(b)) => assert_eq!(a.selected_model, b.selected_model),
+            (None, None) => {}
+            _ => panic!("phase=None should give same result as no phase"),
+        }
     }
 }

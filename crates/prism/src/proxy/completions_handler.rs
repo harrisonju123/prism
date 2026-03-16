@@ -85,6 +85,7 @@ pub async fn text_completions(
             &state.fitness_cache,
             &state.routing_policy,
             state.config.routing.tier1_confidence_threshold,
+            None,
         )
         .await;
 

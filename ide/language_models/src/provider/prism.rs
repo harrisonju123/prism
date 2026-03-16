@@ -56,6 +56,10 @@ const PROVIDER_NAME: LanguageModelProviderName = LanguageModelProviderName::new(
 const API_KEY_ENV_VAR_NAME: &str = "PRISM_API_KEY";
 static API_KEY_ENV_VAR: LazyLock<EnvVar> = env_var!(API_KEY_ENV_VAR_NAME);
 
+const LITELLM_API_KEY_ENV_VAR_NAME: &str = "LITELLM_API_KEY";
+static LITELLM_API_KEY_ENV_VAR: LazyLock<EnvVar> = env_var!(LITELLM_API_KEY_ENV_VAR_NAME);
+const LITELLM_KEYCHAIN_URL: &str = "prism-litellm-proxy";
+
 const DEFAULT_API_URL: &str = "http://localhost:9100/v1";
 
 #[derive(Default, Clone, Debug, PartialEq)]
@@ -63,6 +67,8 @@ pub struct PrismSettings {
     pub api_url: String,
     pub api_key: Option<String>,
     pub available_models: Vec<AvailableModel>,
+    pub litellm_base_url: Option<String>,
+    pub litellm_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -198,6 +204,7 @@ enum SidecarStatus {
 
 pub struct State {
     api_key_state: ApiKeyState,
+    litellm_api_key_state: ApiKeyState,
     settings: PrismSettings,
     http_client: Arc<dyn HttpClient>,
     fetched_models: Vec<FetchedModelInfo>,
@@ -237,7 +244,33 @@ impl State {
             .store(api_url, api_key, |this| &mut this.api_key_state, cx)
     }
 
+    fn set_litellm_api_key(
+        &mut self,
+        key: Option<String>,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<()>> {
+        self.litellm_api_key_state.store(
+            SharedString::new(LITELLM_KEYCHAIN_URL),
+            key,
+            |this| &mut this.litellm_api_key_state,
+            cx,
+        )
+    }
+
+    fn litellm_api_key(&self) -> Option<Arc<str>> {
+        self.litellm_api_key_state
+            .key(LITELLM_KEYCHAIN_URL)
+            .or_else(|| self.settings.litellm_api_key.as_deref().map(Arc::from))
+    }
+
     fn authenticate(&mut self, cx: &mut Context<Self>) -> Task<Result<(), AuthenticateError>> {
+        // Always kick off LiteLLM key load so it's available when the embedded gateway
+        // (re)starts — must happen before the embedded early-return below.
+        let _ = self.litellm_api_key_state.load_if_needed(
+            SharedString::new(LITELLM_KEYCHAIN_URL),
+            |this| &mut this.litellm_api_key_state,
+            cx,
+        );
         if self.sidecar_status == SidecarStatus::Embedded {
             self.restart_fetch_models_task(cx);
             return Task::ready(Ok(()));
@@ -313,7 +346,15 @@ impl State {
         if self.settings.api_url != DEFAULT_API_URL {
             return;
         }
-        let providers = collect_provider_configs();
+        let mut providers = collect_provider_configs();
+        // Append LiteLLM if base URL and key are configured.
+        if let Some(ref base_url) = self.settings.litellm_base_url {
+            if !base_url.is_empty() {
+                if let Some(key) = self.litellm_api_key() {
+                    providers.push(("litellm".to_string(), key.to_string(), base_url.clone()));
+                }
+            }
+        }
         let session_cost = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let cost_for_builder = session_cost.clone();
         // start_embedded_with uses Tokio APIs (TcpListener, tokio::spawn),
@@ -396,12 +437,20 @@ impl PrismLanguageModelProvider {
                         if this.settings.api_url != settings.api_url && this.is_authenticated() {
                             this.restart_fetch_models_task(cx);
                         }
+                        // If LiteLLM URL changed while embedded gateway is running, restart it.
+                        let litellm_url_changed =
+                            this.settings.litellm_base_url != settings.litellm_base_url;
                         this.settings = settings;
                         // Re-apply embedded gateway URL if settings reverted to the default.
                         if let Some(ref gw) = this.embedded {
                             if this.settings.api_url == DEFAULT_API_URL {
                                 this.settings.api_url = gw.api_url();
                             }
+                        }
+                        if litellm_url_changed && this.embedded.is_some() {
+                            this.embedded = None;
+                            this.sidecar_status = SidecarStatus::Unknown;
+                            this.start_embedded_if_needed(cx);
                         }
                         cx.notify();
                     }
@@ -414,6 +463,10 @@ impl PrismLanguageModelProvider {
                     api_key_state: ApiKeyState::new(
                         SharedString::new(settings.api_url.as_str()),
                         API_KEY_ENV_VAR.clone(),
+                    ),
+                    litellm_api_key_state: ApiKeyState::new(
+                        SharedString::new(LITELLM_KEYCHAIN_URL),
+                        LITELLM_API_KEY_ENV_VAR.clone(),
                     ),
                     settings,
                     http_client,
@@ -829,6 +882,9 @@ enum ConnectionStatus {
 struct ConfigurationView {
     api_key_editor: Entity<InputField>,
     api_url_editor: Entity<InputField>,
+    litellm_url_editor: Entity<InputField>,
+    litellm_key_editor: Entity<InputField>,
+    litellm_section_expanded: bool,
     state: Entity<State>,
     load_credentials_task: Option<Task<()>>,
     api_key_error: Option<SharedString>,
@@ -862,6 +918,22 @@ impl ConfigurationView {
         let current_api_url = state.read(cx).settings.api_url.clone();
         let api_url_editor = cx.new(|cx| InputField::new(window, cx, &current_api_url));
 
+        let current_litellm_url = state
+            .read(cx)
+            .settings
+            .litellm_base_url
+            .clone()
+            .unwrap_or_default();
+        let litellm_section_expanded = !current_litellm_url.is_empty();
+        let litellm_url_placeholder = if current_litellm_url.is_empty() {
+            "https://litellm.example.com".to_string()
+        } else {
+            current_litellm_url
+        };
+        let litellm_url_editor =
+            cx.new(|cx| InputField::new(window, cx, &litellm_url_placeholder));
+        let litellm_key_editor = cx.new(|cx| InputField::new(window, cx, "sk-..."));
+
         cx.observe(&state, |_, _, cx| {
             cx.notify();
         })
@@ -884,6 +956,9 @@ impl ConfigurationView {
         Self {
             api_key_editor,
             api_url_editor,
+            litellm_url_editor,
+            litellm_key_editor,
+            litellm_section_expanded,
             state,
             load_credentials_task,
             api_key_error: None,
@@ -969,6 +1044,83 @@ impl ConfigurationView {
                     .api_url = Some(api_url);
             });
         }
+    }
+
+    fn save_litellm_config(
+        &mut self,
+        _: &menu::Confirm,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let base_url = self.litellm_url_editor.read(cx).text(cx).trim().to_string();
+        let api_key = self.litellm_key_editor.read(cx).text(cx).trim().to_string();
+
+        let fs = <dyn Fs>::global(cx);
+        let url_to_save = if base_url.is_empty() {
+            None
+        } else {
+            Some(base_url)
+        };
+        update_settings_file(fs, cx, move |settings, _| {
+            settings
+                .language_models
+                .get_or_insert_default()
+                .prism
+                .get_or_insert_default()
+                .litellm_base_url = url_to_save;
+        });
+
+        if !api_key.is_empty() {
+            let state = self.state.clone();
+            cx.spawn_in(window, async move |_, cx| {
+                // Store the key, then restart the embedded gateway so it picks up the new key.
+                state
+                    .update(cx, |state, cx| state.set_litellm_api_key(Some(api_key), cx))
+                    .await?;
+                state.update(cx, |state, cx| {
+                    if state.embedded.is_some()
+                        && state
+                            .settings
+                            .litellm_base_url
+                            .as_deref()
+                            .is_some_and(|u| !u.is_empty())
+                    {
+                        state.embedded = None;
+                        state.sidecar_status = SidecarStatus::Unknown;
+                        state.start_embedded_if_needed(cx);
+                    }
+                });
+                anyhow::Ok(())
+            })
+            .detach_and_log_err(cx);
+        }
+    }
+
+    fn reset_litellm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.litellm_url_editor
+            .update(cx, |input, cx| input.set_text("", window, cx));
+        self.litellm_key_editor
+            .update(cx, |input, cx| input.set_text("", window, cx));
+
+        let fs = <dyn Fs>::global(cx);
+        update_settings_file(fs, cx, move |settings, _| {
+            if let Some(prism) = settings
+                .language_models
+                .as_mut()
+                .and_then(|lm| lm.prism.as_mut())
+            {
+                prism.litellm_base_url = None;
+                prism.litellm_api_key = None;
+            }
+        });
+
+        let state = self.state.clone();
+        cx.spawn_in(window, async move |_, cx| {
+            state
+                .update(cx, |state, cx| state.set_litellm_api_key(None, cx))
+                .await
+        })
+        .detach_and_log_err(cx);
     }
 
     fn test_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1218,6 +1370,106 @@ impl Render for ConfigurationView {
                 this.child(indicator)
             });
 
+        // LiteLLM section — only shown in embedded mode
+        let is_embedded = sidecar_status == SidecarStatus::Embedded;
+        let litellm_has_key = state.litellm_api_key().is_some();
+        let litellm_configured_url = state.settings.litellm_base_url.clone();
+        let _ = state; // release read borrow
+
+        let litellm_section = if is_embedded {
+            let section_expanded = self.litellm_section_expanded;
+            let header_label = if !section_expanded {
+                if let Some(ref url) = litellm_configured_url {
+                    format!("LiteLLM Proxy — {url}")
+                } else {
+                    "LiteLLM Proxy".to_string()
+                }
+            } else {
+                "LiteLLM Proxy".to_string()
+            };
+
+            let header = div()
+                .id("litellm-header")
+                .flex()
+                .flex_row()
+                .gap_1()
+                .cursor_pointer()
+                .child(
+                    Icon::new(if section_expanded {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    })
+                    .size(IconSize::Small)
+                    .color(Color::Muted),
+                )
+                .child(Label::new(header_label).size(LabelSize::Small))
+                .on_click(cx.listener(|this, _, _window, cx| {
+                    this.litellm_section_expanded = !this.litellm_section_expanded;
+                    cx.notify();
+                }));
+
+            let body = if section_expanded {
+                let key_status = if litellm_has_key {
+                    h_flex()
+                        .gap_1()
+                        .child(Icon::new(IconName::Check).color(Color::Success).size(IconSize::Small))
+                        .child(
+                            Label::new("API key stored in keychain")
+                                .size(LabelSize::Small)
+                                .color(Color::Success),
+                        )
+                        .child(
+                            Button::new("reset-litellm", "Reset")
+                                .label_size(LabelSize::Small)
+                                .layer(ElevationIndex::ModalSurface)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.reset_litellm(window, cx)
+                                })),
+                        )
+                        .into_any_element()
+                } else {
+                    div().into_any_element()
+                };
+
+                v_flex()
+                    .pt(DynamicSpacing::Base04.rems(cx))
+                    .gap_2()
+                    .on_action(cx.listener(Self::save_litellm_config))
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(Label::new("Base URL").size(LabelSize::Small))
+                            .child(self.litellm_url_editor.clone()),
+                    )
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(Label::new("API Key").size(LabelSize::Small))
+                            .child(self.litellm_key_editor.clone()),
+                    )
+                    .child(key_status)
+                    .child(
+                        Label::new(
+                            "Route through your LiteLLM proxy for access to 100+ LLM providers.",
+                        )
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                    )
+                    .into_any_element()
+            } else {
+                div().into_any_element()
+            };
+
+            v_flex()
+                .pt(DynamicSpacing::Base04.rems(cx))
+                .child(header)
+                .child(body)
+                .into_any_element()
+        } else {
+            div().into_any_element()
+        };
+
         if self.load_credentials_task.is_some() {
             div().child(Label::new("Loading credentials…")).into_any()
         } else {
@@ -1230,6 +1482,7 @@ impl Render for ConfigurationView {
                 .when_some(sidecar_status_label, |this, label| {
                     this.child(div().pt(DynamicSpacing::Base04.rems(cx)).child(label))
                 })
+                .child(litellm_section)
                 .when_some(switch_model_modal, |this, modal| {
                     this.child(
                         div()

@@ -56,21 +56,32 @@ pub fn validate_policy(policy: &RoutingPolicy) -> Result<(), String> {
         }
     }
 
-    // Check that catch-all "*" is last if present
-    let catchall_positions: Vec<usize> = policy
+    // Check catch-all "*" rules:
+    // - At most one phase-agnostic "*" rule (session_phase is None), must be last.
+    // - Phase-specific "*" rules (session_phase is Some) can appear anywhere,
+    //   and there can be multiple (one per phase).
+    let agnostic_catchall_positions: Vec<usize> = policy
         .rules
         .iter()
         .enumerate()
-        .filter(|(_, r)| r.task_type == "*")
+        .filter(|(_, r)| r.task_type == "*" && r.session_phase.is_none())
         .map(|(i, _)| i)
         .collect();
 
-    if catchall_positions.len() > 1 {
-        return Err("policy has multiple catch-all (*) rules".into());
+    if agnostic_catchall_positions.len() > 1 {
+        return Err("policy has multiple phase-agnostic catch-all (*) rules".into());
     }
-    if let Some(&pos) = catchall_positions.first() {
-        if pos != policy.rules.len() - 1 {
-            return Err("catch-all (*) rule must be the last rule".into());
+    if let Some(&pos) = agnostic_catchall_positions.first() {
+        // Must be last among phase-agnostic rules (rules without session_phase)
+        let last_agnostic = policy
+            .rules
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.session_phase.is_none())
+            .last()
+            .map(|(i, _)| i);
+        if last_agnostic != Some(pos) {
+            return Err("phase-agnostic catch-all (*) rule must be the last phase-agnostic rule".into());
         }
     }
 
@@ -80,6 +91,26 @@ pub fn validate_policy(policy: &RoutingPolicy) -> Result<(), String> {
 /// Build a default policy based on task difficulty.
 fn build_default_policy() -> RoutingPolicy {
     let mut rules = Vec::new();
+
+    // Phase-specific wildcard rules (highest priority — matched before task-type rules)
+    let phase_rules: &[(&str, SelectionCriteria, f64, &str)] = &[
+        ("planning", SelectionCriteria::HighestQualityUnderCost, 0.85, "claude-opus-4-6"),
+        ("implementing", SelectionCriteria::CheapestAboveQuality, 0.70, "gpt-5-2-codex"),
+        ("iterating", SelectionCriteria::CheapestAboveQuality, 0.55, "kimi-k2-5"),
+        ("finishing", SelectionCriteria::CheapestAboveQuality, 0.40, "claude-haiku-3.5"),
+    ];
+    for (phase, criteria, min_quality, fallback) in phase_rules {
+        rules.push(RoutingRule {
+            task_type: "*".into(),
+            criteria: criteria.clone(),
+            min_quality: *min_quality,
+            max_cost_per_1k: None,
+            max_latency_ms: None,
+            fallback: Some(fallback.to_string()),
+            fallback_chain: vec![],
+            session_phase: Some(phase.to_string()),
+        });
+    }
 
     // Reasoning/architecture: route to highest quality (Opus)
     for task_str in &["reasoning", "architecture"] {
@@ -91,6 +122,7 @@ fn build_default_policy() -> RoutingPolicy {
             max_latency_ms: None,
             fallback: Some("claude-opus-4-6".into()),
             fallback_chain: vec![],
+            session_phase: None,
         });
     }
 
@@ -112,6 +144,7 @@ fn build_default_policy() -> RoutingPolicy {
             max_latency_ms: None,
             fallback: Some("gpt-5-2-codex".into()),
             fallback_chain: vec![],
+            session_phase: None,
         });
     }
 
@@ -124,6 +157,7 @@ fn build_default_policy() -> RoutingPolicy {
         max_latency_ms: None,
         fallback: None,
         fallback_chain: vec![],
+        session_phase: None,
     });
 
     RoutingPolicy { rules, version: 0 }
@@ -174,6 +208,7 @@ rules:
                 max_latency_ms: None,
                 fallback: None,
                 fallback_chain: vec![],
+                session_phase: None,
             }],
             version: 0,
         };
@@ -193,6 +228,7 @@ rules:
                     max_latency_ms: None,
                     fallback: None,
                     fallback_chain: vec![],
+                    session_phase: None,
                 },
                 RoutingRule {
                     task_type: "code_generation".into(),
@@ -202,6 +238,7 @@ rules:
                     max_latency_ms: None,
                     fallback: None,
                     fallback_chain: vec![],
+                    session_phase: None,
                 },
             ],
             version: 0,
@@ -222,6 +259,7 @@ rules:
                     max_latency_ms: Some(5000),
                     fallback: Some("gpt-4o".into()),
                     fallback_chain: vec![],
+                    session_phase: None,
                 },
                 RoutingRule {
                     task_type: "*".into(),
@@ -231,6 +269,58 @@ rules:
                     max_latency_ms: None,
                     fallback: None,
                     fallback_chain: vec![],
+                    session_phase: None,
+                },
+            ],
+            version: 1,
+        };
+        assert!(validate_policy(&policy).is_ok());
+    }
+
+    #[test]
+    fn validate_policy_allows_phase_wildcards() {
+        // Multiple phase-specific "*" rules are allowed; one phase-agnostic "*" is allowed last
+        let policy = RoutingPolicy {
+            rules: vec![
+                RoutingRule {
+                    task_type: "*".into(),
+                    criteria: SelectionCriteria::HighestQualityUnderCost,
+                    min_quality: 0.85,
+                    max_cost_per_1k: None,
+                    max_latency_ms: None,
+                    fallback: Some("claude-opus-4-6".into()),
+                    fallback_chain: vec![],
+                    session_phase: Some("planning".into()),
+                },
+                RoutingRule {
+                    task_type: "*".into(),
+                    criteria: SelectionCriteria::CheapestAboveQuality,
+                    min_quality: 0.40,
+                    max_cost_per_1k: None,
+                    max_latency_ms: None,
+                    fallback: Some("claude-haiku-3.5".into()),
+                    fallback_chain: vec![],
+                    session_phase: Some("finishing".into()),
+                },
+                RoutingRule {
+                    task_type: "code_generation".into(),
+                    criteria: SelectionCriteria::CheapestAboveQuality,
+                    min_quality: 0.70,
+                    max_cost_per_1k: None,
+                    max_latency_ms: None,
+                    fallback: None,
+                    fallback_chain: vec![],
+                    session_phase: None,
+                },
+                RoutingRule {
+                    task_type: "*".into(),
+                    criteria: SelectionCriteria::CheapestAboveQuality,
+                    min_quality: 0.55,
+                    max_cost_per_1k: None,
+                    max_latency_ms: None,
+                    fallback: None,
+                    fallback_chain: vec![],
+                    session_phase: None,
                 },
             ],
             version: 1,

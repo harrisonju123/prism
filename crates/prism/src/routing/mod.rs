@@ -9,4 +9,5 @@ pub mod types;
 
 pub use engine::resolve;
 pub use fitness::FitnessCache;
+pub use session::SessionPhase;
 pub use types::{RoutingDecision, RoutingPolicy, SelectionCriteria};

@@ -142,6 +142,7 @@ pub async fn predict_edits(
             &state.fitness_cache,
             &state.routing_policy,
             state.config.routing.tier1_confidence_threshold,
+            None,
         )
         .await;
         if let Some(decision) = decision {

@@ -2,26 +2,7 @@ use crate::types::TaskType;
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
-/// Session phases for routing consistency.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SessionPhase {
-    Planning,
-    Implementing,
-    Iterating,
-    Finishing,
-}
-
-impl SessionPhase {
-    /// Representative task type for each phase.
-    pub fn representative_task(&self) -> TaskType {
-        match self {
-            Self::Planning => TaskType::Architecture,
-            Self::Implementing => TaskType::CodeGeneration,
-            Self::Iterating => TaskType::Debugging,
-            Self::Finishing => TaskType::Documentation,
-        }
-    }
-}
+pub use prism_types::SessionPhase;
 
 /// Map task types to session phases.
 fn task_to_phase(task: TaskType) -> SessionPhase {

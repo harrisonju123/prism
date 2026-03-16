@@ -252,6 +252,16 @@ impl TaskType {
     }
 }
 
+/// Session phases detected from the sliding window of task types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionPhase {
+    Planning,
+    Implementing,
+    Iterating,
+    Finishing,
+}
+
 impl std::fmt::Display for TaskType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = serde_json::to_value(self)
@@ -403,6 +413,10 @@ pub struct RoutingRule {
     /// Ordered fallback chain used by the proxy when the primary fails.
     #[serde(default)]
     pub fallback_chain: Vec<FallbackEntry>,
+    /// Optional session phase this rule applies to; None means phase-agnostic.
+    /// Use "*" for a phase-specific catch-all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_phase: Option<String>,
 }
 
 fn default_min_quality() -> f64 {

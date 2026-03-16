@@ -236,6 +236,16 @@ pub async fn chat_completions(
             }
         }
 
+        // --- Session tracking (before routing so phase can influence model selection) ---
+        let session_phase = if let Some(ref sid) = session_id {
+            let mut tracker = state.session_tracker.lock().await;
+            let phase = tracker.record(sid, classification.task_type);
+            tracing::debug!(session_id = %sid, phase = ?phase, "session phase detected");
+            Some(phase)
+        } else {
+            None
+        };
+
         let decision =
             if classification.confidence >= state.config.routing.classifier_confidence_threshold {
                 crate::routing::resolve(
@@ -245,6 +255,7 @@ pub async fn chat_completions(
                     &state.fitness_cache,
                     &state.routing_policy,
                     state.config.routing.tier1_confidence_threshold,
+                    session_phase,
                 )
                 .await
             } else {
@@ -259,13 +270,6 @@ pub async fn chat_completions(
     } else {
         (None, None, None)
     };
-
-    // --- Session tracking ---
-    if let (Some(sid), Some(tt)) = (&session_id, task_type) {
-        let mut tracker = state.session_tracker.lock().await;
-        let phase = tracker.record(sid, tt);
-        tracing::debug!(session_id = %sid, phase = ?phase, "session phase detected");
-    }
 
     // --- Experiment: find matching experiment and select variant ---
     let variant_name = if let Some(ref engine) = state.experiment_engine {
@@ -2089,6 +2093,7 @@ mod tests {
             task_type: TaskType::CodeGeneration,
             confidence: 0.85,
             fallback_chain: vec![],
+            session_phase: None,
         };
 
         let headers = build_routing_headers(

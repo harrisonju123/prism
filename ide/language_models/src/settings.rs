@@ -109,6 +109,8 @@ impl settings::Settings for AllLanguageModelSettings {
                 api_url: prism.api_url.unwrap(),
                 api_key: prism.api_key,
                 available_models: prism.available_models.unwrap_or_default(),
+                litellm_base_url: prism.litellm_base_url,
+                litellm_api_key: prism.litellm_api_key,
             },
             vercel: VercelSettings {
                 api_url: vercel.api_url.unwrap(),

@@ -451,6 +451,8 @@ pub struct PrismSettingsContent {
     pub api_url: Option<String>,
     pub api_key: Option<String>,
     pub available_models: Option<Vec<PrismAvailableModel>>,
+    pub litellm_base_url: Option<String>,
+    pub litellm_api_key: Option<String>,
 }
 
 #[with_fallible_options]

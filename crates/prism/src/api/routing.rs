@@ -29,6 +29,7 @@ pub async fn dry_run(
         &state.fitness_cache,
         &state.routing_policy,
         state.config.routing.tier1_confidence_threshold,
+        None,
     )
     .await;
 

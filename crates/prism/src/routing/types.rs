@@ -24,6 +24,9 @@ pub struct RoutingDecision {
     /// Fallback chain from the matched routing rule.
     #[serde(default)]
     pub fallback_chain: Vec<FallbackEntry>,
+    /// Session phase that influenced this decision, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_phase: Option<prism_types::SessionPhase>,
 }
 
 /// Fitness data for a model on a specific task type.
