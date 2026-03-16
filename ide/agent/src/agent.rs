@@ -357,15 +357,20 @@ impl NativeAgent {
         let model_string = default_model
             .as_ref()
             .map(|m| format!("{}/{}", m.provider_id().0, m.id().0));
-        let project_ref = project.read(cx);
-        if let Some(worktree) = project_ref.visible_worktrees(cx).next() {
-            let worktree_root = worktree.read(cx).abs_path().to_path_buf();
-            let branch = project_ref
-                .git_store()
-                .read(cx)
-                .active_repository()
-                .and_then(|repo| repo.read(cx).branch.as_ref().map(|b| b.name().to_string()));
-
+        // Extract worktree info while holding immutable borrow, then drop it before mutations.
+        let worktree_info = {
+            let project_ref = project.read(cx);
+            project_ref.visible_worktrees(cx).next().map(|worktree| {
+                let worktree_root = worktree.read(cx).abs_path().to_path_buf();
+                let branch = project_ref
+                    .git_store()
+                    .read(cx)
+                    .active_repository()
+                    .and_then(|repo| repo.read(cx).branch.as_ref().map(|b| b.name().to_string()));
+                (worktree_root, branch)
+            })
+        };
+        if let Some((worktree_root, branch)) = worktree_info {
             let agent_name = prism_session::agent_name_from_env();
             let mut session_file = prism_session::PrismSessionFile::new(
                 session_id,
@@ -401,6 +406,25 @@ impl NativeAgent {
                 }
                 session_file.task_id = Some(task_id);
                 session_file.task_name = Some(task_name);
+            }
+
+            // Auto-load persona from PRISM_PERSONA env var
+            if let Ok(persona_name) = std::env::var("PRISM_PERSONA") {
+                if !persona_name.is_empty() {
+                    match prism_context::persona::load_persona(&persona_name, Some(&worktree_root)) {
+                        Ok(persona) => {
+                            log::info!(
+                                "Loaded persona '{}' from PRISM_PERSONA",
+                                persona.name
+                            );
+                            session_file.persona = Some(persona.name.clone());
+                            thread.update(cx, |t, cx| t.set_persona(Some(persona), cx));
+                        }
+                        Err(err) => {
+                            log::warn!("Failed to load persona '{persona_name}': {err}");
+                        }
+                    }
+                }
             }
 
             session_file.write_to(&session_file_path);

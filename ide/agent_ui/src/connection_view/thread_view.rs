@@ -216,6 +216,7 @@ pub struct ThreadView {
     pub mode_selector: Option<Entity<ModeSelector>>,
     pub model_selector: Option<Entity<ModelSelectorPopover>>,
     pub profile_selector: Option<Entity<ProfileSelector>>,
+    pub persona_selector: Option<Entity<PersonaSelector>>,
     pub permission_dropdown_handle: PopoverMenuHandle<ContextMenu>,
     pub thread_retry_status: Option<RetryStatus>,
     pub(super) thread_error: Option<ThreadError>,
@@ -303,6 +304,7 @@ impl ThreadView {
         mode_selector: Option<Entity<ModeSelector>>,
         model_selector: Option<Entity<ModelSelectorPopover>>,
         profile_selector: Option<Entity<ProfileSelector>>,
+        persona_selector: Option<Entity<PersonaSelector>>,
         list_state: ListState,
         prompt_capabilities: Rc<RefCell<PromptCapabilities>>,
         available_commands: Rc<RefCell<Vec<agent_client_protocol::AvailableCommand>>>,
@@ -447,6 +449,7 @@ impl ThreadView {
             mode_selector,
             model_selector,
             profile_selector,
+            persona_selector,
             list_state,
             prompt_capabilities,
             available_commands,
@@ -2827,6 +2830,7 @@ impl ThreadView {
                             .gap_1()
                             .children(self.render_token_usage(cx))
                             .children(self.profile_selector.clone())
+                            .children(self.persona_selector.clone())
                             .map(|this| {
                                 // Either config_options_view OR (mode_selector + model_selector)
                                 match self.config_options_view.clone() {

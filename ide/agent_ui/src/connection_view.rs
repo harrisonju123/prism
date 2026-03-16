@@ -68,6 +68,7 @@ use crate::ModelSelectorPopover;
 use crate::agent_diff::AgentDiff;
 use crate::entry_view_state::{EntryViewEvent, ViewEvent};
 use crate::message_editor::{MessageEditor, MessageEditorEvent};
+use crate::persona_selector::{PersonaProvider, PersonaSelector};
 use crate::profile_selector::{ProfileProvider, ProfileSelector};
 use crate::ui::{AgentNotification, AgentNotificationEvent};
 use crate::{
@@ -147,6 +148,37 @@ impl ProfileProvider for Entity<agent::Thread> {
         self.read(cx)
             .model()
             .is_some_and(|model| model.supports_tools())
+    }
+}
+
+fn thread_worktree_root(thread: &Entity<agent::Thread>, cx: &App) -> Option<std::path::PathBuf> {
+    thread
+        .read(cx)
+        .project()
+        .read(cx)
+        .visible_worktrees(cx)
+        .next()
+        .map(|wt| wt.read(cx).abs_path().to_path_buf())
+}
+
+impl PersonaProvider for Entity<agent::Thread> {
+    fn persona_name(&self, cx: &App) -> Option<String> {
+        self.read(cx).persona().map(|p| p.name.clone())
+    }
+
+    fn set_persona(&self, name: Option<String>, cx: &mut App) {
+        let root = thread_worktree_root(self, cx);
+        let persona = name.as_deref().and_then(|n| {
+            prism_context::persona::load_persona(n, root.as_deref())
+                .map_err(|e| log::warn!("Failed to load persona '{n}': {e}"))
+                .ok()
+        });
+        self.update(cx, |thread, cx| thread.set_persona(persona, cx));
+    }
+
+    fn available_personas(&self, cx: &App) -> Vec<(String, String)> {
+        let root = thread_worktree_root(self, cx);
+        prism_context::persona::list_personas_with_desc(root.as_deref())
     }
 }
 
@@ -960,20 +992,26 @@ impl ConnectionView {
             .detach();
         }
 
-        let profile_selector: Option<Rc<agent::NativeAgentConnection>> =
+        let native_connection: Option<Rc<agent::NativeAgentConnection>> =
             connection.clone().downcast();
-        let profile_selector = profile_selector
-            .and_then(|native_connection| native_connection.thread(&session_id, cx))
-            .map(|native_thread| {
-                cx.new(|cx| {
-                    ProfileSelector::new(
-                        <dyn Fs>::global(cx),
-                        Arc::new(native_thread),
-                        self.focus_handle(cx),
-                        cx,
-                    )
-                })
-            });
+        let native_thread = native_connection
+            .as_ref()
+            .and_then(|c| c.thread(&session_id, cx));
+        let profile_selector = native_thread.as_ref().map(|thread| {
+            cx.new(|cx| {
+                ProfileSelector::new(
+                    <dyn Fs>::global(cx),
+                    Arc::new(thread.clone()),
+                    self.focus_handle(cx),
+                    cx,
+                )
+            })
+        });
+        let persona_selector = native_thread.map(|thread| {
+            cx.new(|cx| {
+                PersonaSelector::new(Arc::new(thread), self.focus_handle(cx), cx)
+            })
+        });
 
         let agent_display_name = self
             .agent_server_store
@@ -1012,6 +1050,7 @@ impl ConnectionView {
                 mode_selector,
                 model_selector,
                 profile_selector,
+                persona_selector,
                 list_state,
                 prompt_capabilities,
                 available_commands,

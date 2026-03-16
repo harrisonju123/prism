@@ -30,6 +30,9 @@ pub struct PrismSessionFile {
     /// Model provider/id string, e.g. "prism/claude-opus-4-6"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Active persona name for this session, if any
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub persona: Option<String>,
     /// Session start time
     pub started_at: DateTime<Utc>,
     /// Last time the file was updated
@@ -53,6 +56,7 @@ impl PrismSessionFile {
             worktree_path,
             branch,
             model,
+            persona: None,
             started_at: now,
             updated_at: now,
         }

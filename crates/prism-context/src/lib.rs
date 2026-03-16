@@ -2,6 +2,7 @@ pub mod config;
 pub mod error;
 pub mod memory_extract;
 pub mod model;
+pub mod persona;
 pub mod scheduler;
 pub mod skills;
 pub mod store;

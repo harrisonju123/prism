@@ -75,7 +75,7 @@ async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Personas { cmd } => match cmd {
             PersonasCmd::List => {
-                let personas = persona::list_personas();
+                let personas = persona::list_personas(None);
                 if personas.is_empty() {
                     eprintln!(
                         "no personas found. Create ~/.prism/personas/<name>.toml to get started."
@@ -88,7 +88,7 @@ async fn run(cli: Cli) -> Result<()> {
                 }
             }
             PersonasCmd::Show { name } => {
-                let p = persona::load_persona(&name)?;
+                let p = persona::load_persona(&name, None)?;
                 println!("{}", toml::to_string_pretty(&p)?);
             }
         },

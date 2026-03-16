@@ -955,6 +955,8 @@ pub struct Thread {
     turn_start_cumulative_cost: f64,
     /// Per-file last-read mtimes for staleness guard
     file_read_mtimes: std::collections::HashMap<String, std::time::SystemTime>,
+    /// Active persona constraining this session (system prompt, tool filters, turn/cost limits)
+    persona: Option<prism_context::persona::Persona>,
 }
 
 impl Thread {
@@ -1084,6 +1086,7 @@ impl Thread {
             rolling_avg_turn_cost: 0.0,
             turn_start_cumulative_cost: 0.0,
             file_read_mtimes: std::collections::HashMap::new(),
+            persona: None,
         }
     }
 
@@ -1105,6 +1108,30 @@ impl Thread {
 
     pub fn context_handle(&self) -> Option<&Arc<ContextHandle>> {
         self.context_handle.as_ref()
+    }
+
+    pub fn persona(&self) -> Option<&prism_context::persona::Persona> {
+        self.persona.as_ref()
+    }
+
+    pub fn set_persona(
+        &mut self,
+        persona: Option<prism_context::persona::Persona>,
+        cx: &mut Context<Self>,
+    ) {
+        // If the persona specifies a model override, apply it.
+        if let Some(ref p) = persona {
+            if let Some(ref model_id) = p.model {
+                if let Some(model) = LanguageModelRegistry::read_global(cx)
+                    .available_models(cx)
+                    .find(|m| m.id().0.as_ref() == model_id || m.name().0.as_ref() == model_id)
+                {
+                    self.model = Some(model);
+                }
+            }
+        }
+        self.persona = persona;
+        cx.notify();
     }
 
     pub fn messages(&self) -> &[Message] {
@@ -1346,6 +1373,7 @@ impl Thread {
             rolling_avg_turn_cost: 0.0,
             turn_start_cumulative_cost: 0.0,
             file_read_mtimes: std::collections::HashMap::new(),
+            persona: None,
         }
     }
 
@@ -2064,6 +2092,34 @@ impl Thread {
                         }
                     }
                 }
+            }
+
+            // Persona limit checks: max_turns and max_cost_usd
+            let persona_limit_hit = this.read_with(cx, |this, _| {
+                if let Some(persona) = &this.persona {
+                    if let Some(max_turns) = persona.max_turns {
+                        let current_turns = this.guardrails.turn_count as u32;
+                        if current_turns >= max_turns {
+                            return Some(format!(
+                                "Persona '{}' has reached its maximum turn limit ({}).",
+                                persona.name, max_turns
+                            ));
+                        }
+                    }
+                    if let Some(max_cost) = persona.max_cost_usd {
+                        if this.cumulative_cost_usd >= max_cost {
+                            return Some(format!(
+                                "Persona '{}' has reached its maximum cost limit (${:.4}).",
+                                persona.name, max_cost
+                            ));
+                        }
+                    }
+                }
+                None
+            })?;
+            if let Some(limit_msg) = persona_limit_hit {
+                log::info!("Persona limit reached: {limit_msg}");
+                return Ok(());
             }
 
             // Pre-turn guardrail injections
@@ -3230,8 +3286,15 @@ impl Thread {
                     tool_name.as_ref()
                 };
 
+                let persona_allows = self
+                    .persona
+                    .as_ref()
+                    .map(|p| p.allows_tool(profile_tool_name))
+                    .unwrap_or(true);
+
                 if tool.supports_provider(&model.provider_id())
                     && profile.is_tool_enabled(profile_tool_name)
+                    && persona_allows
                 {
                     match (tool_name.as_ref(), use_streaming_edit_tool) {
                         (StreamingEditFileTool::NAME, false) | (EditFileTool::NAME, true) => None,
@@ -3369,6 +3432,16 @@ impl Thread {
         .render(&self.templates)
         .context("failed to build system prompt")
         .expect("Invalid template");
+
+        // Prepend persona system prompt
+        if let Some(persona) = &self.persona {
+            if let Some(ref prompt) = persona.system_prompt {
+                system_prompt = format!(
+                    "## Persona: {}\n\n{}\n\n{}",
+                    persona.name, prompt, system_prompt
+                );
+            }
+        }
 
         // Append skill registry section to system prompt
         if let Some(registry) = &self.skill_registry {

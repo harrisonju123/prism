@@ -21,6 +21,7 @@ mod message_editor;
 mod mode_selector;
 mod model_selector;
 mod model_selector_popover;
+mod persona_selector;
 mod profile_selector;
 mod slash_command;
 mod slash_command_picker;
