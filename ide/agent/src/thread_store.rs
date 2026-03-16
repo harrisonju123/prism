@@ -151,6 +151,7 @@ mod tests {
             thinking_effort: None,
             draft_prompt: None,
             ui_scroll_position: None,
+            context_thread_id: None,
         }
     }
 

@@ -11,6 +11,7 @@ mod tests;
 mod thread;
 mod thread_store;
 mod tool_permissions;
+mod guardrails;
 mod tools;
 
 use context_server::ContextServerId;
@@ -250,6 +251,7 @@ pub struct NativeAgent {
     prompt_store: Option<Entity<PromptStore>>,
     fs: Arc<dyn Fs>,
     _subscriptions: Vec<Subscription>,
+    context_handle: Option<Arc<ContextHandle>>,
 }
 
 impl NativeAgent {
@@ -268,6 +270,7 @@ impl NativeAgent {
             .await;
 
         Ok(cx.new(|cx| {
+            let context_handle = try_init_context_handle(&project, cx);
             let context_server_store = project.read(cx).context_server_store();
             let context_server_registry =
                 cx.new(|cx| ContextServerRegistry::new(context_server_store.clone(), cx));
@@ -308,6 +311,7 @@ impl NativeAgent {
                 prompt_store,
                 fs,
                 _subscriptions: subscriptions,
+                context_handle,
             }
         }))
     }
@@ -430,6 +434,7 @@ impl NativeAgent {
 
         let weak = cx.weak_entity();
         let weak_thread = thread_handle.downgrade();
+        let context_handle = self.context_handle.clone();
         thread_handle.update(cx, |thread, cx| {
             thread.set_summarization_model(summarization_model, cx);
             thread.add_default_tools(
@@ -438,6 +443,7 @@ impl NativeAgent {
                     thread: weak_thread,
                     agent: weak,
                 }) as _,
+                context_handle,
                 cx,
             )
         });

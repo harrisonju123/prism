@@ -5017,7 +5017,7 @@ async fn test_subagent_tool_is_present_when_feature_flag_enabled(cx: &mut TestAp
             Some(model),
             cx,
         );
-        thread.add_default_tools(environment, cx);
+        thread.add_default_tools(environment, None, cx);
         thread
     });
 
@@ -5109,7 +5109,7 @@ async fn test_max_subagent_depth_prevents_tool_registration(cx: &mut TestAppCont
     });
     let deep_subagent_thread = cx.new(|cx| {
         let mut thread = Thread::new_subagent(&deep_parent_thread, cx);
-        thread.add_default_tools(environment, cx);
+        thread.add_default_tools(environment, None, cx);
         thread
     });
 

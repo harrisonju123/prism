@@ -1,11 +1,13 @@
 use crate::{
-    ContextServerRegistry, CopyPathTool, CreateDirectoryTool, DbLanguageModel, DbThread,
-    DeletePathTool, DiagnosticsTool, EditFileTool, FetchTool, FindPathTool, GrepTool,
-    ListDirectoryTool, MovePathTool, NowTool, OpenTool, ProjectSnapshot, ReadFileTool,
-    RestoreFileFromDiskTool, SaveFileTool, SpawnAgentTool, StreamingEditFileTool,
-    SystemPromptTemplate, Template, Templates, TerminalTool, ToolPermissionDecision, WebSearchTool,
+    AskHumanTool, ContextHandle, ContextServerRegistry, CopyPathTool, CreateDirectoryTool,
+    DbLanguageModel, DbThread, DeletePathTool, DiagnosticsTool, EditFileTool, FetchTool,
+    FindPathTool, GrepTool, ListDirectoryTool, MovePathTool, NowTool, OpenTool, ProjectSnapshot,
+    ReadFileTool, RecallTool, RecordDecisionTool, RequestReviewTool, RestoreFileFromDiskTool,
+    SaveFileTool, SaveMemoryTool, SpawnAgentTool, StreamingEditFileTool, SystemPromptTemplate,
+    Template, Templates, TerminalTool, ToolPermissionDecision, WebSearchTool,
     decide_permission_from_settings,
 };
+use crate::guardrails::{Guardrails, has_completion_signals, is_read_only_tool};
 use acp_thread::{MentionUri, UserMessageId};
 use action_log::ActionLog;
 use feature_flags::{FeatureFlagAppExt as _, StreamingEditFileToolFeatureFlag};
@@ -923,6 +925,8 @@ pub struct Thread {
     running_subagents: Vec<WeakEntity<Thread>>,
     /// Linked context thread ID for cost attribution and context tracking
     context_thread_id: Option<String>,
+    /// Guardrails that prevent common LLM failure modes
+    guardrails: Guardrails,
 }
 
 impl Thread {
@@ -1040,6 +1044,7 @@ impl Thread {
             ui_scroll_position: None,
             running_subagents: Vec::new(),
             context_thread_id: None,
+            guardrails: Guardrails::new(),
         }
     }
 
@@ -1269,6 +1274,7 @@ impl Thread {
             }),
             running_subagents: Vec::new(),
             context_thread_id: db_thread.context_thread_id,
+            guardrails: Guardrails::new(),
         }
     }
 
@@ -1464,6 +1470,7 @@ impl Thread {
     pub fn add_default_tools(
         &mut self,
         environment: Rc<dyn ThreadEnvironment>,
+        context_handle: Option<Arc<ContextHandle>>,
         cx: &mut Context<Self>,
     ) {
         // Only update the agent location for the root thread, not for subagents.
@@ -1508,6 +1515,14 @@ impl Thread {
 
         if self.depth() < MAX_SUBAGENT_DEPTH {
             self.add_tool(SpawnAgentTool::new(environment));
+        }
+
+        self.add_tool(AskHumanTool);
+        if let Some(ctx) = context_handle {
+            self.add_tool(SaveMemoryTool::new(ctx.clone()));
+            self.add_tool(RecallTool::new(ctx.clone()));
+            self.add_tool(RecordDecisionTool::new(ctx.clone()));
+            self.add_tool(RequestReviewTool::new(ctx));
         }
     }
 
@@ -1709,6 +1724,17 @@ impl Thread {
         let content = content.into_iter().map(Into::into).collect::<Vec<_>>();
         log::debug!("Thread::send content: {:?}", content);
 
+        // Arm decision checkpoint before pushing (content is still accessible here)
+        let user_text: String = content
+            .iter()
+            .filter_map(|c| match c {
+                UserMessageContent::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.guardrails.decision_checkpoint.arm_if_decision_prompt(&user_text);
+
         self.messages
             .push(Message::User(UserMessage { id, content }));
         cx.notify();
@@ -1859,6 +1885,29 @@ impl Thread {
         let mut attempt = 0;
         let mut intent = CompletionIntent::UserPrompt;
         loop {
+            // Pre-turn guardrail injections
+            this.update(cx, |this, _cx| {
+                this.guardrails.increment_turn();
+                this.guardrails.reset_turn();
+
+                // Self-review injection from previous turn
+                if let Some(msg) = this.guardrails.self_review.take_review_message() {
+                    this.messages.push(Message::User(UserMessage {
+                        id: UserMessageId::new(),
+                        content: vec![UserMessageContent::Text(msg)],
+                    }));
+                }
+
+                // Decision/question checkpoint injection
+                let turn = this.guardrails.turn_count;
+                for msg in this.guardrails.decision_checkpoint.pre_turn_messages(turn) {
+                    this.messages.push(Message::User(UserMessage {
+                        id: UserMessageId::new(),
+                        content: vec![UserMessageContent::Text(msg)],
+                    }));
+                }
+            })?;
+
             let request =
                 this.update(cx, |this, cx| this.build_completion_request(intent, cx))??;
 
@@ -2003,6 +2052,43 @@ impl Thread {
                 this.flush_pending_message(cx);
                 if this.title.is_none() && this.pending_title_generation.is_none() {
                     this.generate_title(cx);
+                }
+            })?;
+
+            // Post-turn guardrail checks
+            this.update(cx, |this, _cx| {
+                let all_readonly = this.guardrails.turn_all_readonly();
+                let assistant_text = this.pending_agent_text();
+                let text_len = assistant_text.len();
+                let had_substantive = text_len > 100;
+                let had_tool_calls = this.guardrails.had_tool_calls();
+
+                // Exploration budget
+                if let Some(nudge) = this
+                    .guardrails
+                    .exploration_budget
+                    .record_turn(all_readonly, had_substantive)
+                {
+                    log::info!("Guardrail: exploration budget nudge");
+                    this.messages.push(Message::User(UserMessage {
+                        id: UserMessageId::new(),
+                        content: vec![UserMessageContent::Text(nudge)],
+                    }));
+                }
+
+                // Verbosity tracker
+                if let Some(nudge) = this.guardrails.verbosity.record_turn(text_len, had_tool_calls) {
+                    log::info!("Guardrail: verbosity nudge");
+                    this.messages.push(Message::User(UserMessage {
+                        id: UserMessageId::new(),
+                        content: vec![UserMessageContent::Text(nudge)],
+                    }));
+                }
+
+                // Self-review trigger
+                let turn_files = this.guardrails.take_turn_files();
+                if !turn_files.is_empty() && has_completion_signals(&assistant_text) {
+                    this.guardrails.self_review.schedule_review(turn_files);
                 }
             })?;
 
@@ -2267,6 +2353,12 @@ impl Thread {
 
         self.send_or_update_tool_use(&tool_use, title, kind, event_stream);
 
+        // Track tool usage for guardrails
+        self.guardrails.record_tool(tool_use.name.as_ref());
+        if is_read_only_tool(tool_use.name.as_ref()) {
+            self.guardrails.decision_checkpoint.record_exploration();
+        }
+
         let Some(tool) = tool else {
             let content = format!("No tool named {} exists", tool_use.name);
             return Some(Task::ready(LanguageModelToolResult {
@@ -2316,6 +2408,17 @@ impl Thread {
         {
             sender.send_final(tool_use.input);
             return None;
+        }
+
+        // Write guards (Guard A, B, C) — only for create/overwrite operations
+        if let Some(denial) = self.check_write_guards(&tool_use, cx) {
+            return Some(Task::ready(LanguageModelToolResult {
+                content: LanguageModelToolResultContent::Text(Arc::from(denial)),
+                tool_use_id: tool_use.id,
+                tool_name: tool_use.name,
+                is_error: true,
+                output: None,
+            }));
         }
 
         log::debug!("Running tool {}", tool_use.name);
@@ -3026,6 +3129,90 @@ impl Thread {
                 max_attempts: 2,
             }),
         }
+    }
+
+    /// Returns the text of the last assistant message (empty string if none).
+    fn pending_agent_text(&self) -> String {
+        self.messages
+            .last()
+            .and_then(|m| m.as_agent_message())
+            .map(|m| {
+                m.content
+                    .iter()
+                    .filter_map(|c| match c {
+                        AgentMessageContent::Text(t) => Some(t.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .unwrap_or_default()
+    }
+
+    /// Check write guards (A/B/C) for edit_file / streaming_edit_file create/overwrite operations.
+    /// Returns `Some(denial message)` if the write should be blocked.
+    fn check_write_guards(
+        &mut self,
+        tool_use: &LanguageModelToolUse,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        // Only guard create/overwrite modes, not targeted edits
+        let name = tool_use.name.as_ref();
+        match name {
+            "edit_file" | "streaming_edit_file" => {
+                let mode = tool_use
+                    .input
+                    .get("mode")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("edit");
+                if mode == "edit" {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+
+        let rel_path = tool_use.input.get("path").and_then(|v| v.as_str())?;
+
+        // Resolve to absolute path using the first worktree root
+        let abs_path = self
+            .project
+            .read(cx)
+            .worktrees(cx)
+            .next()
+            .and_then(|wt| {
+                let root = wt.read(cx).abs_path();
+                Some(root.join(rel_path).to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| rel_path.to_string());
+
+        let file_exists = std::path::Path::new(&abs_path).exists();
+        // Read old content for Guard C anchor diffing — skip for large files to avoid
+        // blocking the main thread with expensive I/O + regex on huge files.
+        const MAX_ANCHOR_CHECK_BYTES: u64 = 256 * 1024; // 256 KB
+        let old_content = if file_exists {
+            std::fs::metadata(&abs_path)
+                .ok()
+                .filter(|m| m.len() <= MAX_ANCHOR_CHECK_BYTES)
+                .and_then(|_| std::fs::read_to_string(&abs_path).ok())
+        } else {
+            None
+        };
+        let new_content = tool_use.input.get("content").and_then(|v| v.as_str());
+
+        let denial = self.guardrails.write_guards.check_write(
+            &abs_path,
+            !file_exists,
+            old_content.as_deref(),
+            new_content,
+        );
+
+        if denial.is_none() {
+            self.guardrails.write_guards.record_full_write(abs_path.clone());
+            self.guardrails.mark_write(abs_path);
+        }
+
+        denial.map(|d| d.message())
     }
 }
 

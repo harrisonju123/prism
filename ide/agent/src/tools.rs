@@ -1,4 +1,6 @@
+mod ask_human_tool;
 mod codebase_search_tool;
+mod context_handle;
 mod context_server_registry;
 mod copy_path_tool;
 mod create_directory_tool;
@@ -13,8 +15,12 @@ mod move_path_tool;
 mod now_tool;
 mod open_tool;
 mod read_file_tool;
+mod record_decision_tool;
+mod recall_tool;
+mod request_review_tool;
 mod restore_file_from_disk_tool;
 mod save_file_tool;
+mod save_memory_tool;
 mod spawn_agent_tool;
 mod streaming_edit_file_tool;
 mod terminal_tool;
@@ -25,7 +31,9 @@ mod web_search_tool;
 use crate::AgentTool;
 use language_model::{LanguageModelRequestTool, LanguageModelToolSchemaFormat};
 
+pub use ask_human_tool::*;
 pub use codebase_search_tool::*;
+pub use context_handle::*;
 pub use context_server_registry::*;
 pub use copy_path_tool::*;
 pub use create_directory_tool::*;
@@ -40,8 +48,12 @@ pub use move_path_tool::*;
 pub use now_tool::*;
 pub use open_tool::*;
 pub use read_file_tool::*;
+pub use recall_tool::*;
+pub use record_decision_tool::*;
+pub use request_review_tool::*;
 pub use restore_file_from_disk_tool::*;
 pub use save_file_tool::*;
+pub use save_memory_tool::*;
 pub use spawn_agent_tool::*;
 pub use streaming_edit_file_tool::*;
 pub use terminal_tool::*;
@@ -117,6 +129,7 @@ macro_rules! tools {
 }
 
 tools! {
+    AskHumanTool,
     CodebaseSearchTool,
     CopyPathTool,
     CreateDirectoryTool,
@@ -131,8 +144,12 @@ tools! {
     NowTool,
     OpenTool,
     ReadFileTool,
+    RecallTool,
+    RecordDecisionTool,
+    RequestReviewTool,
     RestoreFileFromDiskTool,
     SaveFileTool,
+    SaveMemoryTool,
     SpawnAgentTool,
     TerminalTool,
     WebSearchTool,
