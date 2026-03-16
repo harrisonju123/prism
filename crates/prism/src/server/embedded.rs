@@ -8,6 +8,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::{Config, ProviderConfig};
 use crate::error::{PrismError, Result};
+use crate::observability::local_writer::{LocalInferenceWriter, spawn_event_consumer};
+use crate::observability::metrics::MetricsCollector;
 use crate::providers::ProviderRegistry;
 use crate::proxy::builder::AppStateBuilder;
 use crate::types::InferenceEvent;
@@ -19,6 +21,8 @@ pub struct EmbeddedGateway {
     addr: SocketAddr,
     cancel: CancellationToken,
     _task: tokio::task::JoinHandle<()>,
+    _event_task: tokio::task::JoinHandle<()>,
+    _pruner_task: Option<tokio::task::JoinHandle<()>>,
     session_cost: Arc<std::sync::atomic::AtomicU64>,
 }
 
@@ -117,19 +121,58 @@ pub async fn start_embedded_with(
         &config.providers,
         http_client,
     ));
-    let (event_tx, _event_rx) = tokio::sync::mpsc::channel::<InferenceEvent>(512);
+    let (event_tx, event_rx) = tokio::sync::mpsc::channel::<InferenceEvent>(512);
+
+    // --- Observability: MetricsCollector + LocalInferenceWriter ---
+    let metrics = Arc::new(MetricsCollector::new());
+
+    let local_writer = open_local_writer().await;
+
+    let cancel = CancellationToken::new();
+
+    let event_task = spawn_event_consumer(
+        event_rx,
+        metrics.clone(),
+        local_writer.clone(),
+        cancel.clone(),
+    );
 
     let state = Arc::new(
         configure(
             AppStateBuilder::new(config)
                 .with_providers(registry)
-                .with_event_tx(event_tx),
+                .with_event_tx(event_tx)
+                .with_metrics(metrics)
+                .with_local_inference_writer(local_writer),
         )
         .build()
         .map_err(|e| PrismError::Internal(e.to_string()))?,
     );
 
     let session_cost = state.session_cost_usd.clone();
+
+    // Spawn hourly retention pruner (30-day default) only when writer is available.
+    let pruner_task = state.local_inference_writer.clone().map(|pruner_writer| {
+        let pruner_cancel = cancel.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = pruner_cancel.cancelled() => break,
+                    _ = interval.tick() => {
+                        let cutoff = chrono::Utc::now() - chrono::Duration::days(30);
+                        match pruner_writer.prune_before(cutoff).await {
+                            Ok(n) if n > 0 => tracing::info!(rows = n, "pruned old inference events"),
+                            Err(e) => tracing::warn!(error = %e, "inference event pruning failed"),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        })
+    });
+
     let router = crate::server::router::build(state);
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -138,7 +181,6 @@ pub async fn start_embedded_with(
         .local_addr()
         .map_err(|e| PrismError::Internal(e.to_string()))?;
 
-    let cancel = CancellationToken::new();
     let shutdown_token = cancel.clone();
     let task = tokio::spawn(async move {
         axum::serve(listener, router)
@@ -152,6 +194,50 @@ pub async fn start_embedded_with(
         addr,
         cancel,
         _task: task,
+        _event_task: event_task,
+        _pruner_task: pruner_task,
         session_cost,
     })
+}
+
+/// Try to open the local inference DB, returning None on failure.
+async fn open_local_writer() -> Option<Arc<LocalInferenceWriter>> {
+    let path = find_local_db_path();
+    match LocalInferenceWriter::open(&path).await {
+        Ok(w) => {
+            tracing::info!(path = %path.display(), "local inference store opened");
+            Some(w)
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                path = %path.display(),
+                "could not open local inference store — waste detection and local stats unavailable"
+            );
+            None
+        }
+    }
+}
+
+/// Resolve the path for the local inference DB.
+///
+/// Walk up from CWD looking for `.prism/` directory; fall back to
+/// `~/.prism/observability.db`.
+fn find_local_db_path() -> std::path::PathBuf {
+    // Walk up from CWD
+    let mut dir = std::env::current_dir().unwrap_or_default();
+    loop {
+        let candidate = dir.join(".prism");
+        if candidate.is_dir() {
+            return candidate.join("observability.db");
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    // Fallback: home dir
+    dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".prism")
+        .join("observability.db")
 }

@@ -1,4 +1,5 @@
 pub mod health;
+pub mod local_stats;
 pub mod metrics;
 pub mod models;
 pub mod openapi;

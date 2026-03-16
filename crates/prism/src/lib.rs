@@ -34,7 +34,6 @@ pub mod finetuning;
 pub mod guardrails;
 #[cfg(feature = "full")]
 pub mod optimization;
-#[cfg(feature = "full")]
 pub mod waste;
 #[cfg(feature = "full")]
 pub mod workflows;

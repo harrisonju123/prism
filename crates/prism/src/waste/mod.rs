@@ -1,7 +1,35 @@
+#[cfg(feature = "full")]
 pub mod detector;
 pub mod handler;
+pub mod local_detector;
 
 use serde::Serialize;
+
+use crate::models::MODEL_CATALOG;
+
+/// Return the model tier (1-3) from the MODEL_CATALOG, defaulting to 2 if unknown.
+pub fn model_tier(model_name: &str) -> u8 {
+    MODEL_CATALOG
+        .get(model_name)
+        .map(|info| info.tier)
+        .unwrap_or(2)
+}
+
+/// Fraction of a request's cost attributable to input tokens (vs. output tokens).
+/// Used to estimate savings from context trimming.
+pub fn estimate_input_cost_fraction(model: &str) -> f64 {
+    MODEL_CATALOG
+        .get(model)
+        .map(|info| {
+            let total = info.input_cost_per_1m + info.output_cost_per_1m;
+            if total > 0.0 {
+                info.input_cost_per_1m / total
+            } else {
+                0.5
+            }
+        })
+        .unwrap_or(0.5)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]

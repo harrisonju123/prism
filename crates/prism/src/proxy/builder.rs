@@ -73,6 +73,8 @@ pub struct AppStateBuilder {
     context_workspace_id: Option<uuid::Uuid>,
     #[cfg(feature = "postgres")]
     pg_pool: Option<sqlx::PgPool>,
+    local_inference_writer:
+        Option<Arc<crate::observability::local_writer::LocalInferenceWriter>>,
 }
 
 impl AppStateBuilder {
@@ -111,6 +113,7 @@ impl AppStateBuilder {
             context_workspace_id: None,
             #[cfg(feature = "postgres")]
             pg_pool: None,
+            local_inference_writer: None,
         }
     }
 
@@ -358,6 +361,14 @@ impl AppStateBuilder {
         self
     }
 
+    pub fn with_local_inference_writer(
+        mut self,
+        writer: Option<Arc<crate::observability::local_writer::LocalInferenceWriter>>,
+    ) -> Self {
+        self.local_inference_writer = writer;
+        self
+    }
+
     #[cfg(feature = "postgres")]
     pub fn with_pg_pool(mut self, pool: sqlx::PgPool) -> Self {
         self.pg_pool = Some(pool);
@@ -436,6 +447,7 @@ impl AppStateBuilder {
             context_workspace_id: self.context_workspace_id,
             #[cfg(feature = "postgres")]
             pg_pool: self.pg_pool,
+            local_inference_writer: self.local_inference_writer,
         })
     }
 }

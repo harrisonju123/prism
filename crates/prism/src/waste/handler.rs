@@ -28,23 +28,52 @@ fn ensure_waste_enabled(state: &AppState) -> Result<()> {
     }
 }
 
+async fn generate_report(
+    state: &AppState,
+    period_days: u32,
+) -> Result<super::WasteReport> {
+    // Prefer ClickHouse when available (full build + configured)
+    #[cfg(feature = "full")]
+    {
+        if !state.config.clickhouse.url.is_empty() {
+            return super::detector::generate_waste_report(
+                &state.config.clickhouse.url,
+                &state.config.clickhouse.database,
+                &state.fitness_cache,
+                &state.config.waste,
+                period_days,
+            )
+            .await
+            .map_err(|e| PrismError::Internal(format!("waste report generation failed: {e}")));
+        }
+    }
+
+    // Fall back to local SQLite store
+    let writer = state.local_inference_writer.as_ref().ok_or_else(|| {
+        PrismError::BadRequest(
+            "no observability backend available — start gateway with a local observability store \
+             or configure ClickHouse"
+                .to_string(),
+        )
+    })?;
+
+    super::local_detector::generate_waste_report_local(
+        writer.pool(),
+        &state.fitness_cache,
+        &state.config.waste,
+        period_days,
+    )
+    .await
+    .map_err(|e| PrismError::Internal(format!("local waste report generation failed: {e}")))
+}
+
 /// GET /api/v1/waste-report
 pub async fn waste_report(
     State(state): State<Arc<AppState>>,
     Query(params): Query<WasteReportParams>,
 ) -> Result<Response> {
     ensure_waste_enabled(&state)?;
-
-    let report = super::detector::generate_waste_report(
-        &state.config.clickhouse.url,
-        &state.config.clickhouse.database,
-        &state.fitness_cache,
-        &state.config.waste,
-        params.period_days,
-    )
-    .await
-    .map_err(|e| PrismError::Internal(format!("waste report generation failed: {e}")))?;
-
+    let report = generate_report(&state, params.period_days).await?;
     Ok(Json(report).into_response())
 }
 
@@ -54,16 +83,7 @@ pub async fn waste_nudges(
     Query(params): Query<WasteReportParams>,
 ) -> Result<Response> {
     ensure_waste_enabled(&state)?;
-
-    let report = super::detector::generate_waste_report(
-        &state.config.clickhouse.url,
-        &state.config.clickhouse.database,
-        &state.fitness_cache,
-        &state.config.waste,
-        params.period_days,
-    )
-    .await
-    .map_err(|e| PrismError::Internal(format!("waste report generation failed: {e}")))?;
+    let report = generate_report(&state, params.period_days).await?;
 
     let mut nudges: Vec<prism_types::WasteNudge> = Vec::new();
 

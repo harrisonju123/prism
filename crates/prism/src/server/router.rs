@@ -18,7 +18,6 @@ use crate::keys::MasterKey;
 use crate::proxy::batch;
 use crate::proxy::handler::{self, AppState};
 use crate::server::middleware;
-#[cfg(feature = "full")]
 use crate::waste;
 
 /// Build the axum router with all routes and middleware.
@@ -126,11 +125,27 @@ pub fn build(state: Arc<AppState>) -> Router {
 }
 
 /// Build management routes — key CRUD endpoints authenticated with master key.
-/// Only available in full builds; returns an empty router in embedded/lean builds.
+/// In non-full builds, exposes the local observability and waste endpoints (no auth).
 #[cfg(not(feature = "full"))]
-fn build_management_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
-    let _ = state;
+fn build_management_routes(_state: &Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
+        .route("/api/v1/waste-report", get(waste::handler::waste_report))
+        .route(
+            "/api/v1/waste-report/nudges",
+            get(waste::handler::waste_nudges),
+        )
+        .route(
+            "/api/v1/stats/summary",
+            get(api::local_stats::stats_summary),
+        )
+        .route(
+            "/api/v1/stats/by-model",
+            get(api::local_stats::stats_by_model),
+        )
+        .route(
+            "/api/v1/stats/timeseries",
+            get(api::local_stats::stats_timeseries),
+        )
 }
 
 #[cfg(feature = "full")]

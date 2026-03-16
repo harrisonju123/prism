@@ -1884,6 +1884,10 @@ pub struct AppState {
     /// Use this instead of going through key_service for features that only need DB access.
     #[cfg(feature = "postgres")]
     pub pg_pool: Option<sqlx::PgPool>,
+    /// Local SQLite inference event store — available in embedded and standalone modes.
+    /// None when the DB could not be opened (e.g. read-only filesystem).
+    pub local_inference_writer:
+        Option<Arc<crate::observability::local_writer::LocalInferenceWriter>>,
 }
 
 /// Accumulate spend and evict low-value entries when the map gets too large.

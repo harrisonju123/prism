@@ -13996,6 +13996,7 @@ dependencies = [
  "clap",
  "clickhouse",
  "dashmap",
+ "dirs 4.0.0",
  "figment",
  "futures 0.3.32",
  "hex",

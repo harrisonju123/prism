@@ -1,4 +1,5 @@
 pub mod callbacks;
+pub mod local_writer;
 pub mod metrics;
 #[cfg(feature = "otel")]
 pub mod otel;
