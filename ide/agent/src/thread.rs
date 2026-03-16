@@ -950,6 +950,8 @@ pub struct Thread {
     tool_result_cache: Arc<crate::tool_result_cache::ToolResultCache>,
     /// Exponential moving average of per-turn cost for spike detection (α=0.3)
     rolling_avg_turn_cost: f64,
+    /// Cumulative cost at the start of the current turn, for computing per-turn cost
+    turn_start_cumulative_cost: f64,
     /// Per-file last-read mtimes for staleness guard
     file_read_mtimes: std::collections::HashMap<String, std::time::SystemTime>,
     /// Handoff constraints: if set, only these tools/files may be used
@@ -1081,6 +1083,7 @@ impl Thread {
             max_messages: 200,
             tool_result_cache: crate::tool_result_cache::ToolResultCache::new(),
             rolling_avg_turn_cost: 0.0,
+            turn_start_cumulative_cost: 0.0,
             file_read_mtimes: std::collections::HashMap::new(),
             handoff_constraints: None,
         }
@@ -1343,6 +1346,7 @@ impl Thread {
             max_messages: 200,
             tool_result_cache: crate::tool_result_cache::ToolResultCache::new(),
             rolling_avg_turn_cost: 0.0,
+            turn_start_cumulative_cost: 0.0,
             file_read_mtimes: std::collections::HashMap::new(),
             handoff_constraints: None,
         }
@@ -1679,12 +1683,24 @@ impl Thread {
     }
 
     fn update_token_usage(&mut self, update: language_model::TokenUsage, cx: &mut Context<Self>) {
-        let Some(last_user_message) = self.last_user_message() else {
+        let Some(last_user_message_id) = self.last_user_message().map(|m| m.id.clone()) else {
             return;
         };
 
-        self.request_token_usage
-            .insert(last_user_message.id.clone(), update);
+        // Compute cost delta: new cost minus previous cost for this request (if any).
+        // request_token_usage overwrites per user message, so delta avoids double-counting
+        // when providers send multiple UsageUpdate events for the same API call.
+        if let Some(cost_info) = self.model.as_ref().and_then(|m| m.model_cost_info()) {
+            let new_cost = cost_info.compute_dollar_cost(&update);
+            let old_cost = self
+                .request_token_usage
+                .get(&last_user_message_id)
+                .map(|prev| cost_info.compute_dollar_cost(prev))
+                .unwrap_or(0.0);
+            self.cumulative_cost_usd += new_cost - old_cost;
+        }
+
+        self.request_token_usage.insert(last_user_message_id, update);
         cx.emit(TokenUsageUpdated(self.latest_token_usage()));
         cx.notify();
     }
@@ -1904,6 +1920,7 @@ impl Thread {
         let message_ix = self.messages.len().saturating_sub(1);
         self.clear_summary();
         let (cancellation_tx, mut cancellation_rx) = watch::channel(false);
+        self.turn_start_cumulative_cost = self.cumulative_cost_usd;
         self.running_turn = Some(RunningTurn {
             event_stream: event_stream.clone(),
             tools: self.enabled_tools(profile, &model, cx),
@@ -2233,20 +2250,14 @@ impl Thread {
             })?;
 
             // Cost spike detection (EMA α=0.3)
-            // cumulative_cost_usd is updated externally; when cost tracking is wired this fires.
             {
-                let (total_cost, prev_avg, ctx_opt) = this.read_with(cx, |t, _| {
-                    (t.cumulative_cost_usd, t.rolling_avg_turn_cost, t.context_handle.clone())
+                let (turn_cost, prev_avg, ctx_opt) = this.read_with(cx, |t, _| {
+                    (
+                        t.cumulative_cost_usd - t.turn_start_cumulative_cost,
+                        t.rolling_avg_turn_cost,
+                        t.context_handle.clone(),
+                    )
                 })?;
-                // Approximate turn cost as difference from last known cumulative.
-                // (Will be non-zero once cost tracking is wired to update cumulative_cost_usd.)
-                let turn_cost = if prev_avg > 0.0 {
-                    // Proxy: if cumulative changed since last sample we'd detect it; currently 0
-                    0.0f64
-                } else {
-                    0.0f64
-                };
-                let _ = (total_cost, turn_cost); // suppress unused warnings until cost is wired
                 if let Some(ctx) = ctx_opt {
                     let new_avg = if prev_avg == 0.0 && turn_cost > 0.0 {
                         turn_cost
