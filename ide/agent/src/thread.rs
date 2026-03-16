@@ -2012,10 +2012,12 @@ impl Thread {
         }
 
         loop {
-            // Context store heartbeat (best-effort, fire-and-forget)
+            // Context store heartbeat + inbox message polling (single read_with)
             {
                 let ctx_opt = this.read_with(cx, |t, _| t.context_handle.clone())?;
-                if let Some(ctx) = ctx_opt {
+
+                // Heartbeat (best-effort, fire-and-forget)
+                if let Some(ctx) = ctx_opt.clone() {
                     cx.update(|cx| {
                         Tokio::spawn_result(cx, async move {
                             if let Err(e) = ctx.heartbeat().await {
@@ -2025,6 +2027,34 @@ impl Thread {
                         })
                     })
                     .detach();
+                }
+
+                // Poll inbox messages from supervisor/other agents and inject as user messages
+                if let Some(ctx) = ctx_opt {
+                    let msgs_task = cx.update(|cx| {
+                        Tokio::spawn_result(cx, async move {
+                            let msgs = ctx.poll_messages().await;
+                            if !msgs.is_empty() {
+                                let _ = ctx.mark_messages_read().await;
+                            }
+                            Ok::<Vec<prism_context::model::Message>, anyhow::Error>(msgs)
+                        })
+                    });
+                    if let Ok(msgs) = msgs_task.await {
+                        if !msgs.is_empty() {
+                            this.update(cx, |this, _cx| {
+                                for msg in msgs {
+                                    this.messages.push(Message::User(UserMessage {
+                                        id: UserMessageId::new(),
+                                        content: vec![UserMessageContent::Text(format!(
+                                            "[Message from {}]: {}",
+                                            msg.from_agent, msg.content
+                                        ))],
+                                    }));
+                                }
+                            })?;
+                        }
+                    }
                 }
             }
 

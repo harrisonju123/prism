@@ -177,6 +177,31 @@ impl ContextHandle {
         }
     }
 
+    /// Poll unread messages addressed to this agent. Returns empty vec on error (best-effort).
+    pub async fn poll_messages(&self) -> Vec<prism_context::model::Message> {
+        let agent_name = Self::agent_name();
+        match self
+            .store
+            .list_messages(self.workspace_id, &agent_name, true)
+            .await
+        {
+            Ok(msgs) => msgs,
+            Err(e) => {
+                log::debug!("context poll_messages failed: {e}");
+                vec![]
+            }
+        }
+    }
+
+    /// Mark all messages to this agent as read.
+    pub async fn mark_messages_read(&self) -> anyhow::Result<()> {
+        let agent_name = Self::agent_name();
+        self.store
+            .mark_messages_read(self.workspace_id, &agent_name)
+            .await?;
+        Ok(())
+    }
+
     /// Create (or debounce-update) a cost spike inbox event.
     pub async fn create_cost_spike_entry(&self, title: &str, near_cap: bool) -> anyhow::Result<()> {
         let thread_id = self.context_thread.read().as_ref().map(|t| t.id);
