@@ -155,6 +155,10 @@ fn build_management_routes(state: &Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/api/v1/keys/{id}", patch(api::keys::update_key))
         .route("/api/v1/keys/{id}/usage", get(api::keys::key_usage))
         .route("/api/v1/waste-report", get(waste::handler::waste_report))
+        .route(
+            "/api/v1/waste-report/nudges",
+            get(waste::handler::waste_nudges),
+        )
         .route("/api/v1/stats/summary", get(api::stats::summary))
         .route("/api/v1/stats/timeseries", get(api::stats::timeseries))
         .route("/api/v1/stats/top-traces", get(api::stats::top_traces))

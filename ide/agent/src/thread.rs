@@ -2080,6 +2080,22 @@ impl Thread {
                         if !msgs.is_empty() {
                             this.update(cx, |this, _cx| {
                                 for msg in msgs {
+                                    // Session-level dedup for waste nudge messages
+                                    // Keep in sync with prism_types::WASTE_DETECTOR_AGENT
+                                    if msg.from_agent == "prism-waste-detector" {
+                                        let Some(category) =
+                                            extract_waste_category(&msg.content)
+                                        else {
+                                            continue;
+                                        };
+                                        if !this
+                                            .guardrails
+                                            .waste_nudge_tracker
+                                            .check_and_insert(&category)
+                                        {
+                                            continue;
+                                        }
+                                    }
                                     this.messages.push(Message::User(UserMessage {
                                         id: UserMessageId::new(),
                                         content: vec![UserMessageContent::Text(format!(
@@ -4652,6 +4668,17 @@ impl From<UserMessageContent> for acp::ContentBlock {
             ),
         }
     }
+}
+
+/// Extract the waste category slug from a waste nudge message like "[Waste: Model Overkill] ...".
+/// Returns a lowercase snake_case category string, or None if not a waste message.
+fn extract_waste_category(content: &str) -> Option<String> {
+    let start = content.find("[Waste: ")?;
+    let rest = &content[start + 8..];
+    let end = rest.find(']')?;
+    let label = rest[..end].trim().to_lowercase();
+    // Normalize to snake_case
+    Some(label.replace(' ', "_"))
 }
 
 fn convert_image(image_content: acp::ImageContent) -> LanguageModelImage {

@@ -12,6 +12,10 @@ use crate::{AgentTool, ToolCallEventStream, ToolInput};
 
 use super::context_handle::ContextHandle;
 
+fn default_scope() -> String {
+    "thread".to_string()
+}
+
 /// Records an architectural or design decision with its rationale.
 /// Future sessions can understand why this path was chosen.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -23,6 +27,9 @@ pub struct RecordDecisionToolInput {
     /// Optional tags
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Scope: "thread" (default) or "workspace" (notifies all agents)
+    #[serde(default = "default_scope")]
+    pub scope: String,
 }
 
 pub struct RecordDecisionTool {
@@ -66,7 +73,15 @@ impl AgentTool for RecordDecisionTool {
                 .await
                 .map_err(|e| format!("Failed to receive tool input: {e}"))?;
 
-            let thread_id = context.context_thread.read().as_ref().map(|t| t.id);
+            let scope = match input.scope.as_str() {
+                "workspace" => DecisionScope::Workspace,
+                _ => DecisionScope::Thread,
+            };
+            let thread_id = if matches!(scope, DecisionScope::Workspace) {
+                None
+            } else {
+                context.context_thread.read().as_ref().map(|t| t.id)
+            };
             let ws_id = context.workspace_id;
             let title = input.title.clone();
             let content = input.content.clone();
@@ -82,7 +97,7 @@ impl AgentTool for RecordDecisionTool {
                             &content,
                             thread_id,
                             tags,
-                            DecisionScope::Thread,
+                            scope,
                         )
                         .await
                         .map_err(|e| anyhow::anyhow!("save_decision failed: {e}"))

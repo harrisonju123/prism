@@ -297,6 +297,23 @@ pub struct WasteScoreResponse {
     pub estimated_waste_usd: f64,
 }
 
+/// Agent name used when sending waste nudge messages via the context store.
+/// Matched in the IDE agent's message polling loop to apply session dedup.
+pub const WASTE_DETECTOR_AGENT: &str = "prism-waste-detector";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasteNudge {
+    pub category: String,
+    pub severity: String,
+    pub message: String,
+    pub savings_usd: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasteNudgesResponse {
+    pub nudges: Vec<WasteNudge>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskTypeStatsResponse {
     pub period_days: u32,

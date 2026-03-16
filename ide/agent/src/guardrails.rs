@@ -471,6 +471,30 @@ impl PlanGuard {
 }
 
 // ---------------------------------------------------------------------------
+// WasteNudgeTracker
+// ---------------------------------------------------------------------------
+
+/// Tracks which waste categories have already been surfaced this session.
+/// Prevents the same category from being injected more than once per agent session.
+pub struct WasteNudgeTracker {
+    seen_categories: HashSet<String>,
+}
+
+impl WasteNudgeTracker {
+    pub fn new() -> Self {
+        Self {
+            seen_categories: HashSet::new(),
+        }
+    }
+
+    /// Returns `true` if this category is new and marks it seen.
+    /// Returns `false` if already seen (should be skipped).
+    pub fn check_and_insert(&mut self, category: &str) -> bool {
+        self.seen_categories.insert(category.to_string())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Guardrails (top-level aggregate)
 // ---------------------------------------------------------------------------
 
@@ -482,6 +506,7 @@ pub struct Guardrails {
     pub write_guards: WriteGuards,
     pub verbosity: VerbosityTracker,
     pub plan_guard: PlanGuard,
+    pub waste_nudge_tracker: WasteNudgeTracker,
     pub turn_count: u32,
     turn_files_written: Vec<String>,
     turn_tool_names: Vec<String>,
@@ -497,6 +522,7 @@ impl Guardrails {
             write_guards: WriteGuards::new(),
             verbosity: VerbosityTracker::new(2000, 3),
             plan_guard: PlanGuard::new(),
+            waste_nudge_tracker: WasteNudgeTracker::new(),
             turn_count: 0,
             turn_files_written: Vec::new(),
             turn_tool_names: Vec::new(),

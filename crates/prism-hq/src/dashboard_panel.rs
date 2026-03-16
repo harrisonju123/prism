@@ -1,3 +1,4 @@
+use crate::context_service::get_context_handle;
 use crate::dashboard_types::DashboardData;
 use anyhow::Result;
 use db::kvp::KEY_VALUE_STORE;
@@ -8,6 +9,7 @@ use gpui::{
 };
 use crate::HqState;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::time::Duration;
 use prism_context::model::{ActivityEntry, AgentState, AgentStatus};
 use ui::{
@@ -55,6 +57,7 @@ pub struct PrismDashboardPanel {
     context_available: bool,
     active_agents_expanded: bool,
     recent_activity_expanded: bool,
+    sent_waste_categories: HashSet<String>,
     refresh_task: Option<Task<()>>,
     _auto_refresh: Task<()>,
     _prism_subscription: Option<gpui::Subscription>,
@@ -136,6 +139,7 @@ impl PrismDashboardPanel {
                 context_available: false,
                 active_agents_expanded: true,
                 recent_activity_expanded: true,
+                sent_waste_categories: HashSet::new(),
                 refresh_task: None,
                 _auto_refresh: Task::ready(()),
                 _prism_subscription: prism_subscription,
@@ -266,7 +270,10 @@ impl PrismDashboardPanel {
 
         let api_key = self.api_key.clone();
 
-        self.refresh_task = Some(cx.spawn(async move |this, cx| {
+        self.refresh_task = Some(cx.spawn(async move |this, mut cx| {
+            // Grab context handle before entering background (needs GPUI globals)
+            let ctx_handle = get_context_handle(&this, &mut cx);
+
             let result: anyhow::Result<_> = cx
                     .background_spawn(async move {
                         let mut client = prism_client::PrismClient::new(&gateway_url);
@@ -282,6 +289,7 @@ impl PrismDashboardPanel {
                             quality,
                             savings,
                             efficiency,
+                            nudges,
                         ) = futures::join!(
                             client.stats_summary(7),
                             client.stats_waste_score(7),
@@ -290,11 +298,12 @@ impl PrismDashboardPanel {
                             client.stats_agents(7),
                             client.quality_trends(7),
                             client.routing_savings(7),
-                            client.session_efficiency(7)
+                            client.session_efficiency(7),
+                            client.waste_nudges(1),
                         );
                         anyhow::Ok((
                             summary, waste, task_types, policy, agents, quality, savings,
-                            efficiency,
+                            efficiency, nudges,
                         ))
                     })
                     .await;
@@ -311,6 +320,7 @@ impl PrismDashboardPanel {
                         quality,
                         savings,
                         efficiency,
+                        nudges,
                     )) => {
                         this.data.summary = summary.ok();
                         this.data.waste_score = waste.ok();
@@ -320,6 +330,44 @@ impl PrismDashboardPanel {
                         this.data.quality_trends = quality.ok();
                         this.data.routing_savings = savings.ok();
                         this.data.session_efficiency = efficiency.ok();
+                        // Collect nudges to send, then dispatch from background
+                        if let (Ok(nudge_resp), Some(ctx)) = (nudges, ctx_handle) {
+                            let mut to_send: Vec<(String, String)> = Vec::new();
+                            for nudge in &nudge_resp.nudges {
+                                if nudge.severity == "info" {
+                                    continue;
+                                }
+                                if !this.sent_waste_categories.insert(nudge.category.clone()) {
+                                    continue;
+                                }
+                                for agent in &this.context_agents {
+                                    if matches!(
+                                        agent.state,
+                                        prism_context::model::AgentState::Working
+                                            | prism_context::model::AgentState::Idle
+                                    ) {
+                                        to_send.push((
+                                            agent.name.clone(),
+                                            nudge.message.clone(),
+                                        ));
+                                    }
+                                }
+                            }
+                            this.data.waste_nudges = Some(nudge_resp);
+                            // Send messages on a background thread (send_message blocks)
+                            if !to_send.is_empty() {
+                                cx.spawn(async move |_, _| {
+                                    for (agent, message) in to_send {
+                                        let _ = ctx.send_message(
+                                            prism_types::WASTE_DETECTOR_AGENT,
+                                            &agent,
+                                            &message,
+                                        );
+                                    }
+                                })
+                                .detach();
+                            }
+                        }
                         this.error = None;
                     }
                     Err(e) => {

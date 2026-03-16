@@ -9,7 +9,8 @@ pub use retry::RetryConfig;
 pub use prism_types::{
     AgentMetricsResponse, ChatCompletionRequest, ChatCompletionResponse, Choice, Message,
     PolicyResponse, QualityTrendsResponse, RoutingSavingsResponse, SessionEfficiencyResponse,
-    SummaryResponse, TaskTypeStatsResponse, Usage, WasteScoreResponse,
+    SummaryResponse, TaskTypeStatsResponse, Usage, WasteNudge, WasteNudgesResponse,
+    WasteScoreResponse, WASTE_DETECTOR_AGENT,
 };
 
 // --- Error ---
@@ -309,6 +310,17 @@ impl PrismClient {
             .request(
                 reqwest::Method::GET,
                 &format!("/api/v1/stats/waste-score?period_days={period_days}"),
+            )
+            .send()
+            .await?;
+        Self::handle_response(resp).await
+    }
+
+    pub async fn waste_nudges(&self, period_days: u32) -> Result<WasteNudgesResponse> {
+        let resp = self
+            .request(
+                reqwest::Method::GET,
+                &format!("/api/v1/waste-report/nudges?period_days={period_days}"),
             )
             .send()
             .await?;
