@@ -115,63 +115,50 @@ fn prism_binary() -> Option<PathBuf> {
     if p.exists() { Some(p) } else { None }
 }
 
-/// Attempt to auto-claim the context thread whose ID is stored in `session`.
-///
-/// Invokes `~/.cargo/bin/prism context checkin --name <agent>` in a background
-/// thread.  Returns the task name on success so the caller can update the
-/// session file.
-pub fn auto_claim_task(task_id: &str, agent_name: &str) -> Option<String> {
+/// Invoke `prism context thread list --active` and return the parsed JSON array.
+fn list_active_threads() -> Option<Vec<serde_json::Value>> {
     let uh = prism_binary()?;
-
     let output = std::process::Command::new(&uh)
-        .args(["context", "checkin", "--name", agent_name])
+        .args(["context", "thread", "list", "--active"])
         .output()
         .ok()?;
-
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        // Parse JSON to get the task name
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&stdout) {
-            let name = value
-                .get("name")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            return name;
-        }
-    } else {
+    if !output.status.success() {
         log::debug!(
-            "prism context checkin failed: {}",
+            "prism context thread list --active failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str::<serde_json::Value>(&stdout)
+        .ok()
+        .and_then(|v| v.as_array().cloned())
+}
+
+/// Resolve the name of a context thread by its ID.
+///
+/// No checkin is performed here — the actual checkin (with correct thread_id)
+/// happens later in `register_session` via `ContextHandle::checkin`.
+pub fn resolve_task_name(task_id: &str) -> Option<String> {
+    for task in list_active_threads()? {
+        if task.get("id").and_then(|v| v.as_str()) == Some(task_id) {
+            return task.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
+        }
     }
     None
 }
 
 /// Look up the context thread whose branch matches `branch_name`.
 ///
-/// Invokes `~/.cargo/bin/prism context thread list` and searches by name.
 /// Returns `(task_id, task_name)` when a match is found.
 pub fn find_task_for_branch(branch_name: &str) -> Option<(String, String)> {
-    let uh = prism_binary()?;
-
-    let output = std::process::Command::new(&uh)
-        .args(["context", "thread", "list", "--active"])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let tasks: serde_json::Value = serde_json::from_str(&stdout).ok()?;
-    let task_array = tasks.as_array()?;
+    let threads = list_active_threads()?;
 
     // Normalise branch name for comparison: replace slashes with hyphens and
     // lowercase everything.
     let normalised_branch = branch_name.replace('/', "-").to_lowercase();
 
-    for task in task_array {
+    for task in &threads {
         let id = task.get("id").and_then(|v| v.as_str())?;
         let name = task.get("name").and_then(|v| v.as_str())?;
 

@@ -378,26 +378,29 @@ impl NativeAgent {
             // Auto-claim context thread when the branch matches a known thread or a
             // `.prism-session.json` already has a task_id (resume after crash).
             let session_file_path = prism_session::session_file_path(&worktree_root);
-            let maybe_task_id: Option<String> =
+            let maybe_task: Option<(String, String)> =
                 prism_session::PrismSessionFile::try_read_from(&session_file_path)
-                    .and_then(|existing| existing.task_id)
+                    .and_then(|existing| {
+                        let id = existing.task_id?;
+                        let name = existing
+                            .task_name
+                            .or_else(|| prism_session::resolve_task_name(&id))?;
+                        Some((id, name))
+                    })
                     .or_else(|| {
                         branch
                             .as_deref()
                             .and_then(prism_session::find_task_for_branch)
-                            .map(|(id, _name)| id)
                     });
 
-            if let Some(task_id) = maybe_task_id {
-                if let Some(task_name) = prism_session::auto_claim_task(&task_id, &agent_name) {
-                    if let Ok(uuid) = task_id.parse::<Uuid>() {
-                        if let Some(ref ctx) = self.context_handle {
-                            ctx.set_context_thread(uuid, task_name.clone());
-                        }
+            if let Some((task_id, task_name)) = maybe_task {
+                if let Ok(uuid) = task_id.parse::<Uuid>() {
+                    if let Some(ref ctx) = self.context_handle {
+                        ctx.set_context_thread(uuid, task_name.clone());
                     }
-                    session_file.task_id = Some(task_id);
-                    session_file.task_name = Some(task_name);
                 }
+                session_file.task_id = Some(task_id);
+                session_file.task_name = Some(task_name);
             }
 
             session_file.write_to(&session_file_path);
