@@ -185,3 +185,34 @@ Phase 4 (learning)
 | 2.3 Routing transparency | Small | Medium | None (data in response headers) |
 | 1.1 Thread-aware sessions | Medium | Very High | None |
 | 3.1 Agent roster | Small | Medium | 1.1 |
+
+---
+
+## Phase CC — Claude Code Parity (IDE Agent Feature Diff)
+
+Closes the gap between the PrisM IDE agent and Claude Code's tool surface.
+
+### Tier 1 — Implemented ✅
+
+| Tool | File | Description |
+|------|------|-------------|
+| `add_dir` | `tools/add_dir_tool.rs` | Add a working directory to the workspace mid-session via `Project::find_or_create_worktree`. |
+| `task_create` | `tools/task_create_tool.rs` | Create a named task in the session-scoped `TaskStore`. |
+| `task_update` | `tools/task_update_tool.rs` | Update status, description, or dependency edges of a task. |
+| `task_get` | `tools/task_get_tool.rs` | Retrieve details of a specific task by ID prefix. |
+| `task_list` | `tools/task_list_tool.rs` | List all tasks, optionally filtered by status. |
+| `lsp` | `tools/lsp_tool.rs` | LSP code intelligence: go_to_definition, find_references, hover, document_symbols, workspace_symbols. |
+| `notebook_edit` | `tools/notebook_edit_tool.rs` | Edit Jupyter notebook cells (replace/insert/delete) parsed as nbformat v4 JSON. |
+
+**Shared infrastructure:** `tools/task_store.rs` — in-memory `TaskStore` (`Arc<Mutex<TaskStore>>`) shared across all 4 task tools per session.
+
+### Tier 2 — Deferred
+
+| Feature | Effort | Notes |
+|---------|--------|-------|
+| REPL Tool | High | Headless kernel via `runtimelib`. Blocked on ZMQ async integration without Window context. |
+| Plan Mode | Medium | Thread-level read-only mode. Needs `plan_mode: bool` on `Thread` + `tool_permissions.rs` check. |
+| Context Compaction | Medium | Auto-summarize old messages at 80% context fill. Needs `Thread::maybe_compact_context()`. |
+| Worktree Isolation on SpawnAgent | Low | `isolation: "worktree"` option in `SpawnAgentToolInput`. |
+| Cron/Loop Tool | Low | Recurring prompt execution. Low value in IDE context. |
+| Deferred Tool Loading | Low | Lazy MCP schema loading to reduce context usage. |

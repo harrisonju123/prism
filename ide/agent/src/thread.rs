@@ -1,12 +1,13 @@
 use crate::{
-    AskHumanTool, ContextHandle, ContextOverviewTool, ContextServerRegistry, CopyPathTool,
-    CreateDirectoryTool, CreateSnapshotTool, DbLanguageModel, DbThread, DeletePathTool,
+    AddDirTool, AskHumanTool, ContextHandle, ContextOverviewTool, ContextServerRegistry,
+    CopyPathTool, CreateDirectoryTool, CreateSnapshotTool, DbLanguageModel, DbThread, DeletePathTool,
     DiagnosticsTool, EditFileTool,
     FetchTool, FindPathTool, ForgetMemoryTool, GrepTool, ListDirectoryTool, ListMemoriesTool,
-    ListSnapshotsTool,
-    MovePathTool, NowTool, OpenTool, ProjectSnapshot, ReadFileTool, RecallTool, RecordDecisionTool,
-    RequestReviewTool, RestoreFileFromDiskTool, SaveFileTool, SaveMemoryTool, SendMessageTool,
-    SkillTool, SpawnAgentTool, StreamingEditFileTool, SystemPromptTemplate, Template, Templates,
+    ListSnapshotsTool, LspTool,
+    MovePathTool, NotebookEditTool, NowTool, OpenTool, ProjectSnapshot, ReadFileTool, RecallTool,
+    RecordDecisionTool, RequestReviewTool, RestoreFileFromDiskTool, SaveFileTool, SaveMemoryTool,
+    SendMessageTool, SkillTool, SpawnAgentTool, StreamingEditFileTool, SystemPromptTemplate,
+    TaskCreateTool, TaskGetTool, TaskListTool, TaskStore, TaskUpdateTool, Template, Templates,
     TerminalTool, ThreadArchiveTool, ThreadCreateTool, ThreadListTool, ToolPermissionDecision,
     WebSearchTool, decide_permission_from_settings,
 };
@@ -1584,6 +1585,7 @@ impl Thread {
             self.project.clone(),
             self.action_log.clone(),
         ));
+        self.add_tool(AddDirTool::new(self.project.clone()));
         self.add_tool(DiagnosticsTool::new(self.project.clone()));
         self.add_tool(EditFileTool::new(
             self.project.clone(),
@@ -1600,8 +1602,10 @@ impl Thread {
         self.add_tool(FetchTool::new(self.project.read(cx).client().http_client()));
         self.add_tool(FindPathTool::new(self.project.clone()));
         self.add_tool(GrepTool::new(self.project.clone()));
+        self.add_tool(LspTool::new(self.project.clone()));
         self.add_tool(ListDirectoryTool::new(self.project.clone()));
         self.add_tool(MovePathTool::new(self.project.clone()));
+        self.add_tool(NotebookEditTool::new(self.project.clone()));
         self.add_tool(NowTool);
         self.add_tool(OpenTool::new(self.project.clone()));
         self.add_tool(ReadFileTool::new(
@@ -1611,6 +1615,11 @@ impl Thread {
         ));
         self.add_tool(SaveFileTool::new(self.project.clone()));
         self.add_tool(RestoreFileFromDiskTool::new(self.project.clone()));
+        let task_store = TaskStore::new();
+        self.add_tool(TaskCreateTool::new(task_store.clone()));
+        self.add_tool(TaskGetTool::new(task_store.clone()));
+        self.add_tool(TaskListTool::new(task_store.clone()));
+        self.add_tool(TaskUpdateTool::new(task_store));
         self.add_tool(TerminalTool::new(self.project.clone(), environment.clone()));
         self.add_tool(WebSearchTool);
 

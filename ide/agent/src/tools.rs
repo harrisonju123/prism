@@ -1,3 +1,4 @@
+mod add_dir_tool;
 mod ask_human_tool;
 mod skill_tool;
 mod codebase_search_tool;
@@ -17,7 +18,9 @@ mod grep_tool;
 mod list_directory_tool;
 mod list_memories_tool;
 mod list_snapshots_tool;
+mod lsp_tool;
 mod move_path_tool;
+mod notebook_edit_tool;
 mod now_tool;
 mod open_tool;
 mod read_file_tool;
@@ -30,6 +33,11 @@ mod save_memory_tool;
 mod send_message_tool;
 mod spawn_agent_tool;
 mod streaming_edit_file_tool;
+mod task_create_tool;
+mod task_get_tool;
+mod task_list_tool;
+mod task_store;
+mod task_update_tool;
 mod terminal_tool;
 mod thread_archive_tool;
 mod thread_create_tool;
@@ -41,6 +49,7 @@ mod web_search_tool;
 use crate::AgentTool;
 use language_model::{LanguageModelRequestTool, LanguageModelToolSchemaFormat};
 
+pub use add_dir_tool::*;
 pub use ask_human_tool::*;
 pub use skill_tool::*;
 pub use codebase_search_tool::*;
@@ -60,7 +69,9 @@ pub use grep_tool::*;
 pub use list_directory_tool::*;
 pub use list_memories_tool::*;
 pub use list_snapshots_tool::*;
+pub use lsp_tool::*;
 pub use move_path_tool::*;
+pub use notebook_edit_tool::*;
 pub use now_tool::*;
 pub use open_tool::*;
 pub use read_file_tool::*;
@@ -73,6 +84,11 @@ pub use save_memory_tool::*;
 pub use send_message_tool::*;
 pub use spawn_agent_tool::*;
 pub use streaming_edit_file_tool::*;
+pub use task_create_tool::*;
+pub use task_get_tool::*;
+pub use task_list_tool::*;
+pub use task_store::*;
+pub use task_update_tool::*;
 pub use terminal_tool::*;
 pub use thread_archive_tool::*;
 pub use thread_create_tool::*;
@@ -149,6 +165,7 @@ macro_rules! tools {
 }
 
 tools! {
+    AddDirTool,
     AskHumanTool,
     CodebaseSearchTool,
     ContextOverviewTool,
@@ -165,7 +182,9 @@ tools! {
     ListDirectoryTool,
     ListMemoriesTool,
     ListSnapshotsTool,
+    LspTool,
     MovePathTool,
+    NotebookEditTool,
     NowTool,
     OpenTool,
     ReadFileTool,
@@ -177,6 +196,10 @@ tools! {
     SaveMemoryTool,
     SendMessageTool,
     SpawnAgentTool,
+    TaskCreateTool,
+    TaskGetTool,
+    TaskListTool,
+    TaskUpdateTool,
     TerminalTool,
     ThreadArchiveTool,
     ThreadCreateTool,
