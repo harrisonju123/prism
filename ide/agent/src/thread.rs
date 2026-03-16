@@ -946,6 +946,14 @@ pub struct Thread {
     compressor: ContextCompressor,
     /// Maximum messages before auto-compress is triggered
     max_messages: usize,
+    /// Session-scoped tool result cache (read-only tool dedup)
+    tool_result_cache: Arc<crate::tool_result_cache::ToolResultCache>,
+    /// Exponential moving average of per-turn cost for spike detection (α=0.3)
+    rolling_avg_turn_cost: f64,
+    /// Per-file last-read mtimes for staleness guard
+    file_read_mtimes: std::collections::HashMap<String, std::time::SystemTime>,
+    /// Handoff constraints: if set, only these tools/files may be used
+    handoff_constraints: Option<prism_context::model::HandoffConstraints>,
 }
 
 impl Thread {
@@ -1071,6 +1079,10 @@ impl Thread {
             hook_runner: None,
             compressor: ContextCompressor::default(),
             max_messages: 200,
+            tool_result_cache: crate::tool_result_cache::ToolResultCache::new(),
+            rolling_avg_turn_cost: 0.0,
+            file_read_mtimes: std::collections::HashMap::new(),
+            handoff_constraints: None,
         }
     }
 
@@ -1329,6 +1341,10 @@ impl Thread {
             hook_runner: None,
             compressor: ContextCompressor::default(),
             max_messages: 200,
+            tool_result_cache: crate::tool_result_cache::ToolResultCache::new(),
+            rolling_avg_turn_cost: 0.0,
+            file_read_mtimes: std::collections::HashMap::new(),
+            handoff_constraints: None,
         }
     }
 
@@ -1983,6 +1999,22 @@ impl Thread {
         }
 
         loop {
+            // Context store heartbeat (best-effort, fire-and-forget)
+            {
+                let ctx_opt = this.read_with(cx, |t, _| t.context_handle.clone())?;
+                if let Some(ctx) = ctx_opt {
+                    cx.update(|cx| {
+                        Tokio::spawn_result(cx, async move {
+                            if let Err(e) = ctx.heartbeat().await {
+                                log::debug!("context heartbeat failed: {e}");
+                            }
+                            Ok::<(), anyhow::Error>(())
+                        })
+                    })
+                    .detach();
+                }
+            }
+
             // Pre-turn guardrail injections
             this.update(cx, |this, _cx| {
                 this.guardrails.increment_turn();
@@ -2199,6 +2231,51 @@ impl Thread {
                     this.guardrails.self_review.schedule_review(turn_files);
                 }
             })?;
+
+            // Cost spike detection (EMA α=0.3)
+            // cumulative_cost_usd is updated externally; when cost tracking is wired this fires.
+            {
+                let (total_cost, prev_avg, ctx_opt) = this.read_with(cx, |t, _| {
+                    (t.cumulative_cost_usd, t.rolling_avg_turn_cost, t.context_handle.clone())
+                })?;
+                // Approximate turn cost as difference from last known cumulative.
+                // (Will be non-zero once cost tracking is wired to update cumulative_cost_usd.)
+                let turn_cost = if prev_avg > 0.0 {
+                    // Proxy: if cumulative changed since last sample we'd detect it; currently 0
+                    0.0f64
+                } else {
+                    0.0f64
+                };
+                let _ = (total_cost, turn_cost); // suppress unused warnings until cost is wired
+                if let Some(ctx) = ctx_opt {
+                    let new_avg = if prev_avg == 0.0 && turn_cost > 0.0 {
+                        turn_cost
+                    } else if turn_cost > 0.0 {
+                        0.7 * prev_avg + 0.3 * turn_cost
+                    } else {
+                        prev_avg
+                    };
+                    this.update(cx, |t, _| t.rolling_avg_turn_cost = new_avg)?;
+
+                    let is_spike = turn_cost > 0.0 && prev_avg > 0.0 && turn_cost > 1.5 * prev_avg;
+                    if is_spike {
+                        let title = format!(
+                            "Turn cost spike: ${:.4} vs avg ${:.4}",
+                            turn_cost, prev_avg
+                        );
+                        let ctx2 = ctx.clone();
+                        cx.update(|cx| {
+                            Tokio::spawn_result(cx, async move {
+                                if let Err(e) = ctx2.create_cost_spike_entry(&title, false).await {
+                                    log::debug!("cost spike entry failed: {e}");
+                                }
+                                Ok::<(), anyhow::Error>(())
+                            })
+                        })
+                        .detach();
+                    }
+                }
+            }
 
             if cancelled {
                 log::debug!("Turn cancelled by user, exiting");
@@ -2542,6 +2619,143 @@ impl Thread {
             }
         }
 
+        // Handoff constraint enforcement
+        if let Some(ref constraints) = self.handoff_constraints {
+            let name_str = tool_use.name.as_ref();
+            if !constraints.allowed_tools.is_empty()
+                && !constraints.allowed_tools.iter().any(|t| t == name_str)
+            {
+                return Some(Task::ready(LanguageModelToolResult {
+                    content: LanguageModelToolResultContent::Text(Arc::from(format!(
+                        "tool '{name_str}' not allowed by handoff constraints (allowed: {})",
+                        constraints.allowed_tools.join(", ")
+                    ))),
+                    tool_use_id: tool_use.id,
+                    tool_name: tool_use.name,
+                    is_error: true,
+                    output: None,
+                }));
+            }
+            let file_path_arg = tool_use
+                .input
+                .get("path")
+                .or_else(|| tool_use.input.get("file_path"))
+                .and_then(|v| v.as_str());
+            if let Some(fp) = file_path_arg {
+                if !constraints.allowed_files.is_empty()
+                    && !constraints.allowed_files.iter().any(|f| f == fp)
+                {
+                    return Some(Task::ready(LanguageModelToolResult {
+                        content: LanguageModelToolResultContent::Text(Arc::from(format!(
+                            "file '{fp}' not allowed by handoff constraints"
+                        ))),
+                        tool_use_id: tool_use.id,
+                        tool_name: tool_use.name,
+                        is_error: true,
+                        output: None,
+                    }));
+                }
+            }
+        }
+
+        // Async context store checks for write tools: file claims + thread-scoped guardrails
+        let is_write_tool = matches!(
+            tool_use.name.as_ref(),
+            "edit_file" | "streaming_edit_file" | "write_file" | "save_file"
+        );
+        if is_write_tool {
+            if let Some(ctx) = self.context_handle.clone() {
+                let path_opt = tool_use
+                    .input
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                if let Some(path) = path_opt {
+                    let tool_use_id_d = tool_use.id.clone();
+                    let tool_name_d = tool_use.name.clone();
+                    let ctx2 = ctx.clone();
+                    let path2 = path.clone();
+                    let tool_name_g = tool_use.name.clone();
+                    let tool_use_id_g = tool_use.id.clone();
+                    let tool_name_g2 = tool_use.name.clone();
+                    let tool_clone = tool.clone();
+                    let input_clone = tool_use.input.clone();
+                    let id_clone = tool_use.id.clone();
+                    let name_clone = tool_use.name.clone();
+                    let event_stream_clone = event_stream.clone();
+                    let cancellation_rx_clone = cancellation_rx.clone();
+
+                    return Some(cx.spawn(async move |weak_this: WeakEntity<Thread>, cx| {
+                        // File claim check
+                        let claim_task = cx.update(|cx| {
+                            let ctx3 = ctx2.clone();
+                            let p = path.clone();
+                            Tokio::spawn_result(cx, async move { ctx3.check_file_claim(&p).await })
+                        });
+                        if let Ok(Some(owner)) = claim_task.await {
+                            return LanguageModelToolResult {
+                                content: LanguageModelToolResultContent::Text(Arc::from(
+                                    format!(
+                                        "File '{path2}' is claimed by agent '{owner}' — \
+                                         coordinate before editing."
+                                    ),
+                                )),
+                                tool_use_id: tool_use_id_d,
+                                tool_name: tool_name_d,
+                                is_error: true,
+                                output: None,
+                            };
+                        }
+
+                        // Thread-scoped guardrail check
+                        let guardrail_task = cx.update(|cx| {
+                            let ctx4 = ctx.clone();
+                            let p = path2.clone();
+                            let tn = tool_name_g.clone();
+                            Tokio::spawn_result(cx, async move {
+                                ctx4.check_guardrail(tn.as_ref(), Some(&p)).await
+                            })
+                        });
+                        if let Ok(Some(reason)) = guardrail_task.await {
+                            return LanguageModelToolResult {
+                                content: LanguageModelToolResultContent::Text(Arc::from(
+                                    format!("Guardrail violation: {reason}"),
+                                )),
+                                tool_use_id: tool_use_id_g,
+                                tool_name: tool_name_g2,
+                                is_error: true,
+                                output: None,
+                            };
+                        }
+
+                        // Checks passed — run the tool
+                        match weak_this.update(cx, |this: &mut Thread, cx| {
+                            this.run_tool(
+                                tool_clone,
+                                ToolInput::ready(input_clone),
+                                id_clone,
+                                name_clone,
+                                &event_stream_clone,
+                                cancellation_rx_clone,
+                                cx,
+                            )
+                        }) {
+                            Ok(task) => task.await,
+                            Err(_) => LanguageModelToolResult {
+                                content: LanguageModelToolResultContent::Text(Arc::from(
+                                    "agent was dropped",
+                                )),
+                                tool_use_id: tool_use_id_d,
+                                tool_name: tool_name_d,
+                                is_error: true,
+                                output: None,
+                            },
+                        }
+                    }));
+                }
+            }
+        }
+
         // Write guards (Guard A, B, C) — only for create/overwrite operations
         if let Some(denial) = self.check_write_guards(&tool_use, cx) {
             return Some(Task::ready(LanguageModelToolResult {
@@ -2551,6 +2765,17 @@ impl Thread {
                 is_error: true,
                 output: None,
             }));
+        }
+
+        // Record file read mtime for staleness guard (best-effort)
+        if tool_use.name.as_ref() == "read_file" {
+            if let Some(path) = tool_use.input.get("path").and_then(|v| v.as_str()) {
+                if let Ok(meta) = std::fs::metadata(path) {
+                    if let Ok(mtime) = meta.modified() {
+                        self.file_read_mtimes.insert(path.to_string(), mtime);
+                    }
+                }
+            }
         }
 
         log::debug!("Running tool {}", tool_use.name);
@@ -3353,6 +3578,30 @@ impl Thread {
             .unwrap_or_else(|| rel_path.to_string());
 
         let file_exists = std::path::Path::new(&abs_path).exists();
+
+        // Staleness guard: deny if the file was modified since last read
+        if file_exists {
+            if let Some(&read_mtime) = self.file_read_mtimes.get(&abs_path) {
+                if let Ok(meta) = std::fs::metadata(&abs_path) {
+                    if let Ok(current_mtime) = meta.modified() {
+                        if current_mtime != read_mtime {
+                            return Some(format!(
+                                "Warning: {abs_path} was modified since last read — \
+                                 re-read before editing."
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Plan Guard (Guard 0): auto-activate plan mode on 3+ new files
+        if !file_exists {
+            if let Some(denial) = self.guardrails.plan_guard.check_new_file() {
+                return Some(denial);
+            }
+        }
+
         // Read old content for Guard C anchor diffing — skip for large files to avoid
         // blocking the main thread with expensive I/O + regex on huge files.
         const MAX_ANCHOR_CHECK_BYTES: u64 = 256 * 1024; // 256 KB
@@ -3375,7 +3624,13 @@ impl Thread {
 
         if denial.is_none() {
             self.guardrails.write_guards.record_full_write(abs_path.clone());
-            self.guardrails.mark_write(abs_path);
+            self.guardrails.mark_write(abs_path.clone());
+            // After a successful write, update the mtime so we don't immediately trigger staleness
+            if let Ok(meta) = std::fs::metadata(&abs_path) {
+                if let Ok(mtime) = meta.modified() {
+                    self.file_read_mtimes.insert(abs_path, mtime);
+                }
+            }
         }
 
         denial.map(|d| d.message())

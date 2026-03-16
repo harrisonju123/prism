@@ -414,6 +414,63 @@ impl VerbosityTracker {
 }
 
 // ---------------------------------------------------------------------------
+// PlanGuard (Guard 0): Auto-activate plan mode on 3+ new-file attempts
+// ---------------------------------------------------------------------------
+
+/// Tracks distinct new-file write attempts. When the count reaches 3 without a plan
+/// already being active, auto-activates plan mode and supplies a path for the plan file.
+pub struct PlanGuard {
+    /// Number of distinct new-file write attempts this session.
+    pub new_file_count: usize,
+    /// Whether plan mode has already been triggered.
+    pub triggered: bool,
+    /// Path of the auto-generated plan file (set when triggered).
+    pub plan_file: Option<String>,
+}
+
+impl PlanGuard {
+    pub fn new() -> Self {
+        Self {
+            new_file_count: 0,
+            triggered: false,
+            plan_file: None,
+        }
+    }
+
+    /// Called before every new-file write attempt. Returns `Some(denial)` if plan mode
+    /// should be auto-activated (write blocked), `None` if the write may proceed.
+    pub fn check_new_file(&mut self) -> Option<String> {
+        if self.triggered {
+            return None;
+        }
+        self.new_file_count += 1;
+        if self.new_file_count >= 3 {
+            self.triggered = true;
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            let plan_path = format!(
+                "{}/.claude/plans/auto-{}.md",
+                home,
+                &uuid::Uuid::new_v4().to_string()[..8]
+            );
+            let _ = std::fs::create_dir_all(format!("{}/.claude/plans", home));
+            self.plan_file = Some(plan_path.clone());
+            Some(format!(
+                "[Plan Mode Auto-Activated] You are creating {n} new files — this looks like a new feature.\n\
+                 Plan mode is now active. Before writing any more code:\n\
+                 1. Design your interfaces, types, and module structure\n\
+                 2. Write your plan to: {plan_path}\n\
+                 3. Only after the plan is written and reviewed will writes be unblocked.\n\
+                 Use the Write/edit_file tool to create the plan file first.",
+                n = self.new_file_count,
+                plan_path = plan_path
+            ))
+        } else {
+            None
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Guardrails (top-level aggregate)
 // ---------------------------------------------------------------------------
 
@@ -424,6 +481,7 @@ pub struct Guardrails {
     pub self_review: SelfReview,
     pub write_guards: WriteGuards,
     pub verbosity: VerbosityTracker,
+    pub plan_guard: PlanGuard,
     pub turn_count: u32,
     turn_files_written: Vec<String>,
     turn_tool_names: Vec<String>,
@@ -437,6 +495,7 @@ impl Guardrails {
             self_review: SelfReview::new(),
             write_guards: WriteGuards::new(),
             verbosity: VerbosityTracker::new(2000, 3),
+            plan_guard: PlanGuard::new(),
             turn_count: 0,
             turn_files_written: Vec::new(),
             turn_tool_names: Vec::new(),

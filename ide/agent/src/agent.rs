@@ -14,6 +14,7 @@ mod thread;
 mod thread_store;
 mod tool_permissions;
 mod guardrails;
+mod tool_result_cache;
 mod tools;
 
 use context_server::ContextServerId;
