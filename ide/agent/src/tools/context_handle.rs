@@ -80,10 +80,9 @@ impl ContextHandle {
     pub async fn checkin(&self) -> anyhow::Result<()> {
         let name = Self::agent_name();
         let thread_id = self.context_thread.read().as_ref().map(|t| t.id);
-        let branch = tokio::process::Command::new("git")
+        let branch = std::process::Command::new("git")
             .args(["rev-parse", "--abbrev-ref", "HEAD"])
             .output()
-            .await
             .ok()
             .and_then(|o| {
                 if o.status.success() {

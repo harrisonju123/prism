@@ -1,11 +1,12 @@
 use crate::{
-    AskHumanTool, ContextHandle, ContextServerRegistry, CopyPathTool, CreateDirectoryTool,
-    DbLanguageModel, DbThread, DeletePathTool, DiagnosticsTool, EditFileTool, FetchTool,
-    FindPathTool, GrepTool, ListDirectoryTool, MovePathTool, NowTool, OpenTool, ProjectSnapshot,
-    ReadFileTool, RecallTool, RecordDecisionTool, RequestReviewTool, RestoreFileFromDiskTool,
-    SaveFileTool, SaveMemoryTool, SkillTool, SpawnAgentTool, StreamingEditFileTool,
-    SystemPromptTemplate, Template, Templates, TerminalTool, ToolPermissionDecision, WebSearchTool,
-    decide_permission_from_settings,
+    AskHumanTool, ContextHandle, ContextOverviewTool, ContextServerRegistry, CopyPathTool,
+    CreateDirectoryTool, DbLanguageModel, DbThread, DeletePathTool, DiagnosticsTool, EditFileTool,
+    FetchTool, FindPathTool, ForgetMemoryTool, GrepTool, ListDirectoryTool, ListMemoriesTool,
+    MovePathTool, NowTool, OpenTool, ProjectSnapshot, ReadFileTool, RecallTool, RecordDecisionTool,
+    RequestReviewTool, RestoreFileFromDiskTool, SaveFileTool, SaveMemoryTool, SendMessageTool,
+    SkillTool, SpawnAgentTool, StreamingEditFileTool, SystemPromptTemplate, Template, Templates,
+    TerminalTool, ThreadArchiveTool, ThreadCreateTool, ThreadListTool, ToolPermissionDecision,
+    WebSearchTool, decide_permission_from_settings,
 };
 use crate::compression::ContextCompressor;
 use crate::guardrails::{Guardrails, has_completion_signals, is_read_only_tool};
@@ -1593,6 +1594,13 @@ impl Thread {
             self.add_tool(RecallTool::new(ctx.clone()));
             self.add_tool(RecordDecisionTool::new(ctx.clone()));
             self.add_tool(RequestReviewTool::new(ctx.clone()));
+            self.add_tool(ThreadCreateTool::new(ctx.clone()));
+            self.add_tool(ThreadListTool::new(ctx.clone()));
+            self.add_tool(ThreadArchiveTool::new(ctx.clone()));
+            self.add_tool(ForgetMemoryTool::new(ctx.clone()));
+            self.add_tool(ListMemoriesTool::new(ctx.clone()));
+            self.add_tool(ContextOverviewTool::new(ctx.clone()));
+            self.add_tool(SendMessageTool::new(ctx.clone()));
             self.context_handle = Some(ctx);
         }
 
@@ -2377,8 +2385,9 @@ impl Thread {
                 .raw_output(tool_result.output.clone()),
             None,
         );
-        let invalidate_memories =
-            !tool_result.is_error && tool_result.tool_name.as_ref() == SaveMemoryTool::NAME;
+        let invalidate_memories = !tool_result.is_error
+            && (tool_result.tool_name.as_ref() == SaveMemoryTool::NAME
+                || tool_result.tool_name.as_ref() == ForgetMemoryTool::NAME);
         this.update(cx, |this, _cx| {
             if invalidate_memories {
                 this.cached_memories = None;

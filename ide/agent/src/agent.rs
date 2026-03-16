@@ -459,7 +459,7 @@ impl NativeAgent {
                     thread: weak_thread,
                     agent: weak,
                 }) as _,
-                context_handle,
+                context_handle.clone(),
                 cx,
             );
             if let Some(id) = context_thread_id_for_thread {

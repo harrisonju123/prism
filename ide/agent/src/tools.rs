@@ -2,6 +2,7 @@ mod ask_human_tool;
 mod skill_tool;
 mod codebase_search_tool;
 mod context_handle;
+mod context_overview_tool;
 mod context_server_registry;
 mod copy_path_tool;
 mod create_directory_tool;
@@ -10,8 +11,10 @@ mod diagnostics_tool;
 mod edit_file_tool;
 mod fetch_tool;
 mod find_path_tool;
+mod forget_memory_tool;
 mod grep_tool;
 mod list_directory_tool;
+mod list_memories_tool;
 mod move_path_tool;
 mod now_tool;
 mod open_tool;
@@ -22,9 +25,13 @@ mod request_review_tool;
 mod restore_file_from_disk_tool;
 mod save_file_tool;
 mod save_memory_tool;
+mod send_message_tool;
 mod spawn_agent_tool;
 mod streaming_edit_file_tool;
 mod terminal_tool;
+mod thread_archive_tool;
+mod thread_create_tool;
+mod thread_list_tool;
 mod tool_edit_parser;
 mod tool_permissions;
 mod web_search_tool;
@@ -36,6 +43,7 @@ pub use ask_human_tool::*;
 pub use skill_tool::*;
 pub use codebase_search_tool::*;
 pub use context_handle::*;
+pub use context_overview_tool::*;
 pub use context_server_registry::*;
 pub use copy_path_tool::*;
 pub use create_directory_tool::*;
@@ -44,8 +52,10 @@ pub use diagnostics_tool::*;
 pub use edit_file_tool::*;
 pub use fetch_tool::*;
 pub use find_path_tool::*;
+pub use forget_memory_tool::*;
 pub use grep_tool::*;
 pub use list_directory_tool::*;
+pub use list_memories_tool::*;
 pub use move_path_tool::*;
 pub use now_tool::*;
 pub use open_tool::*;
@@ -56,9 +66,13 @@ pub use request_review_tool::*;
 pub use restore_file_from_disk_tool::*;
 pub use save_file_tool::*;
 pub use save_memory_tool::*;
+pub use send_message_tool::*;
 pub use spawn_agent_tool::*;
 pub use streaming_edit_file_tool::*;
 pub use terminal_tool::*;
+pub use thread_archive_tool::*;
+pub use thread_create_tool::*;
+pub use thread_list_tool::*;
 pub use tool_permissions::*;
 pub use web_search_tool::*;
 
@@ -133,6 +147,7 @@ macro_rules! tools {
 tools! {
     AskHumanTool,
     CodebaseSearchTool,
+    ContextOverviewTool,
     CopyPathTool,
     CreateDirectoryTool,
     DeletePathTool,
@@ -140,8 +155,10 @@ tools! {
     EditFileTool,
     FetchTool,
     FindPathTool,
+    ForgetMemoryTool,
     GrepTool,
     ListDirectoryTool,
+    ListMemoriesTool,
     MovePathTool,
     NowTool,
     OpenTool,
@@ -152,7 +169,11 @@ tools! {
     RestoreFileFromDiskTool,
     SaveFileTool,
     SaveMemoryTool,
+    SendMessageTool,
     SpawnAgentTool,
     TerminalTool,
+    ThreadArchiveTool,
+    ThreadCreateTool,
+    ThreadListTool,
     WebSearchTool,
 }
