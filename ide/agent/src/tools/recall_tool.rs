@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
 use agent_client_protocol as acp;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use gpui::{App, SharedString, Task};
 use gpui_tokio::Tokio;
-use prism_context::store::Store as _;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -74,10 +73,9 @@ impl AgentTool for RecallTool {
                 );
             }
 
-            let ws_id = context.workspace_id;
             let thread_name = input.thread.clone();
             let tags = input.tags.clone().unwrap_or_default();
-            let since: Option<DateTime<Utc>> = input.since.as_deref().and_then(|s| {
+            let since = input.since.as_deref().and_then(|s| {
                 prism_context::util::parse_duration(s).ok().map(|d| Utc::now() - d)
             });
 
@@ -85,16 +83,14 @@ impl AgentTool for RecallTool {
                 Tokio::spawn_result(cx, async move {
                     if let Some(thread_name) = thread_name {
                         let ctx = context
-                            .store
-                            .recall_thread(ws_id, &thread_name)
+                            .recall_thread(&thread_name)
                             .await
                             .map_err(|e| anyhow::anyhow!("recall_thread failed: {e}"))?;
                         serde_json::to_string_pretty(&ctx)
                             .map_err(|e| anyhow::anyhow!("serialize failed: {e}"))
                     } else {
                         let result = context
-                            .store
-                            .recall_by_tags(ws_id, tags, since)
+                            .recall_by_tags(tags, since)
                             .await
                             .map_err(|e| anyhow::anyhow!("recall_by_tags failed: {e}"))?;
                         serde_json::to_string_pretty(&result)

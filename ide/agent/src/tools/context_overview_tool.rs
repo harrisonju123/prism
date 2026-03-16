@@ -3,7 +3,6 @@ use std::sync::Arc;
 use agent_client_protocol as acp;
 use gpui::{App, SharedString, Task};
 use gpui_tokio::Tokio;
-use prism_context::store::Store as _;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -57,13 +56,10 @@ impl AgentTool for ContextOverviewTool {
                 .await
                 .map_err(|e| format!("Failed to receive tool input: {e}"))?;
 
-            let ws_id = context.workspace_id;
-
             cx.update(|cx| {
                 Tokio::spawn_result(cx, async move {
                     let overview = context
-                        .store
-                        .get_workspace_overview(ws_id)
+                        .get_workspace_overview()
                         .await
                         .map_err(|e| anyhow::anyhow!("get_workspace_overview failed: {e}"))?;
                     serde_json::to_string_pretty(&overview)

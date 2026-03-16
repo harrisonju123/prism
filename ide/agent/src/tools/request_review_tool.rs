@@ -4,13 +4,12 @@ use agent_client_protocol as acp;
 use gpui::{App, SharedString, Task};
 use gpui_tokio::Tokio;
 use prism_context::model::{InboxEntryType, InboxSeverity};
-use prism_context::store::Store as _;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{AgentTool, ToolCallEventStream, ToolInput};
 
-use super::context_handle::{AGENT_SOURCE, ContextHandle};
+use super::context_handle::ContextHandle;
 
 fn default_info() -> String {
     "info".to_string()
@@ -74,7 +73,6 @@ impl AgentTool for RequestReviewTool {
                 .await
                 .map_err(|e| format!("Failed to receive tool input: {e}"))?;
 
-            let ws_id = context.workspace_id;
             let title = input.title.clone();
             let body = input.body.clone();
             let severity = parse_severity(&input.severity);
@@ -82,18 +80,16 @@ impl AgentTool for RequestReviewTool {
             cx.update(|cx| {
                 Tokio::spawn_result(cx, async move {
                     context
-                        .store
                         .create_inbox_entry(
-                            ws_id,
                             InboxEntryType::Suggestion,
                             &title,
                             &body,
                             severity,
-                            Some(AGENT_SOURCE),
                             None,
                             None,
                         )
                         .await
+                        .map(|_| ())
                         .map_err(|e| anyhow::anyhow!("create_inbox_entry failed: {e}"))
                 })
             })

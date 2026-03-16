@@ -3,7 +3,6 @@ use std::sync::Arc;
 use agent_client_protocol as acp;
 use gpui::{App, SharedString, Task};
 use gpui_tokio::Tokio;
-use prism_context::store::Store as _;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -66,7 +65,6 @@ impl AgentTool for ThreadCreateTool {
                 .await
                 .map_err(|e| format!("Failed to receive tool input: {e}"))?;
 
-            let ws_id = context.workspace_id;
             let name = input.name.clone();
             let desc = input.description.clone();
             let tags = input.tags.clone();
@@ -74,8 +72,7 @@ impl AgentTool for ThreadCreateTool {
             cx.update(|cx| {
                 Tokio::spawn_result(cx, async move {
                     let thread = context
-                        .store
-                        .create_thread(ws_id, &name, &desc, tags)
+                        .create_thread(&name, &desc, tags)
                         .await
                         .map_err(|e| anyhow::anyhow!("create_thread failed: {e}"))?;
                     serde_json::to_string_pretty(&thread)

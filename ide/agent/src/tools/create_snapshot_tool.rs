@@ -3,7 +3,6 @@ use std::sync::Arc;
 use agent_client_protocol as acp;
 use gpui::{App, SharedString, Task};
 use gpui_tokio::Tokio;
-use prism_context::store::Store as _;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -60,14 +59,12 @@ impl AgentTool for CreateSnapshotTool {
                 .await
                 .map_err(|e| format!("Failed to receive tool input: {e}"))?;
 
-            let ws_id = context.workspace_id;
             let label = input.label.clone();
 
             cx.update(|cx| {
                 Tokio::spawn_result(cx, async move {
                     context
-                        .store
-                        .create_snapshot(ws_id, &label)
+                        .create_snapshot(&label)
                         .await
                         .map(|s| format!("Snapshot created: {} ({})", s.label, s.summary))
                         .map_err(|e| anyhow::anyhow!("create_snapshot failed: {e}"))

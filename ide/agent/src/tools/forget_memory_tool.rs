@@ -3,7 +3,6 @@ use std::sync::Arc;
 use agent_client_protocol as acp;
 use gpui::{App, SharedString, Task};
 use gpui_tokio::Tokio;
-use prism_context::store::Store as _;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -59,14 +58,12 @@ impl AgentTool for ForgetMemoryTool {
                 .await
                 .map_err(|e| format!("Failed to receive tool input: {e}"))?;
 
-            let ws_id = context.workspace_id;
             let key = input.key.clone();
 
             cx.update(|cx| {
                 Tokio::spawn_result(cx, async move {
                     context
-                        .store
-                        .delete_memory(ws_id, &key)
+                        .delete_memory(&key)
                         .await
                         .map_err(|e| anyhow::anyhow!("delete_memory failed: {e}"))
                 })

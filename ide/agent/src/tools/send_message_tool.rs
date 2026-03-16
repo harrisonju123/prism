@@ -3,7 +3,6 @@ use std::sync::Arc;
 use agent_client_protocol as acp;
 use gpui::{App, SharedString, Task};
 use gpui_tokio::Tokio;
-use prism_context::store::Store as _;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -56,23 +55,21 @@ impl AgentTool for SendMessageTool {
         cx: &mut App,
     ) -> Task<Result<String, String>> {
         let context = self.context.clone();
-        let from_agent = ContextHandle::agent_name();
         cx.spawn(async move |cx| {
             let input = input
                 .recv()
                 .await
                 .map_err(|e| format!("Failed to receive tool input: {e}"))?;
 
-            let ws_id = context.workspace_id;
             let to = input.to.clone();
             let content = input.content.clone();
 
             cx.update(|cx| {
                 Tokio::spawn_result(cx, async move {
                     context
-                        .store
-                        .send_message(ws_id, &from_agent, &to, &content, None)
+                        .send_message(&to, &content, None)
                         .await
+                        .map(|_| ())
                         .map_err(|e| anyhow::anyhow!("send_message failed: {e}"))
                 })
             })

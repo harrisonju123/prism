@@ -1,15 +1,16 @@
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
+use chrono::{DateTime, Utc};
 use gpui::{App, Global, WeakEntity};
 use prism_context::model::{
     ActivityEntry, AgentSession, AgentState, AgentStatus, CheckinContext, Decision, DecisionScope,
-    Handoff, HandoffConstraints, HandoffMode, HandoffStatus, InboxEntry, InboxEntryType,
-    InboxSeverity, Memory, Plan, PlanStatus, Thread, ThreadContext, ThreadGuardrails, ThreadStatus,
-    WorkPackage, WorkPackageStatus, WorkspaceOverview,
+    FileClaim, GuardrailCheck, Handoff, HandoffConstraints, HandoffMode, HandoffStatus, InboxEntry,
+    InboxEntryType, InboxSeverity, Memory, Plan, PlanStatus, RecallResult, Snapshot, Thread,
+    ThreadContext, ThreadGuardrails, ThreadStatus, WorkPackage, WorkPackageStatus, WorkspaceOverview,
 };
 use prism_context::store::sqlite::SqliteStore;
-use prism_context::store::{ActivityFilters, InboxFilters, Store};
+use prism_context::store::{ActivityFilters, InboxFilters, MemoryFilters, Store};
 use uuid::Uuid;
 
 /// GPUI Global that holds prism context state. Lives on the main thread.
@@ -115,7 +116,7 @@ impl ContextHandle {
     where
         F: std::future::Future<Output = std::result::Result<T, prism_context::error::Error>>,
     {
-        self.handle.block_on(f).map_err(|e| anyhow::anyhow!("{e}"))
+        self.handle.block_on(f).map_err(Into::into)
     }
 
     pub fn get_workspace_overview(&self) -> Result<WorkspaceOverview> {
@@ -143,7 +144,7 @@ impl ContextHandle {
             store
                 .checkin(wid, &name, capabilities, thread_id, None, None)
                 .await
-                .map_err(|e| anyhow::anyhow!("{e}"))
+                .map_err(Into::into)
         })
     }
 
@@ -163,7 +164,7 @@ impl ContextHandle {
             store
                 .checkout(wid, &name, &summary, findings, files_touched, next_steps)
                 .await
-                .map_err(|e| anyhow::anyhow!("{e}"))
+                .map_err(Into::into)
         })
     }
 
@@ -189,7 +190,7 @@ impl ContextHandle {
             store
                 .save_memory(wid, &key, &value, thread_id, &source, tags)
                 .await
-                .map_err(|e| anyhow::anyhow!("{e}"))
+                .map_err(Into::into)
         })
     }
 
@@ -207,7 +208,7 @@ impl ContextHandle {
             store
                 .create_thread(wid, &name, &description, tags)
                 .await
-                .map_err(|e| anyhow::anyhow!("{e}"))
+                .map_err(Into::into)
         })
     }
 
@@ -247,7 +248,7 @@ impl ContextHandle {
             store
                 .save_decision(wid, &title, &content, thread_id, tags, scope)
                 .await
-                .map_err(|e| anyhow::anyhow!("{e}"))
+                .map_err(Into::into)
         })
     }
 
@@ -267,7 +268,7 @@ impl ContextHandle {
             store
                 .create_handoff(wid, &from_agent, &task, thread_id, constraints, mode)
                 .await
-                .map_err(|e| anyhow::anyhow!("{e}"))
+                .map_err(Into::into)
         })
     }
 
@@ -315,7 +316,7 @@ impl ContextHandle {
                     ref_id,
                 )
                 .await
-                .map_err(|e| anyhow::anyhow!("{e}"))
+                .map_err(Into::into)
         })
     }
 
@@ -393,7 +394,7 @@ impl ContextHandle {
             store
                 .create_plan(wid, &intent)
                 .await
-                .map_err(|e| anyhow::anyhow!("{e}"))
+                .map_err(Into::into)
         })
     }
 
@@ -436,7 +437,7 @@ impl ContextHandle {
                     tags,
                 )
                 .await
-                .map_err(|e| anyhow::anyhow!("{e}"))
+                .map_err(Into::into)
         })
     }
 
@@ -468,7 +469,7 @@ impl ContextHandle {
             store
                 .assign_work_package(wid, wp_id, &agent_name, thread_id)
                 .await
-                .map_err(|e| anyhow::anyhow!("{e}"))
+                .map_err(Into::into)
         })
     }
 
@@ -488,6 +489,183 @@ impl ContextHandle {
             self.store
                 .refresh_work_package_readiness(self.workspace_id, plan_id),
         )
+    }
+
+    pub fn delete_memory(&self, key: &str) -> Result<()> {
+        self.run(self.store.delete_memory(self.workspace_id, key))
+    }
+
+    pub fn load_memories(&self, filters: MemoryFilters) -> Result<Vec<Memory>> {
+        self.run(self.store.load_memories(self.workspace_id, filters))
+    }
+
+    pub fn list_decisions(
+        &self,
+        thread_id: Option<Uuid>,
+        tags: Option<Vec<String>>,
+    ) -> Result<Vec<Decision>> {
+        self.run(self.store.list_decisions(self.workspace_id, thread_id, tags))
+    }
+
+    pub fn supersede_decision(
+        &self,
+        old_id: Uuid,
+        new_title: &str,
+        new_content: &str,
+        thread_id: Option<Uuid>,
+        tags: Vec<String>,
+    ) -> Result<Decision> {
+        let new_title = new_title.to_string();
+        let new_content = new_content.to_string();
+        let store = self.store.clone();
+        let wid = self.workspace_id;
+        self.handle.block_on(async move {
+            store
+                .supersede_decision(wid, old_id, &new_title, &new_content, thread_id, tags)
+                .await
+                .map_err(Into::into)
+        })
+    }
+
+    pub fn revoke_decision(&self, id: Uuid) -> Result<Decision> {
+        self.run(self.store.revoke_decision(self.workspace_id, id))
+    }
+
+    pub fn create_snapshot(&self, label: &str) -> Result<Snapshot> {
+        self.run(self.store.create_snapshot(self.workspace_id, label))
+    }
+
+    pub fn list_snapshots(&self, limit: Option<i64>) -> Result<Vec<Snapshot>> {
+        self.run(self.store.list_snapshots(self.workspace_id, limit))
+    }
+
+    pub fn recall_by_tags(
+        &self,
+        tags: Vec<String>,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<RecallResult> {
+        self.run(self.store.recall_by_tags(self.workspace_id, tags, since))
+    }
+
+    pub fn accept_handoff(&self, handoff_id: Uuid, agent_name: &str) -> Result<Handoff> {
+        let agent_name = agent_name.to_string();
+        let store = self.store.clone();
+        let wid = self.workspace_id;
+        self.handle.block_on(async move {
+            store
+                .accept_handoff(wid, handoff_id, &agent_name)
+                .await
+                .map_err(Into::into)
+        })
+    }
+
+    pub fn complete_handoff(&self, handoff_id: Uuid, result: serde_json::Value) -> Result<Handoff> {
+        self.run(self.store.complete_handoff(self.workspace_id, handoff_id, result))
+    }
+
+    pub fn start_handoff(&self, handoff_id: Uuid) -> Result<Handoff> {
+        self.run(self.store.start_handoff(self.workspace_id, handoff_id))
+    }
+
+    pub fn fail_handoff(&self, handoff_id: Uuid, reason: &str) -> Result<Handoff> {
+        let reason = reason.to_string();
+        let store = self.store.clone();
+        let wid = self.workspace_id;
+        self.handle.block_on(async move {
+            store
+                .fail_handoff(wid, handoff_id, &reason)
+                .await
+                .map_err(Into::into)
+        })
+    }
+
+    pub fn cancel_handoff(&self, handoff_id: Uuid) -> Result<Handoff> {
+        self.run(self.store.cancel_handoff(self.workspace_id, handoff_id))
+    }
+
+    pub fn claim_file(&self, agent_name: &str, file_path: &str, ttl_secs: Option<i64>) -> Result<FileClaim> {
+        let agent_name = agent_name.to_string();
+        let file_path = file_path.to_string();
+        let store = self.store.clone();
+        let wid = self.workspace_id;
+        self.handle.block_on(async move {
+            store
+                .claim_file(wid, &agent_name, &file_path, ttl_secs)
+                .await
+                .map_err(Into::into)
+        })
+    }
+
+    pub fn check_file_claim(&self, file_path: &str) -> Result<Option<FileClaim>> {
+        self.run(self.store.check_file_claim(self.workspace_id, file_path))
+    }
+
+    pub fn release_file(&self, file_path: &str, agent_name: &str) -> Result<()> {
+        let file_path = file_path.to_string();
+        let agent_name = agent_name.to_string();
+        let store = self.store.clone();
+        let wid = self.workspace_id;
+        self.handle.block_on(async move {
+            store
+                .release_file(wid, &file_path, &agent_name)
+                .await
+                .map_err(Into::into)
+        })
+    }
+
+    pub fn list_file_claims(&self, agent_name: Option<&str>) -> Result<Vec<FileClaim>> {
+        let agent_name = agent_name.map(|s| s.to_string());
+        let store = self.store.clone();
+        let wid = self.workspace_id;
+        self.handle.block_on(async move {
+            store
+                .list_file_claims(wid, agent_name.as_deref())
+                .await
+                .map_err(Into::into)
+        })
+    }
+
+    pub fn set_guardrails(
+        &self,
+        thread_name: &str,
+        guardrails: ThreadGuardrails,
+    ) -> Result<ThreadGuardrails> {
+        let thread_name = thread_name.to_string();
+        let store = self.store.clone();
+        let wid = self.workspace_id;
+        self.handle.block_on(async move {
+            store
+                .set_guardrails(wid, &thread_name, guardrails)
+                .await
+                .map_err(Into::into)
+        })
+    }
+
+    pub fn check_guardrail(
+        &self,
+        thread_name: &str,
+        agent_name: &str,
+        tool_name: &str,
+        file_path: Option<&str>,
+    ) -> Result<GuardrailCheck> {
+        let thread_name = thread_name.to_string();
+        let agent_name = agent_name.to_string();
+        let tool_name = tool_name.to_string();
+        let file_path = file_path.map(|s| s.to_string());
+        let store = self.store.clone();
+        let wid = self.workspace_id;
+        self.handle.block_on(async move {
+            store
+                .check_guardrail(
+                    wid,
+                    &thread_name,
+                    &agent_name,
+                    &tool_name,
+                    file_path.as_deref(),
+                )
+                .await
+                .map_err(Into::into)
+        })
     }
 }
 

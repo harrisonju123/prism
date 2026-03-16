@@ -50,7 +50,7 @@ use language_model::{
 };
 use gpui_tokio::Tokio;
 use prism_context::skills::SkillRegistry;
-use prism_context::store::{MemoryFilters, Store as _};
+use prism_context::store::MemoryFilters;
 use project::Project;
 use prompt_store::ProjectContext;
 use schemars::{JsonSchema, Schema};
@@ -2029,13 +2029,11 @@ impl Thread {
         if needs_load {
             let ctx_opt = this.read_with(cx, |t, _| t.context_handle.clone())?;
             if let Some(ctx) = ctx_opt {
-                let ws_id = ctx.workspace_id;
                 let ctx_arc = ctx.clone();
                 let memories_task = cx.update(|cx| {
                     Tokio::spawn_result(cx, async move {
                         let memories = ctx_arc
-                            .store
-                            .load_memories(ws_id, MemoryFilters::default())
+                            .load_memories(MemoryFilters::default())
                             .await
                             .unwrap_or_default();
                         let buf = memories

@@ -4,7 +4,6 @@ use agent_client_protocol as acp;
 use gpui::{App, SharedString, Task};
 use gpui_tokio::Tokio;
 use prism_context::model::ThreadStatus;
-use prism_context::store::Store as _;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -61,7 +60,6 @@ impl AgentTool for ThreadListTool {
                 .await
                 .map_err(|e| format!("Failed to receive tool input: {e}"))?;
 
-            let ws_id = context.workspace_id;
             let status = match input.status.as_deref() {
                 Some("active") => Some(ThreadStatus::Active),
                 Some("archived") => Some(ThreadStatus::Archived),
@@ -71,8 +69,7 @@ impl AgentTool for ThreadListTool {
             cx.update(|cx| {
                 Tokio::spawn_result(cx, async move {
                     let threads = context
-                        .store
-                        .list_threads(ws_id, status)
+                        .list_threads(status)
                         .await
                         .map_err(|e| anyhow::anyhow!("list_threads failed: {e}"))?;
                     serde_json::to_string_pretty(&threads)

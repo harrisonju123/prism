@@ -3,7 +3,6 @@ use std::sync::Arc;
 use agent_client_protocol as acp;
 use gpui::{App, SharedString, Task};
 use gpui_tokio::Tokio;
-use prism_context::store::Store as _;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -60,14 +59,12 @@ impl AgentTool for ThreadArchiveTool {
                 .await
                 .map_err(|e| format!("Failed to receive tool input: {e}"))?;
 
-            let ws_id = context.workspace_id;
             let name = input.name.clone();
 
             cx.update(|cx| {
                 Tokio::spawn_result(cx, async move {
                     let thread = context
-                        .store
-                        .archive_thread(ws_id, &name)
+                        .archive_thread(&name)
                         .await
                         .map_err(|e| anyhow::anyhow!("archive_thread failed: {e}"))?;
                     serde_json::to_string_pretty(&thread)

@@ -1834,19 +1834,8 @@ impl acp_thread::AgentConnection for NativeAgentConnection {
                 let title = thread.title().to_string();
 
                 if let Some(ctx) = context_handle {
-                    let ws_id = ctx.workspace_id;
-                    let agent_name = ContextHandle::agent_name();
                     cx.background_spawn(async move {
-                        prism_context::memory_extract::auto_extract_memories(
-                            &ctx.store,
-                            ws_id,
-                            &agent_name,
-                            &[],
-                            &[],
-                            &findings,
-                            None,
-                        )
-                        .await;
+                        ctx.auto_extract_memories(&[], &[], &findings, None).await;
                         if let Err(e) = ctx.checkout(&title, findings, files_touched).await {
                             log::warn!("prism-context: checkout failed: {e}");
                         }

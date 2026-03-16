@@ -3,13 +3,12 @@ use std::sync::Arc;
 use agent_client_protocol as acp;
 use gpui::{App, SharedString, Task};
 use gpui_tokio::Tokio;
-use prism_context::store::Store as _;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{AgentTool, ToolCallEventStream, ToolInput};
 
-use super::context_handle::{AGENT_SOURCE, ContextHandle};
+use super::context_handle::ContextHandle;
 
 /// Saves a persistent memory (key-value fact) to the project's context store.
 /// Use when you learn something important that should persist across sessions:
@@ -67,8 +66,6 @@ impl AgentTool for SaveMemoryTool {
                 .await
                 .map_err(|e| format!("Failed to receive tool input: {e}"))?;
 
-            let thread_id = context.context_thread.read().as_ref().map(|t| t.id);
-            let ws_id = context.workspace_id;
             let key = input.key.clone();
             let value = input.value.clone();
             let tags = input.tags.clone();
@@ -76,9 +73,9 @@ impl AgentTool for SaveMemoryTool {
             cx.update(|cx| {
                 Tokio::spawn_result(cx, async move {
                     context
-                        .store
-                        .save_memory(ws_id, &key, &value, thread_id, AGENT_SOURCE, tags)
+                        .save_memory(&key, &value, tags)
                         .await
+                        .map(|_| ())
                         .map_err(|e| anyhow::anyhow!("save_memory failed: {e}"))
                 })
             })

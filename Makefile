@@ -152,7 +152,7 @@ prune-build-cache:
 	fi
 
 # Run Prism in background + Zed in foreground; kills Prism on exit
-dev-all:
+dev-all: install-prism-cli
 	@echo "Starting Prism in background..."
 	$(CARGO) run -p prism --bin prism-server &
 	@PRISM_PID=$$!; \
@@ -160,13 +160,12 @@ dev-all:
 	$(CARGO) run -p zed
 
 # Dogfood: validate env then launch Zed with PrisM embedded gateway
-dogfood: prune-build-cache
+dogfood: prune-build-cache install-prism-cli
 	@echo "=== PrisM Dogfood ==="
 	@echo "Checking prerequisites..."
 	@( [ -n "$$ANTHROPIC_API_KEY" ] || [ -n "$$OPENAI_API_KEY" ] || [ -n "$$GOOGLE_AI_STUDIO_API_KEY" ] ) \
 		|| (echo "Error: Set at least one of ANTHROPIC_API_KEY, OPENAI_API_KEY, or GOOGLE_AI_STUDIO_API_KEY"; exit 1)
 	@echo "  ✓ Provider key found"
-	@which prism >/dev/null 2>&1 || (echo "Warning: prism-cli not found. Run 'make install-prism-cli' for agent spawning."; echo "")
 	@echo ""
 	@echo "Launching Zed with embedded PrisM gateway..."
 	@echo "  - Assistant panel: select a PrisM model to chat"

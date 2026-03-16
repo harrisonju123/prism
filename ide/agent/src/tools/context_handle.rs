@@ -1,14 +1,18 @@
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
 use gpui::App;
+use gpui::Entity;
 use gpui_tokio::Tokio;
 use parking_lot::RwLock;
 use project::Project;
-use gpui::Entity;
 use prism_context::config;
-use prism_context::model::{InboxEntryType, InboxSeverity};
+use prism_context::model::{
+    Decision, DecisionScope, InboxEntry, InboxEntryType, InboxSeverity, Memory, Message,
+    RecallResult, Snapshot, Thread, ThreadContext, ThreadStatus, WorkspaceOverview,
+};
 use prism_context::store::sqlite::SqliteStore;
-use prism_context::store::Store as _;
+use prism_context::store::{MemoryFilters, Store as _};
 use uuid::Uuid;
 
 pub const AGENT_SOURCE: &str = "zed-agent";
@@ -21,7 +25,7 @@ pub struct ContextThread {
 }
 
 pub struct ContextHandle {
-    pub store: SqliteStore,
+    store: SqliteStore,
     pub workspace_id: Uuid,
     pub context_thread: RwLock<Option<ContextThread>>,
 }
@@ -30,7 +34,31 @@ pub fn try_init_context_handle(project: &Entity<Project>, cx: &App) -> Option<Ar
     let worktree = project.read(cx).worktrees(cx).next()?;
     let root = worktree.read(cx).abs_path().to_path_buf();
 
-    let config_path = config::find_config(&root)?;
+    // Resolve config path — auto-init if none found but we're in a git repo.
+    let config_path = match config::find_config(&root) {
+        Some(p) => p,
+        None => {
+            if !root.join(".git").exists() {
+                return None;
+            }
+            let name = root
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("workspace")
+                .to_string();
+            match Tokio::handle(cx).block_on(config::auto_init(&root, &name)) {
+                Ok((path, _)) => {
+                    log::info!("prism-context: auto-initialized workspace at {}", path.display());
+                    path
+                }
+                Err(e) => {
+                    log::warn!("prism-context: auto-init failed: {e}");
+                    return None;
+                }
+            }
+        }
+    };
+
     let cfg = config::load_config(&config_path)
         .map_err(|e| log::warn!("prism-context: failed to load config: {e}"))
         .ok()?;
@@ -177,7 +205,7 @@ impl ContextHandle {
     }
 
     /// Poll unread messages addressed to this agent. Returns empty vec on error (best-effort).
-    pub async fn poll_messages(&self) -> Vec<prism_context::model::Message> {
+    pub async fn poll_messages(&self) -> Vec<Message> {
         let agent_name = Self::agent_name();
         match self
             .store
@@ -232,5 +260,151 @@ impl ContextHandle {
             )
             .await?;
         Ok(())
+    }
+
+    // --- New wrapper methods (Phase 1) ---
+
+    /// Save (upsert) a memory. Auto-injects workspace_id, thread_id, and source.
+    pub async fn save_memory(
+        &self,
+        key: &str,
+        value: &str,
+        tags: Vec<String>,
+    ) -> anyhow::Result<Memory> {
+        let thread_id = self.context_thread.read().as_ref().map(|t| t.id);
+        Ok(self.store
+            .save_memory(self.workspace_id, key, value, thread_id, AGENT_SOURCE, tags)
+            .await?)
+    }
+
+    /// Delete a memory by key.
+    pub async fn delete_memory(&self, key: &str) -> anyhow::Result<()> {
+        Ok(self.store.delete_memory(self.workspace_id, key).await?)
+    }
+
+    /// Load memories with optional filters.
+    pub async fn load_memories(&self, filters: MemoryFilters) -> anyhow::Result<Vec<Memory>> {
+        Ok(self.store.load_memories(self.workspace_id, filters).await?)
+    }
+
+    /// Save a decision. Caller provides thread_id (resolved from context_thread if needed).
+    pub async fn save_decision(
+        &self,
+        title: &str,
+        content: &str,
+        thread_id: Option<Uuid>,
+        tags: Vec<String>,
+        scope: DecisionScope,
+    ) -> anyhow::Result<Decision> {
+        Ok(self.store
+            .save_decision(self.workspace_id, title, content, thread_id, tags, scope)
+            .await?)
+    }
+
+    /// Create a new context thread.
+    pub async fn create_thread(
+        &self,
+        name: &str,
+        desc: &str,
+        tags: Vec<String>,
+    ) -> anyhow::Result<Thread> {
+        Ok(self.store.create_thread(self.workspace_id, name, desc, tags).await?)
+    }
+
+    /// List threads, optionally filtered by status.
+    pub async fn list_threads(&self, status: Option<ThreadStatus>) -> anyhow::Result<Vec<Thread>> {
+        Ok(self.store.list_threads(self.workspace_id, status).await?)
+    }
+
+    /// Archive a thread by name.
+    pub async fn archive_thread(&self, name: &str) -> anyhow::Result<Thread> {
+        Ok(self.store.archive_thread(self.workspace_id, name).await?)
+    }
+
+    /// Recall full context for a named thread.
+    pub async fn recall_thread(&self, thread_name: &str) -> anyhow::Result<ThreadContext> {
+        Ok(self.store.recall_thread(self.workspace_id, thread_name).await?)
+    }
+
+    /// Recall memories and decisions by tags, with optional recency filter.
+    pub async fn recall_by_tags(
+        &self,
+        tags: Vec<String>,
+        since: Option<DateTime<Utc>>,
+    ) -> anyhow::Result<RecallResult> {
+        Ok(self.store.recall_by_tags(self.workspace_id, tags, since).await?)
+    }
+
+    /// Get workspace overview (threads, memories, agents, sessions).
+    pub async fn get_workspace_overview(&self) -> anyhow::Result<WorkspaceOverview> {
+        Ok(self.store.get_workspace_overview(self.workspace_id).await?)
+    }
+
+    /// Capture a point-in-time snapshot of workspace state.
+    pub async fn create_snapshot(&self, label: &str) -> anyhow::Result<Snapshot> {
+        Ok(self.store.create_snapshot(self.workspace_id, label).await?)
+    }
+
+    /// List workspace snapshots in reverse chronological order.
+    pub async fn list_snapshots(&self, limit: Option<i64>) -> anyhow::Result<Vec<Snapshot>> {
+        Ok(self.store.list_snapshots(self.workspace_id, limit).await?)
+    }
+
+    /// Send a message to another agent. Auto-injects workspace_id and from_agent.
+    pub async fn send_message(
+        &self,
+        to_agent: &str,
+        content: &str,
+        conversation_id: Option<Uuid>,
+    ) -> anyhow::Result<Message> {
+        let from_agent = Self::agent_name();
+        Ok(self.store
+            .send_message(self.workspace_id, &from_agent, to_agent, content, conversation_id)
+            .await?)
+    }
+
+    /// Create an inbox entry. Auto-injects workspace_id and AGENT_SOURCE.
+    pub async fn create_inbox_entry(
+        &self,
+        entry_type: InboxEntryType,
+        title: &str,
+        body: &str,
+        severity: InboxSeverity,
+        ref_type: Option<&str>,
+        ref_id: Option<Uuid>,
+    ) -> anyhow::Result<InboxEntry> {
+        Ok(self.store
+            .create_inbox_entry(
+                self.workspace_id,
+                entry_type,
+                title,
+                body,
+                severity,
+                Some(AGENT_SOURCE),
+                ref_type,
+                ref_id,
+            )
+            .await?)
+    }
+
+    /// Auto-extract memories from session output. Auto-injects workspace_id and agent_name.
+    pub async fn auto_extract_memories(
+        &self,
+        next_steps: &[String],
+        files_touched: &[String],
+        findings: &[String],
+        thread_name: Option<&str>,
+    ) {
+        let agent_name = Self::agent_name();
+        prism_context::memory_extract::auto_extract_memories(
+            &self.store,
+            self.workspace_id,
+            &agent_name,
+            next_steps,
+            files_touched,
+            findings,
+            thread_name,
+        )
+        .await;
     }
 }

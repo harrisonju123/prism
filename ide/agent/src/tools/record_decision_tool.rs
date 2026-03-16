@@ -4,7 +4,6 @@ use agent_client_protocol as acp;
 use gpui::{App, SharedString, Task};
 use gpui_tokio::Tokio;
 use prism_context::model::DecisionScope;
-use prism_context::store::Store as _;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -82,7 +81,6 @@ impl AgentTool for RecordDecisionTool {
             } else {
                 context.context_thread.read().as_ref().map(|t| t.id)
             };
-            let ws_id = context.workspace_id;
             let title = input.title.clone();
             let content = input.content.clone();
             let tags = input.tags.clone();
@@ -90,16 +88,9 @@ impl AgentTool for RecordDecisionTool {
             cx.update(|cx| {
                 Tokio::spawn_result(cx, async move {
                     context
-                        .store
-                        .save_decision(
-                            ws_id,
-                            &title,
-                            &content,
-                            thread_id,
-                            tags,
-                            scope,
-                        )
+                        .save_decision(&title, &content, thread_id, tags, scope)
                         .await
+                        .map(|_| ())
                         .map_err(|e| anyhow::anyhow!("save_decision failed: {e}"))
                 })
             })

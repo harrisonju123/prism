@@ -3,7 +3,6 @@ use std::sync::Arc;
 use agent_client_protocol as acp;
 use gpui::{App, SharedString, Task};
 use gpui_tokio::Tokio;
-use prism_context::store::Store as _;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -60,14 +59,12 @@ impl AgentTool for ListSnapshotsTool {
                 .await
                 .map_err(|e| format!("Failed to receive tool input: {e}"))?;
 
-            let ws_id = context.workspace_id;
             let limit = input.limit;
 
             cx.update(|cx| {
                 Tokio::spawn_result(cx, async move {
                     let snapshots = context
-                        .store
-                        .list_snapshots(ws_id, limit)
+                        .list_snapshots(limit)
                         .await
                         .map_err(|e| anyhow::anyhow!("list_snapshots failed: {e}"))?;
                     serde_json::to_string_pretty(&snapshots)
