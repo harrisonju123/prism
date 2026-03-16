@@ -17,12 +17,12 @@ impl SqliteStore {
         entity_type: &str,
         entity_id: Uuid,
         summary: &str,
-        detail: Option<serde_json::Value>,
+        thread_id: Option<Uuid>,
     ) {
         let now = now_rfc3339();
         let id = Uuid::new_v4();
         if let Err(e) = sqlx::query(
-            "INSERT INTO activity_log (id, workspace_id, actor, action, entity_type, entity_id, summary, detail, created_at)
+            "INSERT INTO activity_log (id, workspace_id, actor, action, entity_type, entity_id, summary, thread_id, created_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
         )
         .bind(id.to_string())
@@ -32,7 +32,7 @@ impl SqliteStore {
         .bind(entity_type)
         .bind(entity_id.to_string())
         .bind(summary)
-        .bind(opt_value_to_str(&detail))
+        .bind(opt_uuid_to_str(thread_id))
         .bind(&now)
         .execute(&self.pool)
         .await
@@ -58,6 +58,11 @@ impl SqliteStore {
             clauses.push(format!("actor = ${}", args.len()));
         }
 
+        if let Some(tid) = filters.thread_id {
+            args.push(tid.to_string());
+            clauses.push(format!("thread_id = ${}", args.len()));
+        }
+
         let limit = if filters.limit > 0 && filters.limit <= 200 {
             filters.limit
         } else {
@@ -65,7 +70,7 @@ impl SqliteStore {
         };
 
         let query = format!(
-            "SELECT id, workspace_id, actor, action, entity_type, entity_id, summary, detail, created_at
+            "SELECT id, workspace_id, actor, action, entity_type, entity_id, summary, detail, thread_id, created_at
              FROM activity_log
              WHERE {}
              ORDER BY created_at DESC
@@ -94,6 +99,7 @@ row_to_struct! {
         entity_id: uuid "entity_id",
         summary: str "summary",
         detail: opt_json "detail",
+        thread_id: opt_uuid "thread_id",
         created_at: time "created_at",
     }
 }

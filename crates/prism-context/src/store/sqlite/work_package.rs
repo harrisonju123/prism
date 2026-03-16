@@ -50,7 +50,7 @@ impl SqliteStore {
             "work_package",
             wp.id,
             &format!("Created work package: {}", &intent[..intent.len().min(60)]),
-            None,
+            wp.thread_id,
         )
         .await;
 
@@ -106,7 +106,7 @@ impl SqliteStore {
             "work_package",
             wp_id,
             &format!("Work package status changed to {status}"),
-            None,
+            wp.thread_id,
         )
         .await;
 
@@ -146,7 +146,7 @@ impl SqliteStore {
             "work_package",
             wp_id,
             &format!("Assigned to '{agent_name}'"),
-            None,
+            Some(thread_id),
         )
         .await;
 

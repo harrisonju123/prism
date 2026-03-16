@@ -19,6 +19,7 @@ pub struct MemoryFilters {
 pub struct ActivityFilters {
     pub since: Option<DateTime<Utc>>,
     pub actor: Option<String>,
+    pub thread_id: Option<Uuid>,
     pub limit: i64,
 }
 

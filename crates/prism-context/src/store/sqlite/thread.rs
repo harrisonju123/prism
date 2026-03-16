@@ -47,7 +47,7 @@ impl SqliteStore {
             "thread",
             thread.id,
             &format!("Created thread: {name}"),
-            None,
+            Some(thread.id),
         )
         .await;
 
@@ -125,7 +125,7 @@ impl SqliteStore {
             "thread",
             thread.id,
             &format!("Archived thread: {name}"),
-            None,
+            Some(thread.id),
         )
         .await;
 

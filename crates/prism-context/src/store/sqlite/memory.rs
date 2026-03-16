@@ -52,7 +52,7 @@ impl SqliteStore {
             "memory",
             memory.id,
             &format!("Saved memory: {key}"),
-            None,
+            memory.thread_id,
         )
         .await;
 

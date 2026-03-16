@@ -111,11 +111,14 @@ CREATE TABLE IF NOT EXISTS activity_log (
     entity_id     TEXT NOT NULL,
     summary       TEXT NOT NULL DEFAULT '',
     detail        TEXT,
+    thread_id     TEXT,
     created_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_activity_log_workspace_time ON activity_log(workspace_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_activity_log_actor ON activity_log(workspace_id, actor)
     WHERE actor != '';
+CREATE INDEX IF NOT EXISTS idx_activity_log_thread ON activity_log(workspace_id, thread_id)
+    WHERE thread_id IS NOT NULL;
 
 -- Decision notifications (propagation queue)
 CREATE TABLE IF NOT EXISTS decision_notifications (

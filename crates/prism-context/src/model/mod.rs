@@ -416,6 +416,8 @@ pub struct ActivityEntry {
     pub summary: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
 }
 

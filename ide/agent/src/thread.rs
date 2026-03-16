@@ -2748,37 +2748,56 @@ impl Thread {
             }
         }
 
-        // Async context store checks for write tools: file claims + thread-scoped guardrails
+        // Persona sync check (all tools)
+        if let Some(ref persona) = self.persona {
+            if !persona.allows_tool(tool_use.name.as_ref()) {
+                return Some(Task::ready(LanguageModelToolResult {
+                    content: LanguageModelToolResultContent::Text(Arc::from(format!(
+                        "Persona '{}' does not allow tool '{}'",
+                        persona.name,
+                        tool_use.name
+                    ))),
+                    tool_use_id: tool_use.id,
+                    tool_name: tool_use.name,
+                    is_error: true,
+                    output: None,
+                }));
+            }
+        }
+
+        // Async context store checks: file claims (write tools) + thread-scoped guardrails (all tools)
         let is_write_tool = matches!(
             tool_use.name.as_ref(),
             "edit_file" | "streaming_edit_file" | "write_file" | "save_file"
         );
-        if is_write_tool {
-            if let Some(ctx) = self.context_handle.clone() {
-                let path_opt = tool_use
+        if let Some(ctx) = self.context_handle.clone() {
+            let path_opt: Option<String> = if is_write_tool {
+                tool_use
                     .input
                     .get("path")
                     .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                if let Some(path) = path_opt {
-                    let tool_use_id_d = tool_use.id.clone();
-                    let tool_name_d = tool_use.name.clone();
-                    let ctx2 = ctx.clone();
-                    let path2 = path.clone();
-                    let tool_name_g = tool_use.name.clone();
-                    let tool_use_id_g = tool_use.id.clone();
-                    let tool_name_g2 = tool_use.name.clone();
-                    let tool_clone = tool.clone();
-                    let input_clone = tool_use.input.clone();
-                    let id_clone = tool_use.id.clone();
-                    let name_clone = tool_use.name.clone();
-                    let event_stream_clone = event_stream.clone();
-                    let cancellation_rx_clone = cancellation_rx.clone();
+                    .map(|s| s.to_string())
+            } else {
+                None
+            };
+            let tool_use_id_d = tool_use.id.clone();
+            let tool_name_d = tool_use.name.clone();
+            let tool_name_g = tool_use.name.clone();
+            let tool_use_id_g = tool_use.id.clone();
+            let tool_name_g2 = tool_use.name.clone();
+            let tool_clone = tool.clone();
+            let input_clone = tool_use.input.clone();
+            let id_clone = tool_use.id.clone();
+            let name_clone = tool_use.name.clone();
+            let event_stream_clone = event_stream.clone();
+            let cancellation_rx_clone = cancellation_rx.clone();
 
-                    return Some(cx.spawn(async move |weak_this: WeakEntity<Thread>, cx| {
-                        // File claim check
+            return Some(cx.spawn(async move |weak_this: WeakEntity<Thread>, cx| {
+                // File claim check (write tools with a path only)
+                if is_write_tool {
+                    if let Some(ref path) = path_opt {
                         let claim_task = cx.update(|cx| {
-                            let ctx3 = ctx2.clone();
+                            let ctx3 = ctx.clone();
                             let p = path.clone();
                             Tokio::spawn_result(cx, async move { ctx3.check_file_claim(&p).await })
                         });
@@ -2786,7 +2805,7 @@ impl Thread {
                             return LanguageModelToolResult {
                                 content: LanguageModelToolResultContent::Text(Arc::from(
                                     format!(
-                                        "File '{path2}' is claimed by agent '{owner}' — \
+                                        "File '{path}' is claimed by agent '{owner}' — \
                                          coordinate before editing."
                                     ),
                                 )),
@@ -2796,54 +2815,54 @@ impl Thread {
                                 output: None,
                             };
                         }
-
-                        // Thread-scoped guardrail check
-                        let guardrail_task = cx.update(|cx| {
-                            let ctx4 = ctx.clone();
-                            let p = path2.clone();
-                            let tn = tool_name_g.clone();
-                            Tokio::spawn_result(cx, async move {
-                                ctx4.check_guardrail(tn.as_ref(), Some(&p)).await
-                            })
-                        });
-                        if let Ok(Some(reason)) = guardrail_task.await {
-                            return LanguageModelToolResult {
-                                content: LanguageModelToolResultContent::Text(Arc::from(
-                                    format!("Guardrail violation: {reason}"),
-                                )),
-                                tool_use_id: tool_use_id_g,
-                                tool_name: tool_name_g2,
-                                is_error: true,
-                                output: None,
-                            };
-                        }
-
-                        // Checks passed — run the tool
-                        match weak_this.update(cx, |this: &mut Thread, cx| {
-                            this.run_tool(
-                                tool_clone,
-                                ToolInput::ready(input_clone),
-                                id_clone,
-                                name_clone,
-                                &event_stream_clone,
-                                cancellation_rx_clone,
-                                cx,
-                            )
-                        }) {
-                            Ok(task) => task.await,
-                            Err(_) => LanguageModelToolResult {
-                                content: LanguageModelToolResultContent::Text(Arc::from(
-                                    "agent was dropped",
-                                )),
-                                tool_use_id: tool_use_id_d,
-                                tool_name: tool_name_d,
-                                is_error: true,
-                                output: None,
-                            },
-                        }
-                    }));
+                    }
                 }
-            }
+
+                // Thread-scoped guardrail check (all tools)
+                let guardrail_task = cx.update(|cx| {
+                    let ctx4 = ctx.clone();
+                    let p = path_opt.clone();
+                    let tn = tool_name_g.clone();
+                    Tokio::spawn_result(cx, async move {
+                        ctx4.check_guardrail(tn.as_ref(), p.as_deref()).await
+                    })
+                });
+                if let Ok(Some(reason)) = guardrail_task.await {
+                    return LanguageModelToolResult {
+                        content: LanguageModelToolResultContent::Text(Arc::from(
+                            format!("Guardrail violation: {reason}"),
+                        )),
+                        tool_use_id: tool_use_id_g,
+                        tool_name: tool_name_g2,
+                        is_error: true,
+                        output: None,
+                    };
+                }
+
+                // Checks passed — run the tool
+                match weak_this.update(cx, |this: &mut Thread, cx| {
+                    this.run_tool(
+                        tool_clone,
+                        ToolInput::ready(input_clone),
+                        id_clone,
+                        name_clone,
+                        &event_stream_clone,
+                        cancellation_rx_clone,
+                        cx,
+                    )
+                }) {
+                    Ok(task) => task.await,
+                    Err(_) => LanguageModelToolResult {
+                        content: LanguageModelToolResultContent::Text(Arc::from(
+                            "agent was dropped",
+                        )),
+                        tool_use_id: tool_use_id_d,
+                        tool_name: tool_name_d,
+                        is_error: true,
+                        output: None,
+                    },
+                }
+            }));
         }
 
         // Write guards (Guard A, B, C) — only for create/overwrite operations

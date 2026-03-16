@@ -149,6 +149,9 @@ const MIGRATIONS: &[&str] = &[
      ALTER TABLE agents ADD COLUMN worktree_path TEXT NOT NULL DEFAULT '';
      ALTER TABLE agent_sessions ADD COLUMN branch TEXT NOT NULL DEFAULT '';
      ALTER TABLE agent_sessions ADD COLUMN worktree_path TEXT NOT NULL DEFAULT '';",
+    // Migration 16: thread_id on activity_log for thread-scoped activity queries
+    "ALTER TABLE activity_log ADD COLUMN thread_id TEXT;
+     CREATE INDEX IF NOT EXISTS idx_activity_log_thread ON activity_log(workspace_id, thread_id) WHERE thread_id IS NOT NULL;",
 ];
 
 pub fn latest_version() -> i64 {

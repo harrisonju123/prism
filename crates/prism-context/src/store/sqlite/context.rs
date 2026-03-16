@@ -117,9 +117,9 @@ impl SqliteStore {
         thread_id: Uuid,
     ) -> Result<Vec<ActivityEntry>> {
         let rows = sqlx::query(
-            "SELECT id, workspace_id, actor, action, entity_type, entity_id, summary, detail, created_at
+            "SELECT id, workspace_id, actor, action, entity_type, entity_id, summary, detail, thread_id, created_at
              FROM activity_log
-             WHERE workspace_id = $1 AND entity_id = $2
+             WHERE workspace_id = $1 AND (thread_id = $2 OR entity_id = $2)
              ORDER BY created_at DESC LIMIT 20",
         )
         .bind(workspace_id.to_string())

@@ -1586,3 +1586,60 @@ async fn test_release_all_claims_for_agent_only_own() {
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].agent_name, "agent-b");
 }
+
+#[tokio::test]
+async fn test_thread_scoped_activity_tracking() {
+    let (store, ws) = setup().await;
+
+    // Create a thread
+    let thread = store
+        .create_thread(ws.id, "feature-auth", "Auth work", vec![])
+        .await
+        .expect("create thread");
+
+    // Save a memory attached to the thread
+    store
+        .save_memory(
+            ws.id,
+            "auth_approach",
+            "JWT with refresh tokens",
+            Some(thread.id),
+            "agent",
+            vec![],
+        )
+        .await
+        .expect("save memory");
+
+    // recall_thread should include the memory_saved activity in recent_activity
+    let ctx = store
+        .recall_thread(ws.id, "feature-auth")
+        .await
+        .expect("recall thread");
+    let actions: Vec<&str> = ctx.recent_activity.iter().map(|a| a.action.as_str()).collect();
+    assert!(
+        actions.contains(&"saved"),
+        "expected 'saved' in recent_activity, got: {actions:?}"
+    );
+
+    // list_activity with thread_id filter should return only thread-scoped entries
+    let filtered = store
+        .list_activity(
+            ws.id,
+            ActivityFilters {
+                thread_id: Some(thread.id),
+                limit: 50,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("list_activity filtered");
+
+    // Should include at minimum the memory saved event and the thread created event
+    assert!(
+        filtered.len() >= 2,
+        "expected at least 2 thread-scoped events, got {}",
+        filtered.len()
+    );
+    let all_thread_scoped = filtered.iter().all(|a| a.thread_id == Some(thread.id));
+    assert!(all_thread_scoped, "some events not thread-scoped: {filtered:?}");
+}

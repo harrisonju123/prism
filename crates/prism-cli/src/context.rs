@@ -962,6 +962,7 @@ pub async fn run(cmd: ContextCmd) -> Result<()> {
             let filters = ActivityFilters {
                 since: since_dt,
                 actor,
+                thread_id: None,
                 limit,
             };
             let activity = store

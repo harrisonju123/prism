@@ -54,7 +54,7 @@ impl SqliteStore {
             "thread_guardrails",
             thread.id,
             &format!("Guardrails set for thread '{thread_name}'"),
-            None,
+            Some(thread.id),
         )
         .await;
 
@@ -274,7 +274,7 @@ impl SqliteStore {
             "thread_guardrails",
             thread.id,
             &format!("Cost incremented by ${amount_usd:.4} for thread '{thread_name}'"),
-            None,
+            Some(thread.id),
         )
         .await;
 

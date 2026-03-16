@@ -84,7 +84,7 @@ impl SqliteStore {
             "handoff",
             handoff.id,
             &format!("Handoff: {task}"),
-            None,
+            handoff.thread_id,
         )
         .await;
 
@@ -130,7 +130,7 @@ impl SqliteStore {
             "handoff",
             handoff.id,
             &format!("Accepted handoff {handoff_id}"),
-            None,
+            handoff.thread_id,
         )
         .await;
 
@@ -170,7 +170,7 @@ impl SqliteStore {
             "handoff",
             handoff.id,
             &format!("Completed handoff {handoff_id}"),
-            None,
+            handoff.thread_id,
         )
         .await;
 
@@ -247,7 +247,7 @@ impl SqliteStore {
             "handoff",
             handoff.id,
             &format!("Started handoff {handoff_id}"),
-            None,
+            handoff.thread_id,
         )
         .await;
 
@@ -286,7 +286,7 @@ impl SqliteStore {
             "handoff",
             handoff.id,
             &format!("Failed handoff {handoff_id}: {reason}"),
-            None,
+            handoff.thread_id,
         )
         .await;
 
@@ -321,7 +321,7 @@ impl SqliteStore {
             "handoff",
             handoff.id,
             &format!("Cancelled handoff {handoff_id}"),
-            None,
+            handoff.thread_id,
         )
         .await;
 

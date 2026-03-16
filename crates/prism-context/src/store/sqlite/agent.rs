@@ -192,7 +192,7 @@ impl SqliteStore {
             "agent",
             agent.id,
             &format!("Agent '{name}' checked in"),
-            None,
+            agent.current_thread_id,
         )
         .await;
 
@@ -306,7 +306,7 @@ impl SqliteStore {
             "agent_session",
             session.id,
             &format!("Agent '{name}' checked out"),
-            None,
+            session.thread_id,
         )
         .await;
 

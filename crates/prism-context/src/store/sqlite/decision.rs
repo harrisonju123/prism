@@ -50,7 +50,7 @@ impl SqliteStore {
             "decision",
             decision.id,
             &format!("Decision: {title}"),
-            None,
+            decision.thread_id,
         )
         .await;
 
@@ -124,7 +124,7 @@ impl SqliteStore {
             "decision",
             decision.id,
             &format!("Superseded decision {old_id} with: {new_title}"),
-            None,
+            decision.thread_id,
         )
         .await;
 
@@ -158,7 +158,7 @@ impl SqliteStore {
             "decision",
             decision.id,
             &format!("Revoked decision: {}", decision.title),
-            None,
+            decision.thread_id,
         )
         .await;
 
