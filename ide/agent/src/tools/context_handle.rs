@@ -201,6 +201,14 @@ impl ContextHandle {
         Ok(())
     }
 
+    /// Reap agents whose heartbeat is older than `timeout_secs`.
+    pub async fn reap_dead_agents(&self, timeout_secs: i64) -> anyhow::Result<Vec<String>> {
+        self.store
+            .reap_dead_agents(self.workspace_id, timeout_secs)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
     /// Create (or debounce-update) a cost spike inbox event.
     pub async fn create_cost_spike_entry(&self, title: &str, near_cap: bool) -> anyhow::Result<()> {
         let thread_id = self.context_thread.read().as_ref().map(|t| t.id);

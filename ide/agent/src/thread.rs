@@ -1,7 +1,9 @@
 use crate::{
     AskHumanTool, ContextHandle, ContextOverviewTool, ContextServerRegistry, CopyPathTool,
-    CreateDirectoryTool, DbLanguageModel, DbThread, DeletePathTool, DiagnosticsTool, EditFileTool,
+    CreateDirectoryTool, CreateSnapshotTool, DbLanguageModel, DbThread, DeletePathTool,
+    DiagnosticsTool, EditFileTool,
     FetchTool, FindPathTool, ForgetMemoryTool, GrepTool, ListDirectoryTool, ListMemoriesTool,
+    ListSnapshotsTool,
     MovePathTool, NowTool, OpenTool, ProjectSnapshot, ReadFileTool, RecallTool, RecordDecisionTool,
     RequestReviewTool, RestoreFileFromDiskTool, SaveFileTool, SaveMemoryTool, SendMessageTool,
     SkillTool, SpawnAgentTool, StreamingEditFileTool, SystemPromptTemplate, Template, Templates,
@@ -1629,6 +1631,8 @@ impl Thread {
             self.add_tool(ListMemoriesTool::new(ctx.clone()));
             self.add_tool(ContextOverviewTool::new(ctx.clone()));
             self.add_tool(SendMessageTool::new(ctx.clone()));
+            self.add_tool(CreateSnapshotTool::new(ctx.clone()));
+            self.add_tool(ListSnapshotsTool::new(ctx.clone()));
             self.context_handle = Some(ctx);
         }
 

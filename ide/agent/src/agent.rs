@@ -494,11 +494,20 @@ impl NativeAgent {
             }
         });
 
-        // Fire checkin so the IDE session is visible in prism-context (best-effort).
+        // Fire checkin and reap dead peers in a single background task (best-effort).
         if let Some(ctx) = context_handle.clone() {
             cx.background_spawn(async move {
                 if let Err(e) = ctx.checkin().await {
                     log::warn!("prism-context: checkin failed: {e}");
+                }
+                match ctx.reap_dead_agents(600).await {
+                    Ok(reaped) if !reaped.is_empty() => {
+                        log::info!("prism-context: reaped dead agents: {:?}", reaped);
+                    }
+                    Err(e) => {
+                        log::debug!("prism-context: reap_dead_agents failed: {e}");
+                    }
+                    _ => {}
                 }
             })
             .detach();

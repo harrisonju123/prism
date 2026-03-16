@@ -291,6 +291,10 @@ impl Store for SqliteStore {
         self.create_snapshot_impl(workspace_id, label).await
     }
 
+    async fn list_snapshots(&self, workspace_id: Uuid, limit: Option<i64>) -> Result<Vec<Snapshot>> {
+        self.list_snapshots_impl(workspace_id, limit).await
+    }
+
     async fn create_handoff(
         &self,
         workspace_id: Uuid,

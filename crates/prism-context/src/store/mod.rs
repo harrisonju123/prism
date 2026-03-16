@@ -176,8 +176,9 @@ pub trait Store: Send + Sync {
         filters: ActivityFilters,
     ) -> Result<Vec<ActivityEntry>>;
 
-    // --- Snapshot (1) ---
+    // --- Snapshot (2) ---
     async fn create_snapshot(&self, workspace_id: Uuid, label: &str) -> Result<Snapshot>;
+    async fn list_snapshots(&self, workspace_id: Uuid, limit: Option<i64>) -> Result<Vec<Snapshot>>;
 
     // --- Handoff (4) ---
     async fn create_handoff(

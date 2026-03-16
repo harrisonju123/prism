@@ -4,6 +4,7 @@ mod codebase_search_tool;
 mod context_handle;
 mod context_overview_tool;
 mod context_server_registry;
+mod create_snapshot_tool;
 mod copy_path_tool;
 mod create_directory_tool;
 mod delete_path_tool;
@@ -15,6 +16,7 @@ mod forget_memory_tool;
 mod grep_tool;
 mod list_directory_tool;
 mod list_memories_tool;
+mod list_snapshots_tool;
 mod move_path_tool;
 mod now_tool;
 mod open_tool;
@@ -47,6 +49,7 @@ pub use context_overview_tool::*;
 pub use context_server_registry::*;
 pub use copy_path_tool::*;
 pub use create_directory_tool::*;
+pub use create_snapshot_tool::*;
 pub use delete_path_tool::*;
 pub use diagnostics_tool::*;
 pub use edit_file_tool::*;
@@ -56,6 +59,7 @@ pub use forget_memory_tool::*;
 pub use grep_tool::*;
 pub use list_directory_tool::*;
 pub use list_memories_tool::*;
+pub use list_snapshots_tool::*;
 pub use move_path_tool::*;
 pub use now_tool::*;
 pub use open_tool::*;
@@ -150,6 +154,7 @@ tools! {
     ContextOverviewTool,
     CopyPathTool,
     CreateDirectoryTool,
+    CreateSnapshotTool,
     DeletePathTool,
     DiagnosticsTool,
     EditFileTool,
@@ -159,6 +164,7 @@ tools! {
     GrepTool,
     ListDirectoryTool,
     ListMemoriesTool,
+    ListSnapshotsTool,
     MovePathTool,
     NowTool,
     OpenTool,

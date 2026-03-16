@@ -72,6 +72,28 @@ impl SqliteStore {
 
         Ok(snapshot)
     }
+
+    pub(crate) async fn list_snapshots_impl(
+        &self,
+        workspace_id: Uuid,
+        limit: Option<i64>,
+    ) -> Result<Vec<Snapshot>> {
+        let ws_str = workspace_id.to_string();
+        let limit = limit.unwrap_or(20);
+        let rows = sqlx::query(
+            "SELECT id, workspace_id, label, summary, content, created_at
+             FROM snapshots
+             WHERE workspace_id = $1
+             ORDER BY created_at DESC
+             LIMIT $2",
+        )
+        .bind(&ws_str)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.iter().map(row_to_snapshot).collect()
+    }
 }
 
 row_to_struct! {
