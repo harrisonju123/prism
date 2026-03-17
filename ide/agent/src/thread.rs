@@ -2430,10 +2430,13 @@ impl Thread {
                 if should_check {
                     if let Some(ctx2) = ctx_opt {
                         let risks = cx
-                            .background_spawn(async move {
-                                ctx2.list_unverified_risks().await.unwrap_or_default()
+                            .update(|cx| {
+                                Tokio::spawn_result(cx, async move {
+                                    Ok(ctx2.list_unverified_risks().await.unwrap_or_default())
+                                })
                             })
-                            .await;
+                            .await
+                            .unwrap_or_default();
                         if !risks.is_empty() {
                             let titles: Vec<&str> =
                                 risks.iter().map(|r| r.title.as_str()).take(5).collect();
