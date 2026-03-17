@@ -34,9 +34,6 @@ jobs:
         with:
           key: prism-release-macos-${{ matrix.arch }}
 
-      - name: List available Xcode versions
-        run: ls /Applications/ | grep Xcode
-
       - name: Determine release channel
         run: script/determine-release-channel
 
@@ -48,6 +45,7 @@ jobs:
           APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
           APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
           ALLOW_MISSING_LICENSES: "1"
+          CXXFLAGS: "-std=c++17"
         run: script/bundle-mac ${{ matrix.arch }}-apple-darwin
 
       - name: Upload DMG
