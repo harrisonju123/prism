@@ -202,6 +202,12 @@ pub enum ContextCmd {
         action: FilesAction,
     },
 
+    /// Risk register management
+    Risk {
+        #[command(subcommand)]
+        action: RiskAction,
+    },
+
 }
 
 #[derive(Subcommand)]
@@ -406,6 +412,55 @@ pub enum WpAction {
         /// New status: planned | ready | in_progress | review | done | cancelled
         status: String,
     },
+    /// Update work package progress note
+    Progress {
+        wp_id: String,
+        /// New status (default: in_progress)
+        #[arg(long, default_value = "in_progress")]
+        status: String,
+        /// Progress note
+        #[arg(long, default_value = "")]
+        note: String,
+    },
+}
+
+/// Risk register management
+#[derive(Subcommand)]
+pub enum RiskAction {
+    /// Create a new risk
+    Create {
+        title: String,
+        #[arg(long, default_value = "")]
+        desc: String,
+        #[arg(long, default_value = "general")]
+        category: String,
+        /// Severity: high | medium | low
+        #[arg(long, default_value = "medium")]
+        severity: String,
+        #[arg(long, value_delimiter = ',')]
+        tags: Option<Vec<String>>,
+    },
+    /// Update risk status
+    Update {
+        risk_id: String,
+        /// New status: identified | acknowledged | mitigated | verified | accepted
+        #[arg(long)]
+        status: String,
+        #[arg(long, default_value = "")]
+        mitigation: String,
+        #[arg(long, default_value = "")]
+        verify: String,
+    },
+    /// List risks
+    List {
+        /// Filter by status
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long)]
+        thread: Option<String>,
+    },
+    /// List unverified risks
+    Unverified,
 }
 
 #[derive(Subcommand)]
@@ -1246,6 +1301,72 @@ pub async fn run(cmd: ContextCmd) -> Result<()> {
                     .await
                     .map_err(|e| anyhow!("{e}"))?;
                 print_json(&wp);
+            }
+            WpAction::Progress { wp_id, status, note } => {
+                let wid: Uuid = wp_id.parse().map_err(|e| anyhow!("invalid wp id: {e}"))?;
+                let wp_status = WorkPackageStatus::from_str(&status)
+                    .ok_or_else(|| anyhow!("invalid status: {status}"))?;
+                let wp = store
+                    .update_work_package_progress(workspace_id, wid, wp_status, &note)
+                    .await
+                    .map_err(|e| anyhow!("{e}"))?;
+                print_json(&wp);
+            }
+        },
+        ContextCmd::Risk { action } => match action {
+            RiskAction::Create { title, desc, category, severity, tags } => {
+                let sev = RiskSeverity::from_str(&severity)
+                    .ok_or_else(|| anyhow!("invalid severity: {severity} (use high|medium|low)"))?;
+                let agent = agent_name_from_env();
+                let risk = store
+                    .create_risk(
+                        workspace_id,
+                        None,
+                        &title,
+                        &desc,
+                        &category,
+                        sev,
+                        Some(&agent),
+                        tags.unwrap_or_default(),
+                    )
+                    .await
+                    .map_err(|e| anyhow!("{e}"))?;
+                print_json(&risk);
+            }
+            RiskAction::Update { risk_id, status, mitigation, verify } => {
+                let rid: Uuid = risk_id.parse().map_err(|e| anyhow!("invalid risk id: {e}"))?;
+                let risk_status = RiskStatus::from_str(&status)
+                    .ok_or_else(|| anyhow!("invalid status: {status}"))?;
+                let mit = if mitigation.is_empty() { None } else { Some(mitigation.as_str()) };
+                let ver = if verify.is_empty() { None } else { Some(verify.as_str()) };
+                let risk = store
+                    .update_risk_status(workspace_id, rid, risk_status, mit, ver)
+                    .await
+                    .map_err(|e| anyhow!("{e}"))?;
+                print_json(&risk);
+            }
+            RiskAction::List { status, thread } => {
+                let risk_status = status
+                    .as_deref()
+                    .map(|s| RiskStatus::from_str(s).ok_or_else(|| anyhow!("invalid status: {s}")))
+                    .transpose()?;
+                let thread_id = if let Some(ref tname) = thread {
+                    Some(resolve_thread_id(&store, workspace_id, tname).await?)
+                } else {
+                    None
+                };
+                let risks = store
+                    .list_risks(workspace_id, risk_status, thread_id)
+                    .await
+                    .map_err(|e| anyhow!("{e}"))?;
+                print_json(&risks);
+            }
+            RiskAction::Unverified => {
+                let risks = store
+                    .list_unverified_risks(workspace_id, None)
+                    .await
+                    .map_err(|e| anyhow!("{e}"))?;
+                print_json(&risks);
             }
         },
     }

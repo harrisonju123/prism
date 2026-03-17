@@ -1,0 +1,42 @@
+---
+const RELEASES_URL = 'https://github.com/harrisonju123/PrisM/releases';
+const SOURCE_URL = 'https://github.com/harrisonju123/PrisM#building-from-source';
+
+const platforms = [
+  { label: 'macOS Apple Silicon', href: RELEASES_URL },
+  { label: 'macOS Intel', href: RELEASES_URL },
+  { label: 'Linux x86_64', href: RELEASES_URL },
+];
+---
+
+<section id="download" class="py-24 px-6 border-t border-border">
+  <div id="download-inner" class="max-w-[720px] mx-auto text-center opacity-0 translate-y-4">
+    <h2 class="text-3xl font-semibold text-heading mb-10">Get PrisM</h2>
+
+    <div class="flex flex-wrap justify-center gap-4 mb-8">
+      {platforms.map((p) => (
+        <a
+          href={p.href}
+          target="_blank"
+          rel="noopener noreferrer"
+          class="inline-flex items-center gap-2 border border-border hover:border-accent text-body hover:text-accent font-medium px-5 py-3 rounded-lg transition-colors duration-200 text-sm"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          {p.label}
+        </a>
+      ))}
+    </div>
+
+    <p class="text-sm text-muted">
+      Or{' '}
+      <a href={SOURCE_URL} target="_blank" rel="noopener noreferrer" class="text-accent hover:text-accent-hover underline underline-offset-2 transition-colors duration-200">
+        build from source
+      </a>
+      {' '}— GPL-3.0 (IDE) / Apache-2.0 (gateway)
+    </p>
+  </div>
+</section>

@@ -189,3 +189,14 @@ disk-usage:
 	@echo ""
 	@echo "=== Active worktrees ==="
 	@git worktree list
+
+
+# Website (prism-ide.dev)
+website-dev:
+	cd website && npm run dev
+
+website-build:
+	cd website && npm run build
+
+website-preview:
+	cd website && npm run preview

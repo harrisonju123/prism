@@ -17,6 +17,10 @@ pub struct PrismStatusIndicator {
     /// (name, state, current_thread) — Arc for cheap clones in render
     agent_summaries: Arc<Vec<(String, AgentState, Option<String>)>>,
     actionable_count: usize,
+    /// Count of High-severity unverified risks.
+    high_risk_count: usize,
+    /// Current mission phase label (e.g. "implement"), if an active plan exists.
+    active_mission_phase: Option<String>,
     /// Cached label — recomputed only when state changes
     label: String,
     /// Cached dot color — recomputed only when state changes
@@ -46,10 +50,14 @@ impl PrismStatusIndicator {
             cx.observe(&hq_entity, |this, hq_entity, cx| {
                 let hq = hq_entity.read(cx);
                 let new_actionable = hq.inbox_entries.iter().filter(|e| !e.read).count();
+                let new_high_risks = hq.high_risk_count;
+                let new_mission_phase = hq.active_plan().map(|p| p.current_phase.to_string());
 
                 // Skip notify if nothing relevant changed.
                 let unchanged = hq.agents.len() == this.agent_summaries.len()
                     && new_actionable == this.actionable_count
+                    && new_high_risks == this.high_risk_count
+                    && new_mission_phase == this.active_mission_phase
                     && hq.agents
                         .iter()
                         .zip(this.agent_summaries.iter())
@@ -69,6 +77,8 @@ impl PrismStatusIndicator {
                         .collect::<Vec<_>>(),
                 );
                 this.actionable_count = new_actionable;
+                this.high_risk_count = new_high_risks;
+                this.active_mission_phase = new_mission_phase;
                 this.label = this.compute_label();
                 this.dot_color = this.compute_dot_color();
                 cx.notify();
@@ -109,6 +119,8 @@ impl PrismStatusIndicator {
             _activity_subscription: activity_subscription,
             agent_summaries: Arc::new(Vec::new()),
             actionable_count: 0,
+            high_risk_count: 0,
+            active_mission_phase: None,
             label: "P ● idle".to_string(),
             dot_color: Color::Success,
             live_tool: None,
@@ -120,7 +132,11 @@ impl PrismStatusIndicator {
 
     fn compute_label(&self) -> String {
         if self.waiting_for_approval {
-            return "P ◐ awaiting approval".to_string();
+            let mut s = "P ◐ awaiting approval".to_string();
+            if let Some(phase) = &self.active_mission_phase {
+                s.push_str(&format!(" · {phase}"));
+            }
+            return s;
         }
         if self.is_generating {
             if let Some(tool) = &self.live_tool {
@@ -130,15 +146,31 @@ impl PrismStatusIndicator {
                         .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or(file.as_str());
-                    return format!("{base} {short}");
+                    let mut s = format!("{base} {short}");
+                    if let Some(phase) = &self.active_mission_phase {
+                        s.push_str(&format!(" · {phase}"));
+                    }
+                    return s;
                 }
-                return base;
+                let mut s = base;
+                if let Some(phase) = &self.active_mission_phase {
+                    s.push_str(&format!(" · {phase}"));
+                }
+                return s;
             }
-            return "P ◐ generating".to_string();
+            let mut s = "P ◐ generating".to_string();
+            if let Some(phase) = &self.active_mission_phase {
+                s.push_str(&format!(" · {phase}"));
+            }
+            return s;
         }
         let agent_count = self.agent_summaries.len();
         if agent_count == 0 {
-            "P ● idle".to_string()
+            if let Some(phase) = &self.active_mission_phase {
+                format!("P ● idle · {phase}")
+            } else {
+                "P ● idle".to_string()
+            }
         } else {
             let mut s = format!(
                 "P ● {} agent{}",
@@ -147,6 +179,12 @@ impl PrismStatusIndicator {
             );
             if self.actionable_count > 0 {
                 s.push_str(&format!(" · {} review", self.actionable_count));
+            }
+            if self.high_risk_count > 0 {
+                s.push_str(&format!(" · {} risk", self.high_risk_count));
+            }
+            if let Some(phase) = &self.active_mission_phase {
+                s.push_str(&format!(" · {phase}"));
             }
             s
         }
@@ -159,7 +197,7 @@ impl PrismStatusIndicator {
             Color::Warning
         } else if self.is_generating {
             Color::Accent
-        } else if self.actionable_count > 0 {
+        } else if self.high_risk_count > 0 || self.actionable_count > 0 {
             Color::Warning
         } else {
             Color::Success

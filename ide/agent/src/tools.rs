@@ -24,9 +24,13 @@ mod notebook_edit_tool;
 mod now_tool;
 mod open_tool;
 mod read_file_tool;
+mod flag_risk_tool;
 mod record_decision_tool;
+mod submit_questions_tool;
 mod recall_tool;
 mod request_review_tool;
+mod update_mission_tool;
+mod update_risk_tool;
 mod restore_file_from_disk_tool;
 mod save_file_tool;
 mod save_memory_tool;
@@ -64,6 +68,7 @@ pub use diagnostics_tool::*;
 pub use edit_file_tool::*;
 pub use fetch_tool::*;
 pub use find_path_tool::*;
+pub use flag_risk_tool::*;
 pub use forget_memory_tool::*;
 pub use grep_tool::*;
 pub use list_directory_tool::*;
@@ -83,6 +88,7 @@ pub use save_file_tool::*;
 pub use save_memory_tool::*;
 pub use send_message_tool::*;
 pub use spawn_agent_tool::*;
+pub use submit_questions_tool::*;
 pub use streaming_edit_file_tool::*;
 pub use task_create_tool::*;
 pub use task_get_tool::*;
@@ -94,6 +100,8 @@ pub use thread_archive_tool::*;
 pub use thread_create_tool::*;
 pub use thread_list_tool::*;
 pub use tool_permissions::*;
+pub use update_mission_tool::*;
+pub use update_risk_tool::*;
 pub use web_search_tool::*;
 
 macro_rules! tools {
@@ -177,6 +185,7 @@ tools! {
     EditFileTool,
     FetchTool,
     FindPathTool,
+    FlagRiskTool,
     ForgetMemoryTool,
     GrepTool,
     ListDirectoryTool,
@@ -196,6 +205,7 @@ tools! {
     SaveMemoryTool,
     SendMessageTool,
     SpawnAgentTool,
+    SubmitQuestionsTool,
     TaskCreateTool,
     TaskGetTool,
     TaskListTool,
@@ -204,5 +214,7 @@ tools! {
     ThreadArchiveTool,
     ThreadCreateTool,
     ThreadListTool,
+    UpdateMissionTool,
+    UpdateRiskTool,
     WebSearchTool,
 }

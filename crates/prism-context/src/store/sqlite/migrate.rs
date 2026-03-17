@@ -152,6 +152,57 @@ const MIGRATIONS: &[&str] = &[
     // Migration 16: thread_id on activity_log for thread-scoped activity queries
     "ALTER TABLE activity_log ADD COLUMN thread_id TEXT;
      CREATE INDEX IF NOT EXISTS idx_activity_log_thread ON activity_log(workspace_id, thread_id) WHERE thread_id IS NOT NULL;",
+    // Migration 17: progress tracking on work_packages
+    "ALTER TABLE work_packages ADD COLUMN progress_note TEXT;
+     ALTER TABLE work_packages ADD COLUMN progress_updated_at TEXT;",
+    // Migration 18: risk register
+    "CREATE TABLE IF NOT EXISTS risks (
+         id                     TEXT PRIMARY KEY,
+         workspace_id           TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+         thread_id              TEXT REFERENCES threads(id) ON DELETE SET NULL,
+         title                  TEXT NOT NULL,
+         description            TEXT NOT NULL DEFAULT '',
+         category               TEXT NOT NULL DEFAULT 'general',
+         severity               TEXT NOT NULL DEFAULT 'medium'
+             CHECK(severity IN ('high','medium','low')),
+         status                 TEXT NOT NULL DEFAULT 'identified'
+             CHECK(status IN ('identified','acknowledged','mitigated','verified','accepted')),
+         mitigation_plan        TEXT,
+         verification_criteria  TEXT,
+         source_agent           TEXT,
+         tags                   TEXT NOT NULL DEFAULT '[]',
+         created_at             TEXT NOT NULL,
+         updated_at             TEXT NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_risks_workspace ON risks(workspace_id, status);
+     CREATE INDEX IF NOT EXISTS idx_risks_thread ON risks(thread_id) WHERE thread_id IS NOT NULL;
+     CREATE INDEX IF NOT EXISTS idx_risks_agent ON risks(workspace_id, source_agent, status) WHERE source_agent IS NOT NULL;",
+    // Migration 19: Plan mission metadata
+    "ALTER TABLE plans ADD COLUMN description TEXT NOT NULL DEFAULT '';
+     ALTER TABLE plans ADD COLUMN constraints TEXT NOT NULL DEFAULT '[]';
+     ALTER TABLE plans ADD COLUMN current_phase TEXT NOT NULL DEFAULT 'investigate';
+     ALTER TABLE plans ADD COLUMN assumptions TEXT NOT NULL DEFAULT '[]';
+     ALTER TABLE plans ADD COLUMN blockers TEXT NOT NULL DEFAULT '[]';
+     ALTER TABLE plans ADD COLUMN files_touched TEXT NOT NULL DEFAULT '[]';
+     ALTER TABLE plans ADD COLUMN autonomy_level TEXT NOT NULL DEFAULT 'supervised';",
+    // Migration 20: Change sets + work package validation tracking
+    "CREATE TABLE IF NOT EXISTS change_sets (
+         id           TEXT PRIMARY KEY,
+         workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+         plan_id      TEXT REFERENCES plans(id) ON DELETE CASCADE,
+         wp_id        TEXT REFERENCES work_packages(id) ON DELETE SET NULL,
+         file_path    TEXT NOT NULL,
+         change_type  TEXT NOT NULL DEFAULT 'modified',
+         rationale    TEXT NOT NULL DEFAULT '',
+         diff_excerpt TEXT NOT NULL DEFAULT '',
+         created_at   TEXT NOT NULL,
+         updated_at   TEXT NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS idx_change_sets_plan ON change_sets(plan_id) WHERE plan_id IS NOT NULL;
+     CREATE INDEX IF NOT EXISTS idx_change_sets_wp ON change_sets(wp_id) WHERE wp_id IS NOT NULL;
+     ALTER TABLE work_packages ADD COLUMN validation_status TEXT NOT NULL DEFAULT 'pending';
+     ALTER TABLE work_packages ADD COLUMN validation_evidence TEXT NOT NULL DEFAULT '[]';
+     ALTER TABLE work_packages ADD COLUMN change_rationale TEXT NOT NULL DEFAULT '';",
 ];
 
 pub fn latest_version() -> i64 {

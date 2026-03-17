@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use gpui::{App, AppContext as _, Context, Entity, Global, Task, WeakEntity};
-use prism_context::model::{AgentStatus, InboxEntry, InboxEntryType, InboxSeverity};
+use prism_context::model::{AgentStatus, InboxEntry, InboxEntryType, InboxSeverity, Plan, PlanStatus, Risk};
 use crate::context_service::ContextService;
 use crate::running_agents::RunningAgents;
 
@@ -13,6 +13,12 @@ pub struct HqState {
     pub agents: Vec<AgentStatus>,
     /// Unread supervisory inbox entries (not dismissed).
     pub inbox_entries: Vec<InboxEntry>,
+    /// Open/unverified risks from the risk register.
+    pub risks: Vec<Risk>,
+    /// Count of High-severity unverified risks (for status indicator badge).
+    pub high_risk_count: usize,
+    /// Active (or approved) plan, if any.
+    pub active_plan: Option<Plan>,
     pub is_loading: bool,
     pub error: Option<String>,
     /// Entry IDs already seen by the OS-notification logic (prevents re-firing on re-poll).
@@ -38,6 +44,9 @@ impl HqState {
             let mut hq = HqState {
                 agents: Vec::new(),
                 inbox_entries: Vec::new(),
+                risks: Vec::new(),
+                high_risk_count: 0,
+                active_plan: None,
                 is_loading: false,
                 error: None,
                 seen_entry_ids: std::collections::HashSet::new(),
@@ -67,6 +76,11 @@ impl HqState {
         cx.try_global::<HqStateGlobal>().map(|g| g.0.clone())
     }
 
+    /// Returns the active (or approved) plan, if any.
+    pub fn active_plan(&self) -> Option<&Plan> {
+        self.active_plan.as_ref()
+    }
+
     fn refresh(&mut self, cx: &mut Context<Self>) {
         self.is_loading = true;
         cx.notify();
@@ -80,7 +94,7 @@ impl HqState {
                 .ok()
                 .flatten();
 
-            type RefreshData = (Vec<AgentStatus>, Vec<InboxEntry>);
+            type RefreshData = (Vec<AgentStatus>, Vec<InboxEntry>, Vec<Risk>, Option<Plan>);
 
             let result: anyhow::Result<RefreshData> = cx
                 .background_spawn(async move {
@@ -93,15 +107,21 @@ impl HqState {
                     let inbox_entries = handle
                         .list_inbox_entries(Default::default())
                         .unwrap_or_default();
-                    anyhow::Ok((agents, inbox_entries))
+                    let risks = handle.list_unverified_risks(None).unwrap_or_default();
+                    let active_plan = handle.list_plans(Some(PlanStatus::Active)).ok()
+                        .and_then(|plans| plans.into_iter().next())
+                        .or_else(|| handle.list_plans(Some(PlanStatus::Approved)).ok()
+                            .and_then(|plans| plans.into_iter().next()));
+                    anyhow::Ok((agents, inbox_entries, risks, active_plan))
                 })
                 .await;
 
             this.update(cx, |this, cx| {
                 this.is_loading = false;
                 match result {
-                    Ok((agents, inbox_entries)) => {
+                    Ok((agents, inbox_entries, risks, active_plan)) => {
                         this.agents = agents;
+                        this.active_plan = active_plan;
 
                         // Fire OS notifications for new Critical unread entries.
                         let now = Instant::now();
@@ -146,6 +166,11 @@ impl HqState {
                         }
 
                         this.inbox_entries = inbox_entries;
+                        this.high_risk_count = risks
+                            .iter()
+                            .filter(|r| r.severity == prism_context::model::RiskSeverity::High)
+                            .count();
+                        this.risks = risks;
                         this.error = None;
                     }
                     Err(e) => {

@@ -651,6 +651,20 @@ pub struct Plan {
     pub workspace_id: Uuid,
     pub intent: String,
     pub status: PlanStatus,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<String>,
+    #[serde(default)]
+    pub current_phase: MissionPhase,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub assumptions: Vec<Assumption>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blockers: Vec<Blocker>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files_touched: Vec<String>,
+    #[serde(default)]
+    pub autonomy_level: AutonomyLevel,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -675,6 +689,397 @@ pub struct WorkPackage {
     pub assigned_agent: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
+    /// Free-text progress note (updated via update_work_package_progress).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_updated_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub validation_status: ValidationStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub validation_evidence: Vec<ValidationEvidence>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub change_rationale: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+// ---------------------------------------------------------------------------
+// Risk register
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RiskStatus {
+    Identified,
+    Acknowledged,
+    Mitigated,
+    Verified,
+    Accepted,
+}
+
+impl std::fmt::Display for RiskStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RiskStatus::Identified => write!(f, "identified"),
+            RiskStatus::Acknowledged => write!(f, "acknowledged"),
+            RiskStatus::Mitigated => write!(f, "mitigated"),
+            RiskStatus::Verified => write!(f, "verified"),
+            RiskStatus::Accepted => write!(f, "accepted"),
+        }
+    }
+}
+
+impl RiskStatus {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "identified" => Some(Self::Identified),
+            "acknowledged" => Some(Self::Acknowledged),
+            "mitigated" => Some(Self::Mitigated),
+            "verified" => Some(Self::Verified),
+            "accepted" => Some(Self::Accepted),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RiskSeverity {
+    High,
+    Medium,
+    Low,
+}
+
+impl std::fmt::Display for RiskSeverity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RiskSeverity::High => write!(f, "high"),
+            RiskSeverity::Medium => write!(f, "medium"),
+            RiskSeverity::Low => write!(f, "low"),
+        }
+    }
+}
+
+impl RiskSeverity {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "high" => Some(Self::High),
+            "medium" => Some(Self::Medium),
+            "low" => Some(Self::Low),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Risk {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<Uuid>,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    #[serde(default)]
+    pub category: String,
+    pub severity: RiskSeverity,
+    pub status: RiskStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mitigation_plan: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_criteria: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+// ---------------------------------------------------------------------------
+// Mission phase + autonomy
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MissionPhase {
+    #[default]
+    Investigate,
+    Plan,
+    Clarify,
+    Implement,
+    Validate,
+    Review,
+    Finalize,
+}
+
+impl std::fmt::Display for MissionPhase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MissionPhase::Investigate => write!(f, "investigate"),
+            MissionPhase::Plan => write!(f, "plan"),
+            MissionPhase::Clarify => write!(f, "clarify"),
+            MissionPhase::Implement => write!(f, "implement"),
+            MissionPhase::Validate => write!(f, "validate"),
+            MissionPhase::Review => write!(f, "review"),
+            MissionPhase::Finalize => write!(f, "finalize"),
+        }
+    }
+}
+
+impl MissionPhase {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "investigate" => Some(Self::Investigate),
+            "plan" => Some(Self::Plan),
+            "clarify" => Some(Self::Clarify),
+            "implement" => Some(Self::Implement),
+            "validate" => Some(Self::Validate),
+            "review" => Some(Self::Review),
+            "finalize" => Some(Self::Finalize),
+            _ => None,
+        }
+    }
+
+    /// Returns the next phase in the default sequence, or None if at the end.
+    pub fn next(&self) -> Option<Self> {
+        match self {
+            MissionPhase::Investigate => Some(MissionPhase::Plan),
+            MissionPhase::Plan => Some(MissionPhase::Clarify),
+            MissionPhase::Clarify => Some(MissionPhase::Implement),
+            MissionPhase::Implement => Some(MissionPhase::Validate),
+            MissionPhase::Validate => Some(MissionPhase::Review),
+            MissionPhase::Review => Some(MissionPhase::Finalize),
+            MissionPhase::Finalize => None,
+        }
+    }
+
+    /// All phases as (label, index) for the timeline bar.
+    pub fn all() -> &'static [&'static str] {
+        &["investigate", "plan", "clarify", "implement", "validate", "review", "finalize"]
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AutonomyLevel {
+    #[default]
+    Supervised,
+    Balanced,
+    Autonomous,
+}
+
+impl std::fmt::Display for AutonomyLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AutonomyLevel::Supervised => write!(f, "supervised"),
+            AutonomyLevel::Balanced => write!(f, "balanced"),
+            AutonomyLevel::Autonomous => write!(f, "autonomous"),
+        }
+    }
+}
+
+impl AutonomyLevel {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "supervised" => Some(Self::Supervised),
+            "balanced" => Some(Self::Balanced),
+            "autonomous" => Some(Self::Autonomous),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AssumptionStatus {
+    #[default]
+    Unverified,
+    Confirmed,
+    Rejected,
+}
+
+impl std::fmt::Display for AssumptionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AssumptionStatus::Unverified => write!(f, "unverified"),
+            AssumptionStatus::Confirmed => write!(f, "confirmed"),
+            AssumptionStatus::Rejected => write!(f, "rejected"),
+        }
+    }
+}
+
+impl AssumptionStatus {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "unverified" => Some(Self::Unverified),
+            "confirmed" => Some(Self::Confirmed),
+            "rejected" => Some(Self::Rejected),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum BlockerStatus {
+    #[default]
+    Open,
+    Resolved,
+}
+
+impl std::fmt::Display for BlockerStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BlockerStatus::Open => write!(f, "open"),
+            BlockerStatus::Resolved => write!(f, "resolved"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Assumption {
+    pub text: String,
+    pub status: AssumptionStatus,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source_agent: String,
+    pub created_at: DateTime<Utc>,
+}
+
+impl Assumption {
+    pub fn new(text: &str, source_agent: &str) -> Self {
+        Self {
+            text: text.to_string(),
+            status: AssumptionStatus::Unverified,
+            source_agent: source_agent.to_string(),
+            created_at: Utc::now(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Blocker {
+    pub text: String,
+    pub status: BlockerStatus,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source_agent: String,
+    pub created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_at: Option<DateTime<Utc>>,
+}
+
+impl Blocker {
+    pub fn new(text: &str, source_agent: &str) -> Self {
+        Self {
+            text: text.to_string(),
+            status: BlockerStatus::Open,
+            source_agent: source_agent.to_string(),
+            created_at: Utc::now(),
+            resolved_at: None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Validation + change sets (Phase C)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ValidationStatus {
+    #[default]
+    Pending,
+    Passing,
+    Failing,
+    Skipped,
+}
+
+impl std::fmt::Display for ValidationStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ValidationStatus::Pending => write!(f, "pending"),
+            ValidationStatus::Passing => write!(f, "passing"),
+            ValidationStatus::Failing => write!(f, "failing"),
+            ValidationStatus::Skipped => write!(f, "skipped"),
+        }
+    }
+}
+
+impl ValidationStatus {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "pending" => Some(Self::Pending),
+            "passing" => Some(Self::Passing),
+            "failing" => Some(Self::Failing),
+            "skipped" => Some(Self::Skipped),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValidationEvidence {
+    pub evidence_type: String,
+    pub content: String,
+    pub passed: bool,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ChangeType {
+    Added,
+    #[default]
+    Modified,
+    Deleted,
+    Renamed,
+}
+
+impl std::fmt::Display for ChangeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChangeType::Added => write!(f, "added"),
+            ChangeType::Modified => write!(f, "modified"),
+            ChangeType::Deleted => write!(f, "deleted"),
+            ChangeType::Renamed => write!(f, "renamed"),
+        }
+    }
+}
+
+impl ChangeType {
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "added" => Some(Self::Added),
+            "modified" => Some(Self::Modified),
+            "deleted" => Some(Self::Deleted),
+            "renamed" => Some(Self::Renamed),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangeSet {
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wp_id: Option<Uuid>,
+    pub file_path: String,
+    pub change_type: ChangeType,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub rationale: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub diff_excerpt: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

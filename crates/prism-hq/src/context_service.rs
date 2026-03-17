@@ -4,10 +4,12 @@ use anyhow::{Context as _, Result};
 use chrono::{DateTime, Utc};
 use gpui::{App, Global, WeakEntity};
 use prism_context::model::{
-    ActivityEntry, AgentSession, AgentState, AgentStatus, CheckinContext, Decision, DecisionScope,
-    FileClaim, GuardrailCheck, Handoff, HandoffConstraints, HandoffMode, HandoffStatus, InboxEntry,
-    InboxEntryType, InboxSeverity, Memory, Plan, PlanStatus, RecallResult, Snapshot, Thread,
-    ThreadContext, ThreadGuardrails, ThreadStatus, WorkPackage, WorkPackageStatus, WorkspaceOverview,
+    ActivityEntry, AgentSession, AgentState, AgentStatus, AssumptionStatus, AutonomyLevel,
+    ChangeSet, CheckinContext, Decision, DecisionScope, FileClaim, GuardrailCheck, Handoff,
+    HandoffConstraints, HandoffMode, HandoffStatus, InboxEntry, InboxEntryType, InboxSeverity,
+    Memory, MissionPhase, Plan, PlanStatus, RecallResult, Risk, RiskSeverity, RiskStatus, Snapshot,
+    Thread, ThreadContext, ThreadGuardrails, ThreadStatus, WorkPackage, WorkPackageStatus,
+    WorkspaceOverview,
 };
 use prism_context::store::sqlite::SqliteStore;
 use prism_context::store::{ActivityFilters, InboxFilters, MemoryFilters, Store};
@@ -413,6 +415,37 @@ impl ContextHandle {
         self.run(self.store.list_plans(self.workspace_id, status))
     }
 
+    pub fn get_active_plan(&self) -> Result<Option<Plan>> {
+        self.run(self.store.get_active_plan(self.workspace_id))
+    }
+
+    pub fn list_change_sets(&self, plan_id: Option<Uuid>, wp_id: Option<Uuid>) -> Result<Vec<ChangeSet>> {
+        self.run(self.store.list_change_sets(self.workspace_id, plan_id, wp_id))
+    }
+
+    pub fn update_plan_phase(&self, plan_id: Uuid, phase: MissionPhase) -> Result<Plan> {
+        self.run(self.store.update_plan_phase(self.workspace_id, plan_id, phase))
+    }
+
+    pub fn update_plan_assumption_status(&self, plan_id: Uuid, index: usize, status: AssumptionStatus) -> Result<Plan> {
+        self.run(self.store.update_plan_assumption(self.workspace_id, plan_id, index, status))
+    }
+
+    pub fn resolve_plan_blocker(&self, plan_id: Uuid, index: usize) -> Result<Plan> {
+        self.run(self.store.resolve_plan_blocker(self.workspace_id, plan_id, index))
+    }
+
+    pub fn update_plan_metadata(&self, plan_id: Uuid, description: Option<&str>, constraints: Option<Vec<String>>, autonomy: Option<AutonomyLevel>) -> Result<Plan> {
+        let description = description.map(|s| s.to_string());
+        let store = self.store.clone();
+        let wid = self.workspace_id;
+        self.handle.block_on(async move {
+            store.update_plan_metadata(wid, plan_id, description.as_deref(), constraints, autonomy)
+                .await
+                .map_err(Into::into)
+        })
+    }
+
     pub fn create_work_package(
         &self,
         plan_id: Option<Uuid>,
@@ -489,6 +522,59 @@ impl ContextHandle {
             self.store
                 .refresh_work_package_readiness(self.workspace_id, plan_id),
         )
+    }
+
+    pub fn list_risks(
+        &self,
+        status: Option<RiskStatus>,
+        thread_id: Option<Uuid>,
+    ) -> Result<Vec<Risk>> {
+        self.run(self.store.list_risks(self.workspace_id, status, thread_id))
+    }
+
+    pub fn list_unverified_risks(&self, agent_name: Option<&str>) -> Result<Vec<Risk>> {
+        let agent_name = agent_name.map(|s| s.to_string());
+        let store = self.store.clone();
+        let wid = self.workspace_id;
+        self.handle.block_on(async move {
+            store
+                .list_unverified_risks(wid, agent_name.as_deref())
+                .await
+                .map_err(Into::into)
+        })
+    }
+
+    pub fn create_risk(
+        &self,
+        thread_id: Option<Uuid>,
+        title: &str,
+        description: &str,
+        category: &str,
+        severity: RiskSeverity,
+        source_agent: Option<&str>,
+        tags: Vec<String>,
+    ) -> Result<Risk> {
+        let title = title.to_string();
+        let description = description.to_string();
+        let category = category.to_string();
+        let source_agent = source_agent.map(|s| s.to_string());
+        let store = self.store.clone();
+        let wid = self.workspace_id;
+        self.handle.block_on(async move {
+            store
+                .create_risk(
+                    wid,
+                    thread_id,
+                    &title,
+                    &description,
+                    &category,
+                    severity,
+                    source_agent.as_deref(),
+                    tags,
+                )
+                .await
+                .map_err(Into::into)
+        })
     }
 
     pub fn delete_memory(&self, key: &str) -> Result<()> {

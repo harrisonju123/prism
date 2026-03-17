@@ -1,0 +1,44 @@
+---
+const features = [
+  {
+    title: 'Agent-first workspace',
+    body: 'The agent thread is the primary pane. The code editor, terminal, and diff viewer exist to let you supervise what agents are doing.',
+  },
+  {
+    title: 'Built on Zed',
+    body: 'GPU-accelerated rendering, native Rust, sub-millisecond keystrokes. Handles million-line files without lag. Not Electron.',
+  },
+  {
+    title: 'LLM Gateway',
+    body: 'Built-in multi-provider routing with health-aware fallback chains, per-key budgets, and cost tracking. OpenAI-compatible API you control.',
+  },
+  {
+    title: 'Multi-agent coordination',
+    body: 'Persistent memory, decisions, and named threads that survive session boundaries. Agents resume where they left off.',
+  },
+  {
+    title: 'Bring your own keys',
+    body: 'Your API keys, your infrastructure. Self-hosted gateway, no data leaves your network unless you send it.',
+  },
+  {
+    title: '13+ providers',
+    body: 'Anthropic, OpenAI, Google, Ollama, DeepSeek, Mistral, xAI, LM Studio, and more. Swap models without changing code.',
+  },
+];
+---
+
+<section id="features" class="py-24 px-6">
+  <div class="max-w-[960px] mx-auto">
+    <div id="features-grid" class="grid grid-cols-1 md:grid-cols-2 gap-6">
+      {features.map((feature) => (
+        <div class="feature-card border border-border bg-surface rounded-lg p-6 opacity-0 translate-y-4 transition-[border-color,transform] duration-200 hover:border-[#2e2e4e] hover:scale-[1.02]">
+          <div class="flex items-center gap-2 mb-3">
+            <span class="text-accent text-lg leading-none select-none" aria-hidden="true">◇</span>
+            <h3 class="text-heading font-semibold text-xl">{feature.title}</h3>
+          </div>
+          <p class="text-body text-[0.9375rem] leading-relaxed">{feature.body}</p>
+        </div>
+      ))}
+    </div>
+  </div>
+</section>

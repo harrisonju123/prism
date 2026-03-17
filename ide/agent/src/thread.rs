@@ -1,15 +1,15 @@
 use crate::{
     AddDirTool, AskHumanTool, ContextHandle, ContextOverviewTool, ContextServerRegistry,
     CopyPathTool, CreateDirectoryTool, CreateSnapshotTool, DbLanguageModel, DbThread, DeletePathTool,
-    DiagnosticsTool, EditFileTool,
-    FetchTool, FindPathTool, ForgetMemoryTool, GrepTool, ListDirectoryTool, ListMemoriesTool,
-    ListSnapshotsTool, LspTool,
+    DiagnosticsTool, EditFileTool, FetchTool, FindPathTool, FlagRiskTool, ForgetMemoryTool,
+    GrepTool, ListDirectoryTool, ListMemoriesTool, ListSnapshotsTool, LspTool,
     MovePathTool, NotebookEditTool, NowTool, OpenTool, ProjectSnapshot, ReadFileTool, RecallTool,
     RecordDecisionTool, RequestReviewTool, RestoreFileFromDiskTool, SaveFileTool, SaveMemoryTool,
     SendMessageTool, SkillTool, SpawnAgentTool, StreamingEditFileTool, SystemPromptTemplate,
     TaskCreateTool, TaskGetTool, TaskListTool, TaskStore, TaskUpdateTool, Template, Templates,
     TerminalTool, ThreadArchiveTool, ThreadCreateTool, ThreadListTool, ToolPermissionDecision,
-    WebSearchTool, decide_permission_from_settings,
+    UpdateMissionTool, UpdateRiskTool, SubmitQuestionsTool, WebSearchTool,
+    decide_permission_from_settings,
 };
 use crate::compression::ContextCompressor;
 use crate::guardrails::{Guardrails, has_completion_signals, is_read_only_tool};
@@ -944,6 +944,10 @@ pub struct Thread {
     context_handle: Option<Arc<ContextHandle>>,
     /// Cached memories loaded at turn start
     cached_memories: Option<String>,
+    /// Cached active mission (plan + work packages) loaded at turn start
+    cached_mission: Option<(prism_context::model::Plan, Vec<prism_context::model::WorkPackage>)>,
+    /// Queued clarification questions (batched in clarify phase)
+    pending_questions: Vec<String>,
     /// Hook runner for pre/post tool hooks
     hook_runner: Option<Arc<HookRunner>>,
     /// Context compressor for /compact and auto-trim
@@ -1082,6 +1086,8 @@ impl Thread {
             pending_skill_injections: Vec::new(),
             context_handle: None,
             cached_memories: None,
+            cached_mission: None,
+            pending_questions: Vec::new(),
             hook_runner: None,
             compressor: ContextCompressor::default(),
             max_messages: 200,
@@ -1369,6 +1375,8 @@ impl Thread {
             pending_skill_injections: Vec::new(),
             context_handle: None,
             cached_memories: None,
+            cached_mission: None,
+            pending_questions: Vec::new(),
             hook_runner: None,
             compressor: ContextCompressor::default(),
             max_messages: 200,
@@ -1642,6 +1650,10 @@ impl Thread {
             self.add_tool(SendMessageTool::new(ctx.clone()));
             self.add_tool(CreateSnapshotTool::new(ctx.clone()));
             self.add_tool(ListSnapshotsTool::new(ctx.clone()));
+            self.add_tool(FlagRiskTool::new(ctx.clone()));
+            self.add_tool(UpdateRiskTool::new(ctx.clone()));
+            self.add_tool(UpdateMissionTool::new(ctx.clone()));
+            self.add_tool(SubmitQuestionsTool::new(ctx.clone()));
             self.context_handle = Some(ctx);
         }
 
@@ -2058,6 +2070,32 @@ impl Thread {
             }
         }
 
+        // Load active mission (plan + work packages) once per turn start
+        let needs_mission_load = this.read_with(cx, |t, _| {
+            t.cached_mission.is_none() && t.context_handle.is_some()
+        })?;
+        if needs_mission_load {
+            let ctx_opt = this.read_with(cx, |t, _| t.context_handle.clone())?;
+            if let Some(ctx) = ctx_opt {
+                let mission_task = cx.update(|cx| {
+                    Tokio::spawn_result(cx, async move {
+                        let plan_opt = ctx.get_active_plan().await
+                            .map_err(|e| anyhow::anyhow!("{e}"))?;
+                        if let Some(plan) = plan_opt {
+                            let wps = ctx.list_work_packages(Some(plan.id), None).await
+                                .unwrap_or_default();
+                            anyhow::Ok(Some((plan, wps)))
+                        } else {
+                            anyhow::Ok(None)
+                        }
+                    })
+                });
+                if let Ok(mission_opt) = mission_task.await {
+                    this.update(cx, |t, _| t.cached_mission = mission_opt)?;
+                }
+            }
+        }
+
         loop {
             // Context store heartbeat + inbox message polling (single read_with)
             {
@@ -2165,6 +2203,22 @@ impl Thread {
                 // Decision/question checkpoint injection
                 let turn = this.guardrails.turn_count;
                 for msg in this.guardrails.decision_checkpoint.pre_turn_messages(turn) {
+                    this.messages.push(Message::User(UserMessage {
+                        id: UserMessageId::new(),
+                        content: vec![UserMessageContent::Text(msg)],
+                    }));
+                }
+
+                // Interface ripple: inject deferred warnings from previous writes
+                for msg in this.guardrails.interface_ripple.pending_messages.drain(..) {
+                    this.messages.push(Message::User(UserMessage {
+                        id: UserMessageId::new(),
+                        content: vec![UserMessageContent::Text(msg)],
+                    }));
+                }
+
+                // Progress nudge: remind agent to report progress periodically
+                if let Some(msg) = this.guardrails.progress_nudge.record_turn() {
                     this.messages.push(Message::User(UserMessage {
                         id: UserMessageId::new(),
                         content: vec![UserMessageContent::Text(msg)],
@@ -2366,6 +2420,40 @@ impl Thread {
                 }
             })?;
 
+            // Risk register checkout warning (async — runs after sync post-turn block)
+            {
+                let (should_check, ctx_opt) = this.read_with(cx, |t, _| {
+                    let text = t.pending_agent_text();
+                    let should = has_completion_signals(&text) && t.context_handle.is_some();
+                    (should, t.context_handle.clone())
+                })?;
+                if should_check {
+                    if let Some(ctx2) = ctx_opt {
+                        let risks = cx
+                            .background_spawn(async move {
+                                ctx2.list_unverified_risks().await.unwrap_or_default()
+                            })
+                            .await;
+                        if !risks.is_empty() {
+                            let titles: Vec<&str> =
+                                risks.iter().map(|r| r.title.as_str()).take(5).collect();
+                            let msg = format!(
+                                "[Risk Register] You have {} unverified risk(s): {}. \
+                                 Mitigate/verify or explicitly accept them before finishing.",
+                                risks.len(),
+                                titles.join("; ")
+                            );
+                            this.update(cx, |this, _cx| {
+                                this.messages.push(Message::User(UserMessage {
+                                    id: UserMessageId::new(),
+                                    content: vec![UserMessageContent::Text(msg)],
+                                }));
+                            })?;
+                        }
+                    }
+                }
+            }
+
             // Cost spike detection (EMA α=0.3)
             {
                 let (turn_cost, prev_avg, ctx_opt) = this.read_with(cx, |t, _| {
@@ -2471,9 +2559,14 @@ impl Thread {
         let invalidate_memories = !tool_result.is_error
             && (tool_result.tool_name.as_ref() == SaveMemoryTool::NAME
                 || tool_result.tool_name.as_ref() == ForgetMemoryTool::NAME);
+        let invalidate_mission = !tool_result.is_error
+            && tool_result.tool_name.as_ref() == UpdateMissionTool::NAME;
         this.update(cx, |this, _cx| {
             if invalidate_memories {
                 this.cached_memories = None;
+            }
+            if invalidate_mission {
+                this.cached_mission = None;
             }
             this.pending_message()
                 .tool_results
@@ -2678,6 +2771,27 @@ impl Thread {
             self.guardrails.decision_checkpoint.record_exploration();
         }
 
+        // Assumptions gate: satisfy when agent records a decision tagged "assumptions"
+        if tool_use.name.as_ref() == "record_decision" {
+            let has_assumptions_tag = tool_use
+                .input
+                .get("tags")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .any(|t| t.as_str().map(|s| s == "assumptions").unwrap_or(false))
+                })
+                .unwrap_or(false);
+            if has_assumptions_tag {
+                self.guardrails.assumptions_gate.mark_satisfied();
+            }
+        }
+
+        // Progress nudge: reset counter when agent updates progress
+        if tool_use.name.as_ref() == "update_progress" {
+            self.guardrails.progress_nudge.reset();
+        }
+
         let Some(tool) = tool else {
             let content = format!("No tool named {} exists", tool_use.name);
             return Some(Task::ready(LanguageModelToolResult {
@@ -2780,6 +2894,12 @@ impl Thread {
             } else {
                 None
             };
+            // Capture the active plan id for file-touch recording after the tool runs
+            let active_plan_id: Option<uuid::Uuid> = if is_write_tool {
+                self.cached_mission.as_ref().map(|(p, _)| p.id)
+            } else {
+                None
+            };
             let tool_use_id_d = tool_use.id.clone();
             let tool_name_d = tool_use.name.clone();
             let tool_name_g = tool_use.name.clone();
@@ -2840,7 +2960,7 @@ impl Thread {
                 }
 
                 // Checks passed — run the tool
-                match weak_this.update(cx, |this: &mut Thread, cx| {
+                let tool_result = match weak_this.update(cx, |this: &mut Thread, cx| {
                     this.run_tool(
                         tool_clone,
                         ToolInput::ready(input_clone),
@@ -2861,7 +2981,34 @@ impl Thread {
                         is_error: true,
                         output: None,
                     },
+                };
+
+                // Record file touched + change set in active mission (best-effort, fire-and-forget)
+                if !tool_result.is_error {
+                    if let (Some(plan_id), Some(ref path)) = (active_plan_id, path_opt) {
+                        let ctx5 = ctx.clone();
+                        let path_clone = path.clone();
+                        let _ = cx.update(|cx| {
+                            Tokio::spawn_result(cx, async move {
+                                let _ = ctx5
+                                    .record_change_set(
+                                        Some(plan_id),
+                                        None,
+                                        &path_clone,
+                                        prism_context::model::ChangeType::Modified,
+                                        "",
+                                        "",
+                                    )
+                                    .await;
+                                ctx5.record_plan_file_touched(plan_id, &path_clone)
+                                    .await
+                                    .map_err(|e| anyhow::anyhow!("{e}"))
+                            })
+                        });
+                    }
                 }
+
+                tool_result
             }));
         }
 
@@ -3505,13 +3652,88 @@ impl Thread {
             }
         }
 
+        // Append mission state to system prompt
+        if let Some((plan, work_packages)) = &self.cached_mission {
+            let mut mission_section = String::new();
+            mission_section.push_str("\n\n## Mission State\n");
+            mission_section.push_str(&format!("**Objective**: {}\n", plan.intent));
+
+            // Phase timeline
+            let phases = prism_context::model::MissionPhase::all();
+            let current = plan.current_phase.to_string();
+            let phase_line: Vec<String> = phases.iter().map(|p| {
+                if *p == current { format!("**{}**", p) } else { p.to_string() }
+            }).collect();
+            mission_section.push_str(&format!("**Phase**: {}\n", phase_line.join(" → ")));
+            mission_section.push_str(&format!("**Autonomy**: {}\n", plan.autonomy_level));
+
+            // Assumptions
+            if !plan.assumptions.is_empty() {
+                let unverified = plan.assumptions.iter().filter(|a| a.status == prism_context::model::AssumptionStatus::Unverified).count();
+                let confirmed = plan.assumptions.iter().filter(|a| a.status == prism_context::model::AssumptionStatus::Confirmed).count();
+                mission_section.push_str(&format!("**Assumptions**: {} unverified, {} confirmed\n", unverified, confirmed));
+                for a in &plan.assumptions {
+                    mission_section.push_str(&format!("  - [{}] {}\n", a.status, a.text));
+                }
+            }
+
+            // Blockers
+            let open_blockers: Vec<_> = plan.blockers.iter().filter(|b| b.status == prism_context::model::BlockerStatus::Open).collect();
+            if !open_blockers.is_empty() {
+                mission_section.push_str(&format!("**Blockers**: {} open\n", open_blockers.len()));
+                for b in &open_blockers {
+                    mission_section.push_str(&format!("  - [open] {}\n", b.text));
+                }
+            }
+
+            // Work packages
+            let total_wps = work_packages.len();
+            let done_wps = work_packages.iter().filter(|w| w.status == prism_context::model::WorkPackageStatus::Done).count();
+            let in_progress_wps: Vec<_> = work_packages.iter().filter(|w| w.status == prism_context::model::WorkPackageStatus::InProgress).collect();
+            if total_wps > 0 {
+                mission_section.push_str(&format!("**Work packages**: {}/{} done", done_wps, total_wps));
+                if let Some(ip) = in_progress_wps.first() {
+                    mission_section.push_str(&format!(", in progress: {}", ip.intent.chars().take(60).collect::<String>()));
+                }
+                mission_section.push('\n');
+            }
+
+            // Files touched
+            if !plan.files_touched.is_empty() {
+                mission_section.push_str(&format!("**Files touched**: {}\n", plan.files_touched.len()));
+            }
+
+            system_prompt.push_str(&mission_section);
+        }
+
         let mut messages = vec![LanguageModelRequestMessage {
             role: Role::System,
             content: vec![system_prompt.into()],
             cache: false,
             reasoning_details: None,
         }];
-        for message in &self.messages {
+        // B4: Semantic continue — find the last Resume in history (if any) for enrichment.
+        // Earlier Resumes use the original simple text; only the last gets mission context.
+        let last_resume_idx = self
+            .messages
+            .iter()
+            .rposition(|m| matches!(m, Message::Resume));
+
+        for (idx, message) in self.messages.iter().enumerate() {
+            if matches!(message, Message::Resume)
+                && Some(idx) == last_resume_idx
+                && self.cached_mission.is_some()
+            {
+                let (plan, work_packages) = self.cached_mission.as_ref().unwrap();
+                let rich = Self::generate_resume_context(plan, work_packages);
+                messages.push(LanguageModelRequestMessage {
+                    role: Role::User,
+                    content: vec![rich.into()],
+                    cache: false,
+                    reasoning_details: None,
+                });
+                continue;
+            }
             messages.extend(message.to_request());
         }
 
@@ -3524,6 +3746,65 @@ impl Thread {
         }
 
         messages
+    }
+
+    fn generate_resume_context(
+        plan: &prism_context::model::Plan,
+        work_packages: &[prism_context::model::WorkPackage],
+    ) -> String {
+        let mut ctx = format!("[Continue: {} phase]\n", plan.current_phase);
+        ctx.push_str(&format!("Mission: {}\n", plan.intent));
+
+        let in_progress: Vec<_> = work_packages
+            .iter()
+            .filter(|w| {
+                w.status == prism_context::model::WorkPackageStatus::InProgress
+            })
+            .collect();
+        let done = work_packages
+            .iter()
+            .filter(|w| w.status == prism_context::model::WorkPackageStatus::Done)
+            .count();
+        if !work_packages.is_empty() {
+            ctx.push_str(&format!(
+                "WP progress: {}/{} done",
+                done,
+                work_packages.len()
+            ));
+            if let Some(ip) = in_progress.first() {
+                ctx.push_str(&format!(
+                    ", in progress: {}",
+                    ip.intent.chars().take(80).collect::<String>()
+                ));
+            }
+            ctx.push('\n');
+        }
+
+        let unverified = plan
+            .assumptions
+            .iter()
+            .filter(|a| {
+                a.status == prism_context::model::AssumptionStatus::Unverified
+            })
+            .count();
+        if unverified > 0 {
+            ctx.push_str(&format!(
+                "Assumptions: {unverified} unverified — confirm or reject before review phase\n"
+            ));
+        }
+
+        let open_blockers = plan
+            .blockers
+            .iter()
+            .filter(|b| b.status == prism_context::model::BlockerStatus::Open)
+            .count();
+        ctx.push_str(&format!("Blockers: {open_blockers} open\n"));
+
+        if !plan.files_touched.is_empty() {
+            ctx.push_str(&format!("Files touched: {}\n", plan.files_touched.len()));
+        }
+
+        ctx
     }
 
     pub fn to_markdown(&self) -> String {
@@ -3729,6 +4010,29 @@ impl Thread {
             }
         }
 
+        // Persistent Assumptions Gate: deny first write in implement phase until assumptions are recorded
+        if let Some((plan, _)) = &self.cached_mission {
+            if plan.current_phase == prism_context::model::MissionPhase::Implement
+                && plan.assumptions.is_empty()
+            {
+                if let Some(denial) = self.guardrails.assumptions_gate.check_first_write() {
+                    return Some(denial.replace(
+                        "[Assumptions Gate]",
+                        "[Assumptions Gate] (implement phase)",
+                    ));
+                }
+            }
+            // If we have a mission with assumptions, the gate is permanently satisfied
+            if !plan.assumptions.is_empty() {
+                self.guardrails.assumptions_gate.satisfied = true;
+            }
+        } else {
+            // No active mission - use ephemeral gate as before
+            if let Some(denial) = self.guardrails.assumptions_gate.check_first_write() {
+                return Some(denial);
+            }
+        }
+
         // Plan Guard (Guard 0): auto-activate plan mode on 3+ new files
         if !file_exists {
             if let Some(denial) = self.guardrails.plan_guard.check_new_file() {
@@ -3762,8 +4066,12 @@ impl Thread {
             // After a successful write, update the mtime so we don't immediately trigger staleness
             if let Ok(meta) = std::fs::metadata(&abs_path) {
                 if let Ok(mtime) = meta.modified() {
-                    self.file_read_mtimes.insert(abs_path, mtime);
+                    self.file_read_mtimes.insert(abs_path.clone(), mtime);
                 }
+            }
+            // Interface ripple: warn if write touched trait/interface definitions
+            if let Some(content) = new_content {
+                self.guardrails.interface_ripple.check_write(&abs_path, content);
             }
         }
 

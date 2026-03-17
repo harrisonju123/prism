@@ -23,5 +23,8 @@ node_modules/
 dashboard/node_modules/
 dashboard/dist/
 dashboard/.pnpm-store/
+website/node_modules/
+website/dist/
+website/.astro/
 config/prism.toml
 ~/

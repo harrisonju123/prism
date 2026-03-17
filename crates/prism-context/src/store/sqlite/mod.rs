@@ -2,6 +2,7 @@
 pub mod types;
 mod activity;
 mod agent;
+mod change_set;
 mod context;
 mod decision;
 mod file_claim;
@@ -12,6 +13,7 @@ mod memory;
 mod message;
 mod migrate;
 mod plan;
+mod risk;
 mod snapshot;
 #[cfg(test)]
 mod tests;
@@ -634,6 +636,65 @@ impl Store for SqliteStore {
             .await
     }
 
+    async fn update_work_package_progress(
+        &self,
+        workspace_id: Uuid,
+        wp_id: Uuid,
+        status: WorkPackageStatus,
+        progress_note: &str,
+    ) -> Result<WorkPackage> {
+        self.update_work_package_progress_impl(workspace_id, wp_id, status, progress_note)
+            .await
+    }
+
+    async fn create_risk(
+        &self,
+        workspace_id: Uuid,
+        thread_id: Option<Uuid>,
+        title: &str,
+        description: &str,
+        category: &str,
+        severity: RiskSeverity,
+        source_agent: Option<&str>,
+        tags: Vec<String>,
+    ) -> Result<Risk> {
+        self.create_risk_impl(workspace_id, thread_id, title, description, category, severity, source_agent, tags)
+            .await
+    }
+
+    async fn update_risk_status(
+        &self,
+        workspace_id: Uuid,
+        risk_id: Uuid,
+        status: RiskStatus,
+        mitigation_plan: Option<&str>,
+        verification_criteria: Option<&str>,
+    ) -> Result<Risk> {
+        self.update_risk_status_impl(workspace_id, risk_id, status, mitigation_plan, verification_criteria)
+            .await
+    }
+
+    async fn get_risk(&self, workspace_id: Uuid, risk_id: Uuid) -> Result<Risk> {
+        self.get_risk_impl(workspace_id, risk_id).await
+    }
+
+    async fn list_risks(
+        &self,
+        workspace_id: Uuid,
+        status: Option<RiskStatus>,
+        thread_id: Option<Uuid>,
+    ) -> Result<Vec<Risk>> {
+        self.list_risks_impl(workspace_id, status, thread_id).await
+    }
+
+    async fn list_unverified_risks(
+        &self,
+        workspace_id: Uuid,
+        agent_name: Option<&str>,
+    ) -> Result<Vec<Risk>> {
+        self.list_unverified_risks_impl(workspace_id, agent_name).await
+    }
+
     async fn claim_file(
         &self,
         workspace_id: Uuid,
@@ -678,5 +739,53 @@ impl Store for SqliteStore {
     ) -> Result<u64> {
         self.release_all_claims_for_agent_impl(workspace_id, agent_name)
             .await
+    }
+
+    async fn update_plan_phase(&self, workspace_id: Uuid, plan_id: Uuid, phase: MissionPhase) -> Result<Plan> {
+        self.update_plan_phase_impl(workspace_id, plan_id, phase).await
+    }
+
+    async fn update_plan_metadata(&self, workspace_id: Uuid, plan_id: Uuid, description: Option<&str>, constraints: Option<Vec<String>>, autonomy: Option<AutonomyLevel>) -> Result<Plan> {
+        self.update_plan_metadata_impl(workspace_id, plan_id, description, constraints, autonomy).await
+    }
+
+    async fn add_plan_assumption(&self, workspace_id: Uuid, plan_id: Uuid, text: &str, source_agent: &str) -> Result<Plan> {
+        self.add_plan_assumption_impl(workspace_id, plan_id, text, source_agent).await
+    }
+
+    async fn update_plan_assumption(&self, workspace_id: Uuid, plan_id: Uuid, index: usize, status: AssumptionStatus) -> Result<Plan> {
+        self.update_plan_assumption_impl(workspace_id, plan_id, index, status).await
+    }
+
+    async fn add_plan_blocker(&self, workspace_id: Uuid, plan_id: Uuid, text: &str, source_agent: &str) -> Result<Plan> {
+        self.add_plan_blocker_impl(workspace_id, plan_id, text, source_agent).await
+    }
+
+    async fn resolve_plan_blocker(&self, workspace_id: Uuid, plan_id: Uuid, index: usize) -> Result<Plan> {
+        self.resolve_plan_blocker_impl(workspace_id, plan_id, index).await
+    }
+
+    async fn record_plan_file_touched(&self, workspace_id: Uuid, plan_id: Uuid, path: &str) -> Result<Plan> {
+        self.record_plan_file_touched_impl(workspace_id, plan_id, path).await
+    }
+
+    async fn get_active_plan(&self, workspace_id: Uuid) -> Result<Option<Plan>> {
+        self.get_active_plan_impl(workspace_id).await
+    }
+
+    async fn record_change_set(&self, workspace_id: Uuid, plan_id: Option<Uuid>, wp_id: Option<Uuid>, file_path: &str, change_type: ChangeType, rationale: &str, diff_excerpt: &str) -> Result<ChangeSet> {
+        self.record_change_set_impl(workspace_id, plan_id, wp_id, file_path, change_type, rationale, diff_excerpt).await
+    }
+
+    async fn list_change_sets(&self, workspace_id: Uuid, plan_id: Option<Uuid>, wp_id: Option<Uuid>) -> Result<Vec<ChangeSet>> {
+        self.list_change_sets_impl(workspace_id, plan_id, wp_id).await
+    }
+
+    async fn record_validation_evidence(&self, workspace_id: Uuid, wp_id: Uuid, evidence: ValidationEvidence) -> Result<WorkPackage> {
+        self.record_validation_evidence_impl(workspace_id, wp_id, evidence).await
+    }
+
+    async fn update_validation_status(&self, workspace_id: Uuid, wp_id: Uuid, status: ValidationStatus) -> Result<WorkPackage> {
+        self.update_validation_status_impl(workspace_id, wp_id, status).await
     }
 }

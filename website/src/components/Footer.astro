@@ -1,0 +1,23 @@
+---
+const GITHUB_URL = 'https://github.com/harrisonju123/PrisM';
+const VERSION = 'v0.1.0-alpha.1';
+---
+
+<footer class="py-8 px-6 border-t border-border">
+  <div class="max-w-[960px] mx-auto flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-sm text-muted">
+    <span class="text-body font-semibold tracking-[0.05em]">PrisM</span>
+    <span aria-hidden="true">&middot;</span>
+    <span>{VERSION}</span>
+    <span aria-hidden="true">&middot;</span>
+    <a
+      href={GITHUB_URL}
+      target="_blank"
+      rel="noopener noreferrer"
+      class="hover:text-body transition-colors duration-200"
+    >
+      GitHub
+    </a>
+    <span aria-hidden="true">&middot;</span>
+    <span>GPL-3.0 / Apache-2.0</span>
+  </div>
+</footer>

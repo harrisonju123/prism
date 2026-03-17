@@ -317,6 +317,101 @@ pub trait Store: Send + Sync {
     async fn list_plans(&self, workspace_id: Uuid, status: Option<PlanStatus>)
     -> Result<Vec<Plan>>;
 
+    // --- Plan mission metadata ---
+
+    async fn update_plan_phase(
+        &self,
+        workspace_id: Uuid,
+        plan_id: Uuid,
+        phase: MissionPhase,
+    ) -> Result<Plan>;
+
+    async fn update_plan_metadata(
+        &self,
+        workspace_id: Uuid,
+        plan_id: Uuid,
+        description: Option<&str>,
+        constraints: Option<Vec<String>>,
+        autonomy: Option<AutonomyLevel>,
+    ) -> Result<Plan>;
+
+    async fn add_plan_assumption(
+        &self,
+        workspace_id: Uuid,
+        plan_id: Uuid,
+        text: &str,
+        source_agent: &str,
+    ) -> Result<Plan>;
+
+    async fn update_plan_assumption(
+        &self,
+        workspace_id: Uuid,
+        plan_id: Uuid,
+        index: usize,
+        status: AssumptionStatus,
+    ) -> Result<Plan>;
+
+    async fn add_plan_blocker(
+        &self,
+        workspace_id: Uuid,
+        plan_id: Uuid,
+        text: &str,
+        source_agent: &str,
+    ) -> Result<Plan>;
+
+    async fn resolve_plan_blocker(
+        &self,
+        workspace_id: Uuid,
+        plan_id: Uuid,
+        index: usize,
+    ) -> Result<Plan>;
+
+    async fn record_plan_file_touched(
+        &self,
+        workspace_id: Uuid,
+        plan_id: Uuid,
+        path: &str,
+    ) -> Result<Plan>;
+
+    /// Returns the most recently updated active or approved plan.
+    async fn get_active_plan(&self, workspace_id: Uuid) -> Result<Option<Plan>>;
+
+    // --- Change sets ---
+
+    async fn record_change_set(
+        &self,
+        workspace_id: Uuid,
+        plan_id: Option<Uuid>,
+        wp_id: Option<Uuid>,
+        file_path: &str,
+        change_type: ChangeType,
+        rationale: &str,
+        diff_excerpt: &str,
+    ) -> Result<ChangeSet>;
+
+    async fn list_change_sets(
+        &self,
+        workspace_id: Uuid,
+        plan_id: Option<Uuid>,
+        wp_id: Option<Uuid>,
+    ) -> Result<Vec<ChangeSet>>;
+
+    // --- WorkPackage validation ---
+
+    async fn record_validation_evidence(
+        &self,
+        workspace_id: Uuid,
+        wp_id: Uuid,
+        evidence: ValidationEvidence,
+    ) -> Result<WorkPackage>;
+
+    async fn update_validation_status(
+        &self,
+        workspace_id: Uuid,
+        wp_id: Uuid,
+        status: ValidationStatus,
+    ) -> Result<WorkPackage>;
+
     // --- WorkPackage (6) ---
     async fn create_work_package(
         &self,
@@ -354,6 +449,13 @@ pub trait Store: Send + Sync {
         workspace_id: Uuid,
         plan_id: Uuid,
     ) -> Result<Vec<WorkPackage>>;
+    async fn update_work_package_progress(
+        &self,
+        workspace_id: Uuid,
+        wp_id: Uuid,
+        status: WorkPackageStatus,
+        progress_note: &str,
+    ) -> Result<WorkPackage>;
 
     // --- Messages (4) ---
     async fn send_message(
@@ -377,6 +479,39 @@ pub trait Store: Send + Sync {
         workspace_id: Uuid,
     ) -> Result<std::collections::HashMap<String, i64>>;
     async fn prune_old_messages(&self, workspace_id: Uuid) -> Result<()>;
+
+    // --- Risk (5) ---
+    async fn create_risk(
+        &self,
+        workspace_id: Uuid,
+        thread_id: Option<Uuid>,
+        title: &str,
+        description: &str,
+        category: &str,
+        severity: RiskSeverity,
+        source_agent: Option<&str>,
+        tags: Vec<String>,
+    ) -> Result<Risk>;
+    async fn update_risk_status(
+        &self,
+        workspace_id: Uuid,
+        risk_id: Uuid,
+        status: RiskStatus,
+        mitigation_plan: Option<&str>,
+        verification_criteria: Option<&str>,
+    ) -> Result<Risk>;
+    async fn get_risk(&self, workspace_id: Uuid, risk_id: Uuid) -> Result<Risk>;
+    async fn list_risks(
+        &self,
+        workspace_id: Uuid,
+        status: Option<RiskStatus>,
+        thread_id: Option<Uuid>,
+    ) -> Result<Vec<Risk>>;
+    async fn list_unverified_risks(
+        &self,
+        workspace_id: Uuid,
+        agent_name: Option<&str>,
+    ) -> Result<Vec<Risk>>;
 
     // --- FileClaim (4) ---
     async fn claim_file(

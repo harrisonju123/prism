@@ -19,6 +19,15 @@ pub struct ReviewPacket {
     pub files_touched: Vec<String>,
     #[serde(default)]
     pub summary: String,
+    /// Change sets recorded during this mission (grouped by file).
+    #[serde(default)]
+    pub change_sets: Vec<prism_context::model::ChangeSet>,
+    /// Plan assumptions at time of review.
+    #[serde(default)]
+    pub assumptions: Vec<prism_context::model::Assumption>,
+    /// Validation summary derived from work package evidence.
+    #[serde(default)]
+    pub validation_summary: Option<String>,
 }
 
 impl ReviewPacket {
@@ -32,6 +41,7 @@ impl ReviewPacket {
     }
 
     /// Fill `description` from the named thread, if still empty.
+    /// Also enriches change_sets and assumptions from the active plan.
     pub fn enrich_from_context(
         &mut self,
         handle: &crate::context_service::ContextHandle,
@@ -40,6 +50,37 @@ impl ReviewPacket {
         if self.description.is_empty() && !thread_name.is_empty() {
             if let Ok(thread) = handle.get_thread(thread_name) {
                 self.description = thread.description;
+            }
+        }
+
+        // Enrich with active plan data (change sets, assumptions, validation summary)
+        if let Ok(Some(plan)) = handle.get_active_plan() {
+            if self.assumptions.is_empty() {
+                self.assumptions = plan.assumptions.clone();
+            }
+
+            if self.change_sets.is_empty() {
+                if let Ok(sets) = handle.list_change_sets(Some(plan.id), None) {
+                    self.change_sets = sets;
+                }
+            }
+
+            if self.validation_summary.is_none() {
+                use prism_context::model::{ValidationStatus, WorkPackageStatus};
+                if let Ok(wps) = handle.list_work_packages(Some(plan.id), None) {
+                    if !wps.is_empty() {
+                        let (mut done, mut passing, mut failing) = (0, 0, 0);
+                        for w in &wps {
+                            if w.status == WorkPackageStatus::Done { done += 1; }
+                            if w.validation_status == ValidationStatus::Passing { passing += 1; }
+                            if w.validation_status == ValidationStatus::Failing { failing += 1; }
+                        }
+                        self.validation_summary = Some(format!(
+                            "{}/{} WPs done · {} passing · {} failing",
+                            done, wps.len(), passing, failing
+                        ));
+                    }
+                }
             }
         }
     }

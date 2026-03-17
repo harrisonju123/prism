@@ -471,6 +471,148 @@ impl PlanGuard {
 }
 
 // ---------------------------------------------------------------------------
+// AssumptionsGate
+// ---------------------------------------------------------------------------
+
+/// Denies the first code write until the agent has surfaced assumptions/risks.
+pub struct AssumptionsGate {
+    /// First write was denied — agent was prompted.
+    pub prompted: bool,
+    /// Agent recorded assumptions (or retried after prompt) — gate open.
+    pub satisfied: bool,
+}
+
+impl AssumptionsGate {
+    pub fn new() -> Self {
+        Self { prompted: false, satisfied: false }
+    }
+
+    /// Call before every create/overwrite write attempt.
+    /// Returns `Some(denial message)` to block the write, `None` to allow it.
+    pub fn check_first_write(&mut self) -> Option<String> {
+        if self.satisfied {
+            return None;
+        }
+        if !self.prompted {
+            self.prompted = true;
+            return Some(
+                "[Assumptions Gate] Before writing code, surface your key assumptions and risks. \
+                 Use `record_decision` with tag 'assumptions', then retry."
+                    .to_string(),
+            );
+        }
+        // Second attempt after prompt — let it through
+        self.satisfied = true;
+        None
+    }
+
+    /// Called when the agent uses `record_decision` with tag "assumptions".
+    pub fn mark_satisfied(&mut self) {
+        self.satisfied = true;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// InterfaceRipple
+// ---------------------------------------------------------------------------
+
+static RUST_TRAIT_RE: OnceLock<Regex> = OnceLock::new();
+static TS_INTERFACE_RE: OnceLock<Regex> = OnceLock::new();
+static GO_INTERFACE_RE: OnceLock<Regex> = OnceLock::new();
+
+/// Returns the names of trait/interface definitions found in `content`.
+pub fn detect_interface_definitions(content: &str) -> Vec<String> {
+    let rust_re = RUST_TRAIT_RE
+        .get_or_init(|| Regex::new(r"(?m)^(?:pub\s+)?trait\s+(\w+)").unwrap());
+    let ts_re = TS_INTERFACE_RE
+        .get_or_init(|| Regex::new(r"(?m)^(?:export\s+)?interface\s+(\w+)").unwrap());
+    let go_re = GO_INTERFACE_RE
+        .get_or_init(|| Regex::new(r"(?m)^type\s+(\w+)\s+interface").unwrap());
+
+    let mut names = Vec::new();
+    for re in [rust_re, ts_re, go_re] {
+        for cap in re.captures_iter(content) {
+            if let Some(m) = cap.get(1) {
+                names.push(m.as_str().to_string());
+            }
+        }
+    }
+    names
+}
+
+/// After a successful write, checks if trait/interface definitions were modified
+/// and sets a pending warning message to inject at the next turn.
+pub struct InterfaceRipple {
+    warned_files: HashSet<String>,
+    /// Accumulated warnings for all interface files written this turn.
+    pub pending_messages: Vec<String>,
+}
+
+impl InterfaceRipple {
+    pub fn new() -> Self {
+        Self { warned_files: HashSet::new(), pending_messages: Vec::new() }
+    }
+
+    /// Call after a successful write. Returns `Some(warning)` if this is a new
+    /// interface-definition file, `None` otherwise. Also appends to `pending_messages`.
+    pub fn check_write(&mut self, path: &str, content: &str) -> Option<String> {
+        if self.warned_files.contains(path) {
+            return None;
+        }
+        let names = detect_interface_definitions(content);
+        if names.is_empty() {
+            return None;
+        }
+        self.warned_files.insert(path.to_string());
+        let names_str = names.join(", ");
+        let msg = format!(
+            "[Interface Ripple] You modified trait/interface definitions ({names_str}) in {path}. \
+             Update all implementations, mocks, and test doubles now."
+        );
+        self.pending_messages.push(msg.clone());
+        Some(msg)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ProgressNudge
+// ---------------------------------------------------------------------------
+
+/// Fires a nudge when the agent hasn't reported progress in N turns.
+pub struct ProgressNudge {
+    pub turns_since_progress: u32,
+    pub threshold: u32,
+}
+
+impl ProgressNudge {
+    pub fn new(threshold: u32) -> Self {
+        Self { turns_since_progress: 0, threshold }
+    }
+
+    /// Record a turn. Returns `Some(nudge)` when threshold is hit.
+    pub fn record_turn(&mut self) -> Option<String> {
+        if self.threshold == 0 {
+            return None;
+        }
+        self.turns_since_progress += 1;
+        if self.turns_since_progress == self.threshold {
+            Some(format!(
+                "[Progress] You have an active work package but haven't reported progress in \
+                 {} turns. Update your progress with a brief note.",
+                self.turns_since_progress
+            ))
+        } else {
+            None
+        }
+    }
+
+    /// Reset counter after a progress update.
+    pub fn reset(&mut self) {
+        self.turns_since_progress = 0;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // WasteNudgeTracker
 // ---------------------------------------------------------------------------
 
@@ -507,6 +649,9 @@ pub struct Guardrails {
     pub verbosity: VerbosityTracker,
     pub plan_guard: PlanGuard,
     pub waste_nudge_tracker: WasteNudgeTracker,
+    pub assumptions_gate: AssumptionsGate,
+    pub interface_ripple: InterfaceRipple,
+    pub progress_nudge: ProgressNudge,
     pub turn_count: u32,
     turn_files_written: Vec<String>,
     turn_tool_names: Vec<String>,
@@ -523,6 +668,9 @@ impl Guardrails {
             verbosity: VerbosityTracker::new(2000, 3),
             plan_guard: PlanGuard::new(),
             waste_nudge_tracker: WasteNudgeTracker::new(),
+            assumptions_gate: AssumptionsGate::new(),
+            interface_ripple: InterfaceRipple::new(),
+            progress_nudge: ProgressNudge::new(10),
             turn_count: 0,
             turn_files_written: Vec::new(),
             turn_tool_names: Vec::new(),
@@ -686,6 +834,92 @@ mod tests {
 
         // After taking, none pending
         assert!(sr.take_review_message().is_none());
+    }
+
+    #[test]
+    fn test_assumptions_gate_deny_allow_satisfy() {
+        let mut gate = AssumptionsGate::new();
+        // First write: not prompted yet — deny and set prompted
+        let denial = gate.check_first_write();
+        assert!(denial.is_some());
+        assert!(denial.unwrap().contains("Assumptions Gate"));
+        assert!(gate.prompted);
+        assert!(!gate.satisfied);
+
+        // Second write: prompted but not satisfied — let through, set satisfied
+        let denial = gate.check_first_write();
+        assert!(denial.is_none());
+        assert!(gate.satisfied);
+
+        // Subsequent writes: satisfied — always allow
+        assert!(gate.check_first_write().is_none());
+    }
+
+    #[test]
+    fn test_assumptions_gate_mark_satisfied() {
+        let mut gate = AssumptionsGate::new();
+        gate.mark_satisfied();
+        // Once satisfied, first write is allowed without prompting
+        assert!(gate.check_first_write().is_none());
+    }
+
+    #[test]
+    fn test_interface_ripple_detect_warn_skip() {
+        let mut ripple = InterfaceRipple::new();
+        let rust_content = "pub trait Foo {\n    fn bar(&self);\n}\n";
+        let ts_content = "export interface Widget {\n    render(): void;\n}\n";
+        let plain_content = "fn main() {}\n";
+
+        // Rust trait detected
+        let w = ripple.check_write("/src/foo.rs", rust_content);
+        assert!(w.is_some());
+        assert!(w.unwrap().contains("Foo"));
+        assert!(ripple.pending_message.is_some());
+
+        // Same file: no repeat warning
+        let w2 = ripple.check_write("/src/foo.rs", rust_content);
+        assert!(w2.is_none());
+
+        // TS interface detected in new file
+        let w3 = ripple.check_write("/src/widget.ts", ts_content);
+        assert!(w3.is_some());
+        assert!(w3.unwrap().contains("Widget"));
+
+        // Plain file with no interfaces: no warning
+        let w4 = ripple.check_write("/src/main.rs", plain_content);
+        assert!(w4.is_none());
+    }
+
+    #[test]
+    fn test_detect_interface_definitions() {
+        let rust = "pub trait Animal {}\ntrait Hidden {}";
+        let names = detect_interface_definitions(rust);
+        assert!(names.contains(&"Animal".to_string()));
+        assert!(names.contains(&"Hidden".to_string()));
+
+        let ts = "export interface Shape {}\ninterface Internal {}";
+        let names2 = detect_interface_definitions(ts);
+        assert!(names2.contains(&"Shape".to_string()));
+        assert!(names2.contains(&"Internal".to_string()));
+
+        let go = "type Reader interface {\n    Read() []byte\n}";
+        let names3 = detect_interface_definitions(go);
+        assert!(names3.contains(&"Reader".to_string()));
+    }
+
+    #[test]
+    fn test_progress_nudge() {
+        let mut nudge = ProgressNudge::new(3);
+        assert!(nudge.record_turn().is_none()); // turn 1
+        assert!(nudge.record_turn().is_none()); // turn 2
+        let msg = nudge.record_turn();           // turn 3
+        assert!(msg.is_some());
+        assert!(msg.unwrap().contains("Progress"));
+        // Fires only once until reset
+        assert!(nudge.record_turn().is_none());
+        nudge.reset();
+        assert_eq!(nudge.turns_since_progress, 0);
+        assert!(nudge.record_turn().is_none()); // turn 1 again
     }
 
     #[test]

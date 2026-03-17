@@ -26,6 +26,8 @@ impl SqliteStore {
              VALUES ($1,$2,$3,$4,$5,$6,'planned',$7,$8,$9,$10)
              RETURNING id, workspace_id, plan_id, intent, acceptance_criteria, ordinal,
                        status, depends_on, thread_id, assigned_agent, tags,
+                       progress_note, progress_updated_at,
+                       validation_status, validation_evidence, change_rationale,
                        created_at, updated_at",
         )
         .bind(id.to_string())
@@ -65,6 +67,8 @@ impl SqliteStore {
         let row = sqlx::query(
             "SELECT id, workspace_id, plan_id, intent, acceptance_criteria, ordinal,
                     status, depends_on, thread_id, assigned_agent, tags,
+                    progress_note, progress_updated_at,
+                    validation_status, validation_evidence, change_rationale,
                     created_at, updated_at
              FROM work_packages WHERE workspace_id = $1 AND id = $2",
         )
@@ -88,6 +92,8 @@ impl SqliteStore {
              WHERE workspace_id = $3 AND id = $4
              RETURNING id, workspace_id, plan_id, intent, acceptance_criteria, ordinal,
                        status, depends_on, thread_id, assigned_agent, tags,
+                       progress_note, progress_updated_at,
+                       validation_status, validation_evidence, change_rationale,
                        created_at, updated_at",
         )
         .bind(status.to_string())
@@ -127,6 +133,8 @@ impl SqliteStore {
              WHERE workspace_id = $4 AND id = $5
              RETURNING id, workspace_id, plan_id, intent, acceptance_criteria, ordinal,
                        status, depends_on, thread_id, assigned_agent, tags,
+                       progress_note, progress_updated_at,
+                       validation_status, validation_evidence, change_rationale,
                        created_at, updated_at",
         )
         .bind(agent_name)
@@ -164,6 +172,8 @@ impl SqliteStore {
                 sqlx::query(
                     "SELECT id, workspace_id, plan_id, intent, acceptance_criteria, ordinal,
                         status, depends_on, thread_id, assigned_agent, tags,
+                        progress_note, progress_updated_at,
+                        validation_status, validation_evidence, change_rationale,
                         created_at, updated_at
                  FROM work_packages
                  WHERE workspace_id = $1 AND plan_id = $2 AND status = $3
@@ -179,6 +189,8 @@ impl SqliteStore {
                 sqlx::query(
                     "SELECT id, workspace_id, plan_id, intent, acceptance_criteria, ordinal,
                         status, depends_on, thread_id, assigned_agent, tags,
+                        progress_note, progress_updated_at,
+                        validation_status, validation_evidence, change_rationale,
                         created_at, updated_at
                  FROM work_packages
                  WHERE workspace_id = $1 AND plan_id = $2
@@ -193,6 +205,8 @@ impl SqliteStore {
                 sqlx::query(
                     "SELECT id, workspace_id, plan_id, intent, acceptance_criteria, ordinal,
                         status, depends_on, thread_id, assigned_agent, tags,
+                        progress_note, progress_updated_at,
+                        validation_status, validation_evidence, change_rationale,
                         created_at, updated_at
                  FROM work_packages
                  WHERE workspace_id = $1 AND status = $2
@@ -207,6 +221,8 @@ impl SqliteStore {
                 sqlx::query(
                     "SELECT id, workspace_id, plan_id, intent, acceptance_criteria, ordinal,
                         status, depends_on, thread_id, assigned_agent, tags,
+                        progress_note, progress_updated_at,
+                        validation_status, validation_evidence, change_rationale,
                         created_at, updated_at
                  FROM work_packages
                  WHERE workspace_id = $1
@@ -218,6 +234,48 @@ impl SqliteStore {
             }
         };
         rows.iter().map(row_to_work_package).collect()
+    }
+
+    pub(crate) async fn update_work_package_progress_impl(
+        &self,
+        workspace_id: Uuid,
+        wp_id: Uuid,
+        status: WorkPackageStatus,
+        progress_note: &str,
+    ) -> Result<WorkPackage> {
+        let now = now_rfc3339();
+        let row = sqlx::query(
+            "UPDATE work_packages
+             SET status = $1, progress_note = $2, progress_updated_at = $3, updated_at = $3
+             WHERE workspace_id = $4 AND id = $5
+             RETURNING id, workspace_id, plan_id, intent, acceptance_criteria, ordinal,
+                       status, depends_on, thread_id, assigned_agent, tags,
+                       progress_note, progress_updated_at,
+                       validation_status, validation_evidence, change_rationale,
+                       created_at, updated_at",
+        )
+        .bind(status.to_string())
+        .bind(progress_note)
+        .bind(&now)
+        .bind(workspace_id.to_string())
+        .bind(wp_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| Error::NotFound(format!("work package {wp_id} not found")))?;
+        let wp = row_to_work_package(&row)?;
+
+        self.log_activity_fire_and_forget(
+            workspace_id,
+            "system",
+            "work_package_progress_updated",
+            "work_package",
+            wp_id,
+            &format!("Progress: {}", &progress_note[..progress_note.len().min(80)]),
+            wp.thread_id,
+        )
+        .await;
+
+        Ok(wp)
     }
 
     pub(crate) async fn refresh_work_package_readiness_impl(
@@ -251,6 +309,62 @@ impl SqliteStore {
         }
         Ok(newly_ready)
     }
+
+    pub(crate) async fn record_validation_evidence_impl(
+        &self,
+        workspace_id: Uuid,
+        wp_id: Uuid,
+        evidence: ValidationEvidence,
+    ) -> Result<WorkPackage> {
+        let now = now_rfc3339();
+        let mut wp = self.get_work_package_impl(workspace_id, wp_id).await?;
+        wp.validation_evidence.push(evidence);
+        let evidence_json = serde_json::to_string(&wp.validation_evidence)
+            .unwrap_or_else(|_| "[]".to_string());
+        let row = sqlx::query(
+            "UPDATE work_packages SET validation_evidence = $1, updated_at = $2
+             WHERE workspace_id = $3 AND id = $4
+             RETURNING id, workspace_id, plan_id, intent, acceptance_criteria, ordinal,
+                       status, depends_on, thread_id, assigned_agent, tags,
+                       progress_note, progress_updated_at,
+                       validation_status, validation_evidence, change_rationale,
+                       created_at, updated_at",
+        )
+        .bind(&evidence_json)
+        .bind(&now)
+        .bind(workspace_id.to_string())
+        .bind(wp_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| Error::NotFound(format!("work_package {wp_id} not found")))?;
+        row_to_work_package(&row)
+    }
+
+    pub(crate) async fn update_validation_status_impl(
+        &self,
+        workspace_id: Uuid,
+        wp_id: Uuid,
+        status: ValidationStatus,
+    ) -> Result<WorkPackage> {
+        let now = now_rfc3339();
+        let row = sqlx::query(
+            "UPDATE work_packages SET validation_status = $1, updated_at = $2
+             WHERE workspace_id = $3 AND id = $4
+             RETURNING id, workspace_id, plan_id, intent, acceptance_criteria, ordinal,
+                       status, depends_on, thread_id, assigned_agent, tags,
+                       progress_note, progress_updated_at,
+                       validation_status, validation_evidence, change_rationale,
+                       created_at, updated_at",
+        )
+        .bind(status.to_string())
+        .bind(&now)
+        .bind(workspace_id.to_string())
+        .bind(wp_id.to_string())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| Error::NotFound(format!("work_package {wp_id} not found")))?;
+        row_to_work_package(&row)
+    }
 }
 
 row_to_struct! {
@@ -278,6 +392,26 @@ row_to_struct! {
             row.try_get::<Option<String>, _>("assigned_agent")?
         },
         tags: json_array "tags",
+        progress_note: custom "progress_note" => {
+            row.try_get::<Option<String>, _>("progress_note").unwrap_or(None)
+        },
+        progress_updated_at: custom "progress_updated_at" => {
+            row.try_get::<Option<String>, _>("progress_updated_at")
+                .ok()
+                .flatten()
+                .and_then(|s| s.parse::<chrono::DateTime<chrono::Utc>>().ok())
+        },
+        validation_status: custom "validation_status" => {
+            let s = row.try_get::<String, _>("validation_status").unwrap_or_else(|_| "pending".to_string());
+            ValidationStatus::from_str(&s).unwrap_or_default()
+        },
+        validation_evidence: custom "validation_evidence" => {
+            let raw = row.try_get::<String, _>("validation_evidence").unwrap_or_else(|_| "[]".to_string());
+            serde_json::from_str::<Vec<ValidationEvidence>>(&raw).unwrap_or_default()
+        },
+        change_rationale: custom "change_rationale" => {
+            row.try_get::<String, _>("change_rationale").unwrap_or_default()
+        },
         created_at: time "created_at",
         updated_at: time "updated_at",
     }

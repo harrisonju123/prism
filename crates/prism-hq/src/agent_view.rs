@@ -2,7 +2,7 @@ use gpui::{
     App, Context, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement, Render,
     SharedString, Styled, Task, WeakEntity, Window, actions,
 };
-use prism_context::model::{AgentSession, AgentState, AgentStatus};
+use prism_context::model::{AgentSession, AgentState, AgentStatus, Risk, RiskSeverity};
 use ui::{
     Button, ButtonStyle, Color, Icon, IconName, Label, LabelSize, TintColor, h_flex, prelude::*,
     v_flex,
@@ -23,6 +23,7 @@ pub struct AgentViewItem {
     agent_name: String,
     agent_status: Option<AgentStatus>,
     sessions: Vec<AgentSession>,
+    risks: Vec<Risk>,
     is_loading: bool,
     error: Option<String>,
     refresh_task: Option<Task<()>>,
@@ -67,6 +68,7 @@ impl AgentViewItem {
             agent_name,
             agent_status: None,
             sessions: Vec::new(),
+            risks: Vec::new(),
             is_loading: false,
             error: None,
             refresh_task: None,
@@ -92,23 +94,25 @@ impl AgentViewItem {
                 .ok()
                 .flatten();
 
-            let result: anyhow::Result<(Option<AgentStatus>, Vec<AgentSession>)> = cx
+            let result: anyhow::Result<(Option<AgentStatus>, Vec<AgentSession>, Vec<Risk>)> = cx
                 .background_spawn(async move {
                     let handle = handle.ok_or_else(|| anyhow::anyhow!("context service not available"))?;
                     let agents = handle.list_agents()?;
                     let overview = handle.get_workspace_overview()?;
                     let agent_status = agents.into_iter().find(|a| a.name == agent_name);
                     let sessions = overview.recent_sessions;
-                    anyhow::Ok((agent_status, sessions))
+                    let risks = handle.list_unverified_risks(None).unwrap_or_default();
+                    anyhow::Ok((agent_status, sessions, risks))
                 })
                 .await;
 
             this.update(cx, |this, cx| {
                 this.is_loading = false;
                 match result {
-                    Ok((agent_status, sessions)) => {
+                    Ok((agent_status, sessions, risks)) => {
                         this.agent_status = agent_status;
                         this.sessions = sessions;
+                        this.risks = risks;
                         this.error = None;
                     }
                     Err(e) => {
@@ -267,6 +271,7 @@ impl Render for AgentViewItem {
         let is_loading = self.is_loading;
         let error = self.error.clone();
         let sessions = self.sessions.clone();
+        let risks = self.risks.clone();
 
         let (state_label, state_color, current_thread) = if let Some(ref status) = self.agent_status
         {
@@ -417,6 +422,37 @@ impl Render for AgentViewItem {
                                     })),
                             ),
                     )
+                    .when(!risks.is_empty(), |this| {
+                        this.child(
+                            v_flex()
+                                .gap_0p5()
+                                .child(
+                                    Label::new("RISKS")
+                                        .size(LabelSize::XSmall)
+                                        .color(Color::Warning),
+                                )
+                                .children(risks.into_iter().map(|r| {
+                                    let severity_color = match r.severity {
+                                        RiskSeverity::High => Color::Error,
+                                        RiskSeverity::Medium => Color::Warning,
+                                        RiskSeverity::Low => Color::Muted,
+                                    };
+                                    let badge = format!("[{}] {}", r.severity, r.status);
+                                    h_flex()
+                                        .gap_1()
+                                        .child(
+                                            Label::new(badge)
+                                                .size(LabelSize::XSmall)
+                                                .color(severity_color),
+                                        )
+                                        .child(
+                                            Label::new(r.title)
+                                                .size(LabelSize::XSmall)
+                                                .color(Color::Default),
+                                        )
+                                })),
+                        )
+                    })
                     .child(
                         v_flex()
                             .gap_0p5()

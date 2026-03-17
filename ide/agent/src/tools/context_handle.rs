@@ -8,8 +8,11 @@ use parking_lot::RwLock;
 use project::Project;
 use prism_context::config;
 use prism_context::model::{
+    AssumptionStatus, AutonomyLevel, ChangeSet, ChangeType,
     Decision, DecisionScope, InboxEntry, InboxEntryType, InboxSeverity, Memory, Message,
-    RecallResult, Snapshot, Thread, ThreadContext, ThreadStatus, WorkspaceOverview,
+    MissionPhase, Plan, RecallResult, Risk, RiskSeverity, RiskStatus, Snapshot, Thread,
+    ThreadContext, ThreadStatus, ValidationEvidence, ValidationStatus,
+    WorkPackage, WorkPackageStatus, WorkspaceOverview,
 };
 use prism_context::store::sqlite::SqliteStore;
 use prism_context::store::{MemoryFilters, Store as _};
@@ -385,6 +388,173 @@ impl ContextHandle {
                 ref_id,
             )
             .await?)
+    }
+
+    /// Update progress on a work package. Auto-injects workspace_id.
+    pub async fn update_progress(
+        &self,
+        wp_id: Uuid,
+        status: WorkPackageStatus,
+        note: &str,
+    ) -> anyhow::Result<WorkPackage> {
+        Ok(self.store
+            .update_work_package_progress(self.workspace_id, wp_id, status, note)
+            .await?)
+    }
+
+    /// Create a risk entry. Auto-injects workspace_id, thread_id, and agent name.
+    pub async fn create_risk(
+        &self,
+        title: &str,
+        description: &str,
+        category: &str,
+        severity: RiskSeverity,
+        tags: Vec<String>,
+    ) -> anyhow::Result<Risk> {
+        let thread_id = self.context_thread.read().as_ref().map(|t| t.id);
+        let agent_name = Self::agent_name();
+        let risk = self.store
+            .create_risk(
+                self.workspace_id,
+                thread_id,
+                title,
+                description,
+                category,
+                severity.clone(),
+                Some(&agent_name),
+                tags,
+            )
+            .await?;
+        // Auto-create inbox entry for High severity risks
+        if risk.severity == RiskSeverity::High {
+            let _ = self.store
+                .create_inbox_entry(
+                    self.workspace_id,
+                    InboxEntryType::Risk,
+                    &format!("[High Risk] {title}"),
+                    description,
+                    InboxSeverity::Warning,
+                    Some(AGENT_SOURCE),
+                    Some("risk"),
+                    Some(risk.id),
+                )
+                .await;
+        }
+        Ok(risk)
+    }
+
+    /// Update risk status, mitigation plan, or verification criteria.
+    pub async fn update_risk_status(
+        &self,
+        risk_id: Uuid,
+        status: RiskStatus,
+        mitigation_plan: Option<&str>,
+        verification_criteria: Option<&str>,
+    ) -> anyhow::Result<Risk> {
+        Ok(self.store
+            .update_risk_status(
+                self.workspace_id,
+                risk_id,
+                status,
+                mitigation_plan,
+                verification_criteria,
+            )
+            .await?)
+    }
+
+    /// List risks that are not yet verified or accepted.
+    pub async fn list_unverified_risks(&self) -> anyhow::Result<Vec<Risk>> {
+        let agent_name = Self::agent_name();
+        Ok(self.store
+            .list_unverified_risks(self.workspace_id, Some(&agent_name))
+            .await?)
+    }
+
+    // --- Mission control wrappers ---
+
+    /// Get the most recently updated active or approved plan for this workspace.
+    pub async fn get_active_plan(&self) -> anyhow::Result<Option<Plan>> {
+        Ok(self.store.get_active_plan(self.workspace_id).await?)
+    }
+
+    /// Advance or set the current phase on a plan.
+    pub async fn update_plan_phase(&self, plan_id: uuid::Uuid, phase: MissionPhase) -> anyhow::Result<Plan> {
+        Ok(self.store.update_plan_phase(self.workspace_id, plan_id, phase).await?)
+    }
+
+    /// Update description, constraints, or autonomy level on a plan.
+    pub async fn update_plan_metadata(
+        &self,
+        plan_id: uuid::Uuid,
+        description: Option<&str>,
+        constraints: Option<Vec<String>>,
+        autonomy: Option<AutonomyLevel>,
+    ) -> anyhow::Result<Plan> {
+        Ok(self.store.update_plan_metadata(self.workspace_id, plan_id, description, constraints, autonomy).await?)
+    }
+
+    /// Append an assumption to a plan.
+    pub async fn add_plan_assumption(&self, plan_id: uuid::Uuid, text: &str) -> anyhow::Result<Plan> {
+        let agent_name = Self::agent_name();
+        Ok(self.store.add_plan_assumption(self.workspace_id, plan_id, text, &agent_name).await?)
+    }
+
+    /// Update the status of an assumption by zero-based index.
+    pub async fn update_plan_assumption(&self, plan_id: uuid::Uuid, index: usize, status: AssumptionStatus) -> anyhow::Result<Plan> {
+        Ok(self.store.update_plan_assumption(self.workspace_id, plan_id, index, status).await?)
+    }
+
+    /// Append a blocker to a plan.
+    pub async fn add_plan_blocker(&self, plan_id: uuid::Uuid, text: &str) -> anyhow::Result<Plan> {
+        let agent_name = Self::agent_name();
+        Ok(self.store.add_plan_blocker(self.workspace_id, plan_id, text, &agent_name).await?)
+    }
+
+    /// Mark a blocker resolved by zero-based index.
+    pub async fn resolve_plan_blocker(&self, plan_id: uuid::Uuid, index: usize) -> anyhow::Result<Plan> {
+        Ok(self.store.resolve_plan_blocker(self.workspace_id, plan_id, index).await?)
+    }
+
+    /// Record a file as touched by this plan (deduplicates).
+    pub async fn record_plan_file_touched(&self, plan_id: uuid::Uuid, path: &str) -> anyhow::Result<Plan> {
+        Ok(self.store.record_plan_file_touched(self.workspace_id, plan_id, path).await?)
+    }
+
+    /// List work packages for the workspace, optionally filtered by plan and status.
+    pub async fn list_work_packages(
+        &self,
+        plan_id: Option<Uuid>,
+        status: Option<WorkPackageStatus>,
+    ) -> anyhow::Result<Vec<WorkPackage>> {
+        Ok(self.store.list_work_packages(self.workspace_id, plan_id, status).await?)
+    }
+
+    /// Record a change set entry for a file modification.
+    pub async fn record_change_set(
+        &self,
+        plan_id: Option<uuid::Uuid>,
+        wp_id: Option<uuid::Uuid>,
+        file_path: &str,
+        change_type: ChangeType,
+        rationale: &str,
+        diff_excerpt: &str,
+    ) -> anyhow::Result<ChangeSet> {
+        Ok(self.store.record_change_set(self.workspace_id, plan_id, wp_id, file_path, change_type, rationale, diff_excerpt).await?)
+    }
+
+    /// List change sets for a plan and/or work package.
+    pub async fn list_change_sets(&self, plan_id: Option<uuid::Uuid>, wp_id: Option<uuid::Uuid>) -> anyhow::Result<Vec<ChangeSet>> {
+        Ok(self.store.list_change_sets(self.workspace_id, plan_id, wp_id).await?)
+    }
+
+    /// Append validation evidence to a work package.
+    pub async fn record_validation_evidence(&self, wp_id: uuid::Uuid, evidence: ValidationEvidence) -> anyhow::Result<WorkPackage> {
+        Ok(self.store.record_validation_evidence(self.workspace_id, wp_id, evidence).await?)
+    }
+
+    /// Set the validation status on a work package.
+    pub async fn update_validation_status(&self, wp_id: uuid::Uuid, status: ValidationStatus) -> anyhow::Result<WorkPackage> {
+        Ok(self.store.update_validation_status(self.workspace_id, wp_id, status).await?)
     }
 
     /// Auto-extract memories from session output. Auto-injects workspace_id and agent_name.

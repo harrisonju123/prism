@@ -189,36 +189,64 @@ CREATE INDEX IF NOT EXISTS idx_inbox_dedup ON inbox_entries(workspace_id, entry_
 
 -- Plans (groups of work packages from one intent)
 CREATE TABLE IF NOT EXISTS plans (
-    id           TEXT PRIMARY KEY,
-    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    intent       TEXT NOT NULL,
-    status       TEXT NOT NULL DEFAULT 'draft'
+    id            TEXT PRIMARY KEY,
+    workspace_id  TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    intent        TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'draft'
         CHECK(status IN ('draft','approved','active','completed','cancelled')),
-    created_at   TEXT NOT NULL,
-    updated_at   TEXT NOT NULL
+    description   TEXT NOT NULL DEFAULT '',
+    constraints   TEXT NOT NULL DEFAULT '[]',
+    current_phase TEXT NOT NULL DEFAULT 'investigate',
+    assumptions   TEXT NOT NULL DEFAULT '[]',
+    blockers      TEXT NOT NULL DEFAULT '[]',
+    files_touched TEXT NOT NULL DEFAULT '[]',
+    autonomy_level TEXT NOT NULL DEFAULT 'supervised',
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_plans_workspace ON plans(workspace_id, status);
 
 -- Work packages (actionable units within a plan)
 CREATE TABLE IF NOT EXISTS work_packages (
-    id               TEXT PRIMARY KEY,
-    workspace_id     TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    plan_id          TEXT REFERENCES plans(id) ON DELETE CASCADE,
-    intent           TEXT NOT NULL,
-    acceptance_criteria TEXT NOT NULL DEFAULT '[]',
-    ordinal          INTEGER NOT NULL DEFAULT 0,
-    status           TEXT NOT NULL DEFAULT 'draft'
+    id                   TEXT PRIMARY KEY,
+    workspace_id         TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    plan_id              TEXT REFERENCES plans(id) ON DELETE CASCADE,
+    intent               TEXT NOT NULL,
+    acceptance_criteria  TEXT NOT NULL DEFAULT '[]',
+    ordinal              INTEGER NOT NULL DEFAULT 0,
+    status               TEXT NOT NULL DEFAULT 'draft'
         CHECK(status IN ('draft','planned','ready','in_progress','review','done','cancelled')),
-    depends_on       TEXT NOT NULL DEFAULT '[]',
-    thread_id        TEXT REFERENCES threads(id) ON DELETE SET NULL,
-    assigned_agent   TEXT,
-    tags             TEXT NOT NULL DEFAULT '[]',
-    created_at       TEXT NOT NULL,
-    updated_at       TEXT NOT NULL
+    depends_on           TEXT NOT NULL DEFAULT '[]',
+    thread_id            TEXT REFERENCES threads(id) ON DELETE SET NULL,
+    assigned_agent       TEXT,
+    tags                 TEXT NOT NULL DEFAULT '[]',
+    progress_note        TEXT,
+    progress_updated_at  TEXT,
+    validation_status    TEXT NOT NULL DEFAULT 'pending',
+    validation_evidence  TEXT NOT NULL DEFAULT '[]',
+    change_rationale     TEXT NOT NULL DEFAULT '',
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_work_packages_workspace ON work_packages(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_work_packages_plan ON work_packages(plan_id) WHERE plan_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_work_packages_status ON work_packages(workspace_id, status);
+
+-- Change sets (record of file changes within a plan/work package)
+CREATE TABLE IF NOT EXISTS change_sets (
+    id           TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    plan_id      TEXT REFERENCES plans(id) ON DELETE CASCADE,
+    wp_id        TEXT REFERENCES work_packages(id) ON DELETE SET NULL,
+    file_path    TEXT NOT NULL,
+    change_type  TEXT NOT NULL DEFAULT 'modified',
+    rationale    TEXT NOT NULL DEFAULT '',
+    diff_excerpt TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_change_sets_plan ON change_sets(plan_id) WHERE plan_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_change_sets_wp ON change_sets(wp_id) WHERE wp_id IS NOT NULL;
 
 -- File claims (advisory file locking for multi-agent coordination)
 CREATE TABLE IF NOT EXISTS file_claims (
@@ -231,6 +259,29 @@ CREATE TABLE IF NOT EXISTS file_claims (
     UNIQUE(workspace_id, file_path)
 );
 CREATE INDEX IF NOT EXISTS idx_file_claims_workspace ON file_claims(workspace_id, agent_name);
+
+-- Risk register
+CREATE TABLE IF NOT EXISTS risks (
+    id                     TEXT PRIMARY KEY,
+    workspace_id           TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    thread_id              TEXT REFERENCES threads(id) ON DELETE SET NULL,
+    title                  TEXT NOT NULL,
+    description            TEXT NOT NULL DEFAULT '',
+    category               TEXT NOT NULL DEFAULT 'general',
+    severity               TEXT NOT NULL DEFAULT 'medium'
+        CHECK(severity IN ('high','medium','low')),
+    status                 TEXT NOT NULL DEFAULT 'identified'
+        CHECK(status IN ('identified','acknowledged','mitigated','verified','accepted')),
+    mitigation_plan        TEXT,
+    verification_criteria  TEXT,
+    source_agent           TEXT,
+    tags                   TEXT NOT NULL DEFAULT '[]',
+    created_at             TEXT NOT NULL,
+    updated_at             TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_risks_workspace ON risks(workspace_id, status);
+CREATE INDEX IF NOT EXISTS idx_risks_thread ON risks(thread_id) WHERE thread_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_risks_agent ON risks(workspace_id, source_agent, status) WHERE source_agent IS NOT NULL;
 
 -- Snapshots
 CREATE TABLE IF NOT EXISTS snapshots (
