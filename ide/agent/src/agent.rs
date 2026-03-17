@@ -799,11 +799,23 @@ impl NativeAgent {
 
         for session in self.sessions.values_mut() {
             session.thread.update(cx, |thread, cx| {
-                if thread.model().is_none()
-                    && let Some(model) = default_model.clone()
-                {
-                    thread.set_model(model, cx);
-                    cx.notify();
+                if thread.model().is_none() {
+                    if let Some(model) = default_model.clone() {
+                        thread.set_model(model, cx);
+                        cx.notify();
+                    }
+                } else if let Some(current) = thread.model() {
+                    let selected = language_model::SelectedModel {
+                        provider: current.provider_id(),
+                        model: current.id(),
+                    };
+                    if let Some(refreshed) =
+                        LanguageModelRegistry::global(cx).update(cx, |registry, cx| {
+                            registry.select_model(&selected, cx).map(|c| c.model)
+                        })
+                    {
+                        thread.set_model(refreshed, cx);
+                    }
                 }
                 thread.set_summarization_model(summarization_model.clone(), cx);
             });

@@ -29,6 +29,10 @@ pub struct ModelEntry {
     prism_tier: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     prism_context_window: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prism_supports_vision: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prism_supports_tools: Option<bool>,
 }
 
 /// GET /v1/models — list available models.
@@ -46,6 +50,8 @@ pub async fn list_models(State(state): State<Arc<AppState>>) -> impl IntoRespons
             prism_output_cost_per_1m: pricing.map(|p| p.output_cost_per_1m),
             prism_tier: pricing.map(|p| p.tier),
             prism_context_window: pricing.map(|p| p.context_window),
+            prism_supports_vision: pricing.map(|p| p.supports_vision),
+            prism_supports_tools: pricing.map(|p| p.supports_tools),
         });
     }
 
@@ -70,6 +76,8 @@ pub async fn list_models(State(state): State<Arc<AppState>>) -> impl IntoRespons
                 prism_output_cost_per_1m: Some(info.output_cost_per_1m),
                 prism_tier: Some(info.tier),
                 prism_context_window: Some(info.context_window),
+                prism_supports_vision: Some(info.supports_vision),
+                prism_supports_tools: Some(info.supports_tools),
             });
         }
     }

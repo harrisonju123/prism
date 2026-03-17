@@ -541,11 +541,11 @@ impl LanguageModelProvider for PrismLanguageModelProvider {
 
     fn provided_models(&self, cx: &App) -> Vec<Arc<dyn LanguageModel>> {
         let state = self.state.read(cx);
-        // Index fetched pricing by model id
-        let fetched_pricing: HashMap<&str, (Option<f64>, Option<f64>)> = state
+        // Index fetched model info by model id
+        let fetched_info: HashMap<&str, &FetchedModelInfo> = state
             .fetched_models
             .iter()
-            .map(|m| (m.id.as_str(), (m.input_cost_per_1m, m.output_cost_per_1m)))
+            .map(|m| (m.id.as_str(), m))
             .collect();
 
         let mut models: HashMap<String, AvailableModel> = state
@@ -559,20 +559,33 @@ impl LanguageModelProvider for PrismLanguageModelProvider {
                         display_name: None,
                         max_tokens: 128_000,
                         max_output_tokens: None,
-                        capabilities: Default::default(),
+                        capabilities: ModelCapabilities {
+                            images: info.supports_vision.unwrap_or(false),
+                            tools: info.supports_tools.unwrap_or(true),
+                            ..Default::default()
+                        },
                     },
                 )
             })
             .collect();
         for model in &state.settings.available_models {
-            models.insert(model.name.clone(), model.clone());
+            let mut m = model.clone();
+            if let Some(info) = fetched_info.get(m.name.as_str()) {
+                if let Some(true) = info.supports_vision {
+                    m.capabilities.images = true;
+                }
+                if let Some(supports_tools) = info.supports_tools {
+                    m.capabilities.tools = supports_tools;
+                }
+            }
+            models.insert(m.name.clone(), m);
         }
         let mut result: Vec<Arc<dyn LanguageModel>> = models
             .into_values()
             .map(|m| {
-                let (input_cost, output_cost) = fetched_pricing
+                let (input_cost, output_cost) = fetched_info
                     .get(m.name.as_str())
-                    .copied()
+                    .map(|i| (i.input_cost_per_1m, i.output_cost_per_1m))
                     .unwrap_or((None, None));
                 self.create_language_model_with_pricing(m, input_cost, output_cost)
             })
@@ -1643,6 +1656,8 @@ struct FetchedModelInfo {
     id: String,
     input_cost_per_1m: Option<f64>,
     output_cost_per_1m: Option<f64>,
+    supports_vision: Option<bool>,
+    supports_tools: Option<bool>,
 }
 
 struct FetchModelsResult {
@@ -1692,6 +1707,8 @@ async fn do_fetch_models(
                 id: m.id,
                 input_cost_per_1m: m.prism_input_cost_per_1m,
                 output_cost_per_1m: m.prism_output_cost_per_1m,
+                supports_vision: m.prism_supports_vision,
+                supports_tools: m.prism_supports_tools,
             })
             .collect(),
         session_cost_usd,
@@ -1710,6 +1727,10 @@ struct PrismModelEntry {
     prism_input_cost_per_1m: Option<f64>,
     #[serde(default)]
     prism_output_cost_per_1m: Option<f64>,
+    #[serde(default)]
+    prism_supports_vision: Option<bool>,
+    #[serde(default)]
+    prism_supports_tools: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
