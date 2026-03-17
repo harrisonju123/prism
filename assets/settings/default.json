@@ -1025,6 +1025,8 @@
     },
     // When enabled, agent edits will be displayed in single-file editors for review
     "single_file_review": false,
+    // When enabled, files edited by the agent are auto-opened in the editor with diff hunks visible
+    "auto_open_edited_files": true,
     // When enabled, show voting thumbs for feedback on agent edits.
     "enable_feedback": true,
     "default_profile": "write",

@@ -5,6 +5,7 @@ use prism_context::model::AgentState;
 use ui::{ButtonLike, Color, ContextMenu, Label, LabelSize, PopoverMenu, PopoverMenuHandle, prelude::*};
 use workspace::StatusItemView;
 
+use crate::activity_bus;
 use crate::dispatch::DispatchTask;
 use crate::hq_state::HqState;
 use crate::plan_dispatch::DispatchPlan;
@@ -12,6 +13,7 @@ use crate::plan_dispatch::DispatchPlan;
 pub struct PrismStatusIndicator {
     popover_menu_handle: PopoverMenuHandle<ContextMenu>,
     _hq_subscription: Option<gpui::Subscription>,
+    _activity_subscription: Option<gpui::Subscription>,
     /// (name, state, current_thread) — Arc for cheap clones in render
     agent_summaries: Arc<Vec<(String, AgentState, Option<String>)>>,
     actionable_count: usize,
@@ -19,39 +21,13 @@ pub struct PrismStatusIndicator {
     label: String,
     /// Cached dot color — recomputed only when state changes
     dot_color: Color,
+    /// Live activity from agent_ui (current tool/file)
+    live_tool: Option<String>,
+    live_file: Option<String>,
+    is_generating: bool,
+    waiting_for_approval: bool,
 }
 
-fn compute_label(agent_count: usize, actionable_count: usize) -> String {
-    if agent_count == 0 {
-        "P ● idle".to_string()
-    } else {
-        let mut s = format!(
-            "P ● {} agent{}",
-            agent_count,
-            if agent_count == 1 { "" } else { "s" }
-        );
-        if actionable_count > 0 {
-            s.push_str(&format!(
-                " · {} review",
-                actionable_count
-            ));
-        }
-        s
-    }
-}
-
-fn compute_dot_color(
-    summaries: &[(String, AgentState, Option<String>)],
-    actionable_count: usize,
-) -> Color {
-    if summaries.iter().any(|(_, state, _)| *state == AgentState::Blocked) {
-        Color::Error
-    } else if actionable_count > 0 {
-        Color::Warning
-    } else {
-        Color::Success
-    }
-}
 
 fn status_row(
     text: String,
@@ -86,27 +62,107 @@ impl PrismStatusIndicator {
                     return;
                 }
 
-                let summaries = Arc::new(
+                this.agent_summaries = Arc::new(
                     hq.agents
                         .iter()
                         .map(|a| (a.name.clone(), a.state.clone(), a.current_thread.clone()))
                         .collect::<Vec<_>>(),
                 );
-                this.label = compute_label(summaries.len(), new_actionable);
-                this.dot_color = compute_dot_color(&summaries, new_actionable);
-                this.agent_summaries = summaries;
                 this.actionable_count = new_actionable;
+                this.label = this.compute_label();
+                this.dot_color = this.compute_dot_color();
                 cx.notify();
             })
         });
 
+        let activity_subscription = activity_bus::global_inner(cx)
+                .map(|bus_entity| {
+                    cx.observe(&bus_entity, |this, bus_entity, cx| {
+                        let bus = bus_entity.read(cx);
+                        let new_generating = bus.is_generating;
+                        let new_waiting = bus.waiting_for_approval;
+                        let new_tool = bus.current_tool.clone();
+                        let new_file = bus.current_file.clone();
+
+                        // Only recompute if something changed.
+                        if this.is_generating == new_generating
+                            && this.waiting_for_approval == new_waiting
+                            && this.live_tool == new_tool
+                            && this.live_file == new_file
+                        {
+                            return;
+                        }
+
+                        this.is_generating = new_generating;
+                        this.waiting_for_approval = new_waiting;
+                        this.live_tool = new_tool;
+                        this.live_file = new_file;
+                        this.label = this.compute_label();
+                        this.dot_color = this.compute_dot_color();
+                        cx.notify();
+                    })
+                });
+
         Self {
             popover_menu_handle: PopoverMenuHandle::default(),
             _hq_subscription: hq_subscription,
+            _activity_subscription: activity_subscription,
             agent_summaries: Arc::new(Vec::new()),
             actionable_count: 0,
             label: "P ● idle".to_string(),
             dot_color: Color::Success,
+            live_tool: None,
+            live_file: None,
+            is_generating: false,
+            waiting_for_approval: false,
+        }
+    }
+
+    fn compute_label(&self) -> String {
+        if self.waiting_for_approval {
+            return "P ◐ awaiting approval".to_string();
+        }
+        if self.is_generating {
+            if let Some(tool) = &self.live_tool {
+                let base = format!("P ◐ {tool}");
+                if let Some(file) = &self.live_file {
+                    let short = std::path::Path::new(file.as_str())
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(file.as_str());
+                    return format!("{base} {short}");
+                }
+                return base;
+            }
+            return "P ◐ generating".to_string();
+        }
+        let agent_count = self.agent_summaries.len();
+        if agent_count == 0 {
+            "P ● idle".to_string()
+        } else {
+            let mut s = format!(
+                "P ● {} agent{}",
+                agent_count,
+                if agent_count == 1 { "" } else { "s" }
+            );
+            if self.actionable_count > 0 {
+                s.push_str(&format!(" · {} review", self.actionable_count));
+            }
+            s
+        }
+    }
+
+    fn compute_dot_color(&self) -> Color {
+        if self.agent_summaries.iter().any(|(_, state, _)| *state == AgentState::Blocked) {
+            Color::Error
+        } else if self.waiting_for_approval {
+            Color::Warning
+        } else if self.is_generating {
+            Color::Accent
+        } else if self.actionable_count > 0 {
+            Color::Warning
+        } else {
+            Color::Success
         }
     }
 }
@@ -121,14 +177,39 @@ impl Render for PrismStatusIndicator {
         let dot_color = self.dot_color;
         let agent_summaries = self.agent_summaries.clone(); // cheap Arc clone
         let actionable_count = self.actionable_count;
+        let live_tool = self.live_tool.clone();
+        let live_file = self.live_file.clone();
+        let is_generating = self.is_generating;
+        let waiting_for_approval = self.waiting_for_approval;
 
         gpui::div().child(
             PopoverMenu::new("prism-status-popover")
                 .anchor(gpui::Corner::BottomLeft)
                 .menu(move |window, cx| {
                     let agent_summaries = agent_summaries.clone(); // cheap Arc clone
+                    let live_tool = live_tool.clone();
+                    let live_file = live_file.clone();
                     Some(ContextMenu::build(window, cx, move |menu, _, _| {
-                        let mut menu = menu.header("Agents");
+                        // Current activity section (shown only when generating)
+                        let mut menu = if is_generating || waiting_for_approval {
+                            let activity_label = if waiting_for_approval {
+                                "Waiting for tool approval".to_string()
+                            } else if let Some(tool) = &live_tool {
+                                if let Some(file) = &live_file {
+                                    format!("{tool}: {file}")
+                                } else {
+                                    format!("Running {tool}…")
+                                }
+                            } else {
+                                "Generating…".to_string()
+                            };
+                            menu.header("Current Activity")
+                                .custom_row(status_row(activity_label))
+                                .separator()
+                                .header("Agents")
+                        } else {
+                            menu.header("Agents")
+                        };
 
                         if agent_summaries.is_empty() {
                             menu = menu.custom_row(status_row("No active agents".to_string()));

@@ -73,6 +73,13 @@ pub struct AgentSettingsContent {
     ///
     /// Default: true
     pub single_file_review: Option<bool>,
+    /// Whether to automatically open files edited by the agent in the editor.
+    ///
+    /// When enabled, files modified by the agent that are not currently open
+    /// will be opened automatically with diff hunks visible.
+    ///
+    /// Default: true
+    pub auto_open_edited_files: Option<bool>,
     /// Controls when agent file edits are saved to disk.
     ///
     /// - "auto_apply": edits are saved to disk immediately (default).

@@ -1,6 +1,8 @@
 mod agent_spawner;
 mod agent_view;
+pub mod activity_bus;
 pub mod approval_gate;
+pub mod context_panel;
 pub mod context_service;
 pub mod decision_executor;
 mod dispatch;
@@ -14,7 +16,9 @@ mod status_indicator;
 mod thread_view;
 mod types;
 
+pub use activity_bus::{AgentActivityBus, AgentActivityBusInner, global_inner as activity_bus_inner};
 pub use approval_gate::{ApprovalDecision, ApprovalGate};
+pub use context_panel::{ContextPanel, ToggleContextPanel};
 pub use review_packet::ReviewPacket;
 pub use agent_view::{AgentViewItem, OpenAgentView, open_agent_view};
 pub use context_service::{ContextHandle, ContextService, get_context_handle};
@@ -36,6 +40,8 @@ pub fn init(cx: &mut App) {
     // Initialize HqState polling — starts the 10-second context polling loop.
     HqState::init_global(cx);
     RunningAgents::init_global(cx);
+    // Initialize the activity bus so agent_ui can write live tool activity.
+    activity_bus::init(cx);
 
     // Initialize ContextService for each new workspace.
     cx.observe_new(|workspace: &mut Workspace, _, cx| {
@@ -92,6 +98,9 @@ pub fn init(cx: &mut App) {
             });
             workspace.register_action(|_workspace, _: &OpenThreadView, _window, _cx| {
                 // OpenThreadView requires a thread name — triggered programmatically via open_thread_view()
+            });
+            workspace.register_action(|workspace, _: &ToggleContextPanel, window, cx| {
+                workspace.toggle_panel_focus::<ContextPanel>(window, cx);
             });
 
             // Show a toast when an agent exits.

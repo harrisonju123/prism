@@ -400,6 +400,7 @@ dependencies = [
  "postage",
  "pretty_assertions",
  "prism-context",
+ "prism-hq",
  "project",
  "prompt_store",
  "proto",

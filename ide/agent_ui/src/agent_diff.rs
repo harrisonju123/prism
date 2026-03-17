@@ -37,6 +37,7 @@ use workspace::{
     searchable::SearchableItemHandle,
 };
 use zed_actions::assistant::ToggleFocus;
+use prism_hq::activity_bus;
 
 pub struct AgentDiffPane {
     multibuffer: Entity<MultiBuffer>,
@@ -1230,6 +1231,8 @@ struct WorkspaceThread {
     singleton_editors: HashMap<WeakEntity<Buffer>, HashMap<WeakEntity<Editor>, Subscription>>,
     _settings_subscription: Subscription,
     _workspace_subscription: Option<Subscription>,
+    /// Paths that are currently being opened to avoid duplicate open calls.
+    opening_paths: HashSet<ProjectPath>,
 }
 
 struct AgentDiffGlobal(Entity<AgentDiff>);
@@ -1314,8 +1317,17 @@ impl AgentDiff {
                 singleton_editors: HashMap::default(),
                 _settings_subscription: settings_subscription,
                 _workspace_subscription: workspace_subscription,
+                opening_paths: HashSet::default(),
             },
         );
+
+        // Signal the activity bus that generation has started for this thread.
+        if let Some(bus) = activity_bus::global_inner(cx) {
+            let title = thread.read(cx).title().to_string();
+            bus.update(cx, |bus, cx| {
+                bus.start_thread(title, cx);
+            });
+        }
 
         let workspace = workspace.clone();
         cx.defer_in(window, move |this, window, cx| {
@@ -1392,12 +1404,31 @@ impl AgentDiff {
     ) {
         match event {
             AcpThreadEvent::NewEntry => {
-                if thread
-                    .read(cx)
-                    .entries()
-                    .last()
-                    .is_some_and(|entry| entry.diffs().next().is_some())
-                {
+                // Extract data from the entry before any mutable borrows.
+                let (tool_name_opt, has_diffs) = {
+                    let entries = thread.read(cx);
+                    if let Some(entry) = entries.entries().last() {
+                        let tool_name_opt = if let acp_thread::AgentThreadEntry::ToolCall(tc) = entry {
+                            Some(tc.tool_name.as_ref().map(|n| n.to_string()).unwrap_or_default())
+                        } else {
+                            None
+                        };
+                        let has_diffs = entry.diffs().next().is_some();
+                        (tool_name_opt, has_diffs)
+                    } else {
+                        (None, false)
+                    }
+                };
+                // Update activity bus with the latest tool call.
+                if let Some(tool_name) = tool_name_opt {
+                    if let Some(bus) = activity_bus::global_inner(cx) {
+                        bus.update(cx, |bus, cx| {
+                            bus.set_generating(true, cx);
+                            bus.update_tool(tool_name, None, cx);
+                        });
+                    }
+                }
+                if has_diffs {
                     self.update_reviewing_editors(workspace, window, cx);
                 }
             }
@@ -1411,18 +1442,42 @@ impl AgentDiff {
                     self.update_reviewing_editors(workspace, window, cx);
                 }
             }
-            AcpThreadEvent::Stopped(_) => {
+            AcpThreadEvent::Stopped(_)
+            | AcpThreadEvent::Error
+            | AcpThreadEvent::LoadError(_)
+            | AcpThreadEvent::Refusal => {
+                if let Some(bus) = activity_bus::global_inner(cx) {
+                    bus.update(cx, |bus, cx| {
+                        bus.set_generating(false, cx);
+                    });
+                }
                 self.update_reviewing_editors(workspace, window, cx);
             }
-            AcpThreadEvent::Error | AcpThreadEvent::LoadError(_) | AcpThreadEvent::Refusal => {
-                self.update_reviewing_editors(workspace, window, cx);
+            AcpThreadEvent::ToolAuthorizationRequested(_) => {
+                if let Some(bus) = activity_bus::global_inner(cx) {
+                    bus.update(cx, |bus, cx| {
+                        bus.set_waiting_for_approval(true, cx);
+                    });
+                }
             }
-            AcpThreadEvent::TitleUpdated
-            | AcpThreadEvent::TokenUsageUpdated
+            AcpThreadEvent::ToolAuthorizationReceived(_) => {
+                if let Some(bus) = activity_bus::global_inner(cx) {
+                    bus.update(cx, |bus, cx| {
+                        bus.set_waiting_for_approval(false, cx);
+                    });
+                }
+            }
+            AcpThreadEvent::TitleUpdated => {
+                if let Some(bus) = activity_bus::global_inner(cx) {
+                    let title = thread.read(cx).title().to_string();
+                    bus.update(cx, |bus, cx| {
+                        bus.set_thread_title(Some(title), cx);
+                    });
+                }
+            }
+            AcpThreadEvent::TokenUsageUpdated
             | AcpThreadEvent::SubagentSpawned(_)
             | AcpThreadEvent::EntriesRemoved(_)
-            | AcpThreadEvent::ToolAuthorizationRequested(_)
-            | AcpThreadEvent::ToolAuthorizationReceived(_)
             | AcpThreadEvent::PromptCapabilitiesUpdated
             | AcpThreadEvent::AvailableCommandsUpdated(_)
             | AcpThreadEvent::Retry(_)
@@ -1518,6 +1573,8 @@ impl AgentDiff {
             return;
         }
 
+        let auto_open = AgentSettings::get_global(cx).auto_open_edited_files;
+
         let Some(workspace_thread) = self.workspace_threads.get_mut(workspace) else {
             return;
         };
@@ -1530,6 +1587,7 @@ impl AgentDiff {
         let changed_buffers = action_log.read(cx).changed_buffers(cx);
 
         let mut unaffected = self.reviewing_editors.clone();
+        let mut paths_to_open: Vec<ProjectPath> = Vec::new();
 
         for (buffer, diff_handle) in changed_buffers {
             if buffer.read(cx).file().is_none() {
@@ -1538,6 +1596,14 @@ impl AgentDiff {
 
             let Some(buffer_editors) = workspace_thread.singleton_editors.get(&buffer.downgrade())
             else {
+                if auto_open {
+                    if let Some(project_path) = buffer.read(cx).project_path(cx) {
+                        if !workspace_thread.opening_paths.contains(&project_path) {
+                            workspace_thread.opening_paths.insert(project_path.clone());
+                            paths_to_open.push(project_path);
+                        }
+                    }
+                }
                 continue;
             };
 
@@ -1615,6 +1681,29 @@ impl AgentDiff {
                     })
                     .ok();
                 self.reviewing_editors.remove(&editor);
+            }
+        }
+
+        // Auto-open files that have no editor yet.
+        if !paths_to_open.is_empty() {
+            if let Some(workspace_entity) = workspace.upgrade() {
+                for project_path in paths_to_open {
+                    let task = workspace_entity.update(cx, |workspace, cx| {
+                        workspace.open_path(project_path.clone(), None, false, window, cx)
+                    });
+                    let workspace_key = workspace.clone();
+                    let path_key = project_path;
+                    cx.spawn(async move |this, cx| {
+                        let _ = task.await;
+                        this.update(cx, |this, _cx| {
+                            if let Some(wt) = this.workspace_threads.get_mut(&workspace_key) {
+                                wt.opening_paths.remove(&path_key);
+                            }
+                        })
+                        .ok();
+                    })
+                    .detach();
+                }
             }
         }
 

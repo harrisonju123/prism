@@ -906,6 +906,18 @@ fn initialize_panels(
             }
         }
 
+        // Prism context panel — created directly (no async load needed).
+        let context_panel_result: anyhow::Result<
+            gpui::Entity<prism_hq::ContextPanel>,
+        > = workspace_handle
+            .update_in(cx, |workspace, window, cx| {
+                let panel = cx.new(|cx| prism_hq::ContextPanel::new(window, cx));
+                workspace.add_panel(panel.clone(), window, cx);
+                panel
+            })
+            .map_err(|e| e.into());
+        context_panel_result.log_err();
+
         futures::join!(
             add_panel_when_ready(project_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(outline_panel, workspace_handle.clone(), cx.clone()),

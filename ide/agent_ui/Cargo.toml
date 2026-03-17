@@ -116,6 +116,7 @@ zed_actions.workspace = true
 image.workspace = true
 async-fs.workspace = true
 prism-context.workspace = true
+prism-hq = { workspace = true }
 reqwest_client = { workspace = true, optional = true }
 
 [dev-dependencies]
