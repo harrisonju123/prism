@@ -1839,7 +1839,7 @@ impl acp_thread::AgentConnection for NativeAgentConnection {
                 let title = thread.title().to_string();
 
                 if let Some(ctx) = context_handle {
-                    cx.background_spawn(async move {
+                    Tokio::spawn(cx, async move {
                         ctx.auto_extract_memories(&[], &[], &findings, None).await;
                         if let Err(e) = ctx.checkout(&title, findings, files_touched).await {
                             log::warn!("prism-context: checkout failed: {e}");
