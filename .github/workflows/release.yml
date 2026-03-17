@@ -22,9 +22,9 @@ jobs:
       matrix:
         include:
           - arch: aarch64
-            runner: macos-14
+            runner: macos-13
           - arch: x86_64
-            runner: macos-15
+            runner: macos-13
     steps:
       - uses: actions/checkout@v4
 
