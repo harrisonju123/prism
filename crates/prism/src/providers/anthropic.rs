@@ -434,14 +434,22 @@ fn to_anthropic_request(
             }
         } else if msg.role == MessageRole::Tool {
             // OpenAI tool result → Anthropic tool_result block in a user turn
+            let tool_content = match msg.content.as_ref() {
+                Some(c @ serde_json::Value::Array(_)) => {
+                    // Array content (may contain images) — convert image_url blocks
+                    convert_content_for_anthropic(c)
+                }
+                Some(c) => serde_json::Value::String(
+                    c.as_str().unwrap_or("").to_string(),
+                ),
+                None => serde_json::Value::String(String::new()),
+            };
             messages.push(AnthropicMessage {
                 role: "user".into(),
                 content: serde_json::json!([{
                     "type": "tool_result",
                     "tool_use_id": msg.tool_call_id.as_deref().unwrap_or(""),
-                    "content": msg.content.as_ref()
-                        .and_then(|c| c.as_str())
-                        .unwrap_or("")
+                    "content": tool_content
                 }]),
             });
         } else if msg.role == MessageRole::Assistant && msg.tool_calls.is_some() {
@@ -472,12 +480,14 @@ fn to_anthropic_request(
                 content: serde_json::Value::Array(blocks),
             });
         } else {
+            let converted = msg
+                .content
+                .as_ref()
+                .map(convert_content_for_anthropic)
+                .unwrap_or(serde_json::Value::String(String::new()));
             messages.push(AnthropicMessage {
                 role: msg.role.to_string(),
-                content: msg
-                    .content
-                    .clone()
-                    .unwrap_or(serde_json::Value::String(String::new())),
+                content: converted,
             });
         }
     }
@@ -588,6 +598,60 @@ fn content_to_string(value: &serde_json::Value) -> String {
             .join("\n"),
         _ => value.to_string(),
     }
+}
+
+/// Convert one OpenAI `image_url` content block → Anthropic `image` block.
+/// Other block types are returned unchanged.
+fn convert_image_url_block(block: &serde_json::Value) -> serde_json::Value {
+    let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    if block_type != "image_url" {
+        return block.clone();
+    }
+    let url = block
+        .get("image_url")
+        .and_then(|u| u.get("url"))
+        .and_then(|u| u.as_str())
+        .unwrap_or("");
+
+    if let Some(rest) = url.strip_prefix("data:") {
+        // data:<media_type>;base64,<data>
+        if let Some((media_type, b64_part)) = rest.split_once(';') {
+            if let Some(data) = b64_part.strip_prefix("base64,") {
+                return serde_json::json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": data
+                    }
+                });
+            }
+        }
+    }
+
+    // HTTP/HTTPS URL
+    serde_json::json!({
+        "type": "image",
+        "source": {
+            "type": "url",
+            "url": url
+        }
+    })
+}
+
+/// Map over array content, converting `image_url` blocks to Anthropic format.
+/// String content passes through as-is. Arrays with no `image_url` blocks are cloned as-is.
+fn convert_content_for_anthropic(content: &serde_json::Value) -> serde_json::Value {
+    let serde_json::Value::Array(arr) = content else {
+        return content.clone();
+    };
+    let has_image_url = arr
+        .iter()
+        .any(|b| b.get("type").and_then(|t| t.as_str()) == Some("image_url"));
+    if !has_image_url {
+        return content.clone();
+    }
+    serde_json::Value::Array(arr.iter().map(convert_image_url_block).collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -1226,5 +1290,138 @@ mod tests {
         assert_eq!(usage.completion_tokens, 5);
         assert_eq!(usage.total_tokens, 15);
         assert!(result.ttft_ms.is_some());
+    }
+
+    #[test]
+    fn test_image_url_base64_converted_in_user_message() {
+        let req = ChatCompletionRequest {
+            model: "claude-sonnet-4-6".into(),
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: Some(serde_json::json!([
+                    {"type": "text", "text": "What is in this image?"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo=", "detail": "auto"}}
+                ])),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                extra: Default::default(),
+            }],
+            ..Default::default()
+        };
+
+        let anthropic_req = to_anthropic_request(&req, "claude-sonnet-4-6-20251101", false);
+        let content = &anthropic_req.messages[0].content;
+        let blocks = content.as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+
+        let text_block = &blocks[0];
+        assert_eq!(text_block["type"], "text");
+        assert_eq!(text_block["text"], "What is in this image?");
+
+        let img_block = &blocks[1];
+        assert_eq!(img_block["type"], "image");
+        assert_eq!(img_block["source"]["type"], "base64");
+        assert_eq!(img_block["source"]["media_type"], "image/png");
+        assert_eq!(img_block["source"]["data"], "iVBORw0KGgo=");
+    }
+
+    #[test]
+    fn test_image_url_http_converted_in_user_message() {
+        let req = ChatCompletionRequest {
+            model: "claude-sonnet-4-6".into(),
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: Some(serde_json::json!([
+                    {"type": "image_url", "image_url": {"url": "https://example.com/pic.jpg"}}
+                ])),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                extra: Default::default(),
+            }],
+            ..Default::default()
+        };
+
+        let anthropic_req = to_anthropic_request(&req, "claude-sonnet-4-6-20251101", false);
+        let img_block = &anthropic_req.messages[0].content.as_array().unwrap()[0];
+        assert_eq!(img_block["type"], "image");
+        assert_eq!(img_block["source"]["type"], "url");
+        assert_eq!(img_block["source"]["url"], "https://example.com/pic.jpg");
+    }
+
+    #[test]
+    fn test_plain_string_content_passes_through() {
+        let req = ChatCompletionRequest {
+            model: "claude-sonnet-4-6".into(),
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: Some(serde_json::Value::String("Hello".into())),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                extra: Default::default(),
+            }],
+            ..Default::default()
+        };
+
+        let anthropic_req = to_anthropic_request(&req, "claude-sonnet-4-6-20251101", false);
+        assert_eq!(
+            anthropic_req.messages[0].content,
+            serde_json::Value::String("Hello".into())
+        );
+    }
+
+    #[test]
+    fn test_tool_result_with_image_array_content() {
+        let req = ChatCompletionRequest {
+            model: "claude-sonnet-4-6".into(),
+            messages: vec![Message {
+                role: MessageRole::Tool,
+                content: Some(serde_json::json!([
+                    {"type": "text", "text": "Result text"},
+                    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9j/4AAQ="}}
+                ])),
+                name: None,
+                tool_calls: None,
+                tool_call_id: Some("call_123".into()),
+                extra: Default::default(),
+            }],
+            ..Default::default()
+        };
+
+        let anthropic_req = to_anthropic_request(&req, "claude-sonnet-4-6-20251101", false);
+        let outer = &anthropic_req.messages[0].content.as_array().unwrap()[0];
+        assert_eq!(outer["type"], "tool_result");
+        assert_eq!(outer["tool_use_id"], "call_123");
+
+        let inner_blocks = outer["content"].as_array().unwrap();
+        assert_eq!(inner_blocks[0]["type"], "text");
+        let img = &inner_blocks[1];
+        assert_eq!(img["type"], "image");
+        assert_eq!(img["source"]["type"], "base64");
+        assert_eq!(img["source"]["media_type"], "image/jpeg");
+        assert_eq!(img["source"]["data"], "/9j/4AAQ=");
+    }
+
+    #[test]
+    fn test_media_type_parsing_variants() {
+        let cases = [
+            ("data:image/jpeg;base64,abc", "image/jpeg"),
+            ("data:image/webp;base64,abc", "image/webp"),
+            ("data:image/gif;base64,abc", "image/gif"),
+        ];
+        for (url, expected_media_type) in &cases {
+            let block = serde_json::json!({
+                "type": "image_url",
+                "image_url": {"url": url}
+            });
+            let converted = convert_image_url_block(&block);
+            assert_eq!(
+                converted["source"]["media_type"].as_str().unwrap(),
+                *expected_media_type,
+                "failed for url: {url}"
+            );
+        }
     }
 }
