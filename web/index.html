@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PrisM — AI-native code editor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d0d0f;
+      --surface: #16161a;
+      --border: #2a2a30;
+      --text: #e8e8ed;
+      --muted: #8a8a9a;
+      --accent: #7c6af7;
+      --accent-hover: #9585ff;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+
+    .hero {
+      text-align: center;
+      max-width: 560px;
+    }
+
+    .wordmark {
+      font-size: 2.8rem;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      background: linear-gradient(135deg, #e8e8ed 0%, #9585ff 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 1rem;
+    }
+
+    .tagline {
+      color: var(--muted);
+      font-size: 1.1rem;
+      line-height: 1.6;
+      margin-bottom: 2.5rem;
+    }
+
+    .download-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: var(--accent);
+      color: #fff;
+      text-decoration: none;
+      padding: 0.85rem 2rem;
+      border-radius: 10px;
+      font-size: 1rem;
+      font-weight: 600;
+      transition: background 0.15s, transform 0.1s;
+      margin-bottom: 0.75rem;
+    }
+
+    .download-primary:hover {
+      background: var(--accent-hover);
+      transform: translateY(-1px);
+    }
+
+    .arch-note {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 2rem;
+    }
+
+    .other-arch {
+      display: flex;
+      gap: 1rem;
+      justify-content: center;
+      margin-bottom: 2.5rem;
+    }
+
+    .other-arch a {
+      color: var(--muted);
+      font-size: 0.85rem;
+      text-decoration: none;
+      border: 1px solid var(--border);
+      padding: 0.4rem 0.9rem;
+      border-radius: 6px;
+      transition: color 0.15s, border-color 0.15s;
+    }
+
+    .other-arch a:hover {
+      color: var(--text);
+      border-color: var(--accent);
+    }
+
+    .divider {
+      width: 100%;
+      height: 1px;
+      background: var(--border);
+      margin: 2rem 0;
+    }
+
+    .links {
+      display: flex;
+      gap: 1.5rem;
+      justify-content: center;
+    }
+
+    .links a {
+      color: var(--muted);
+      font-size: 0.85rem;
+      text-decoration: none;
+      transition: color 0.15s;
+    }
+
+    .links a:hover { color: var(--text); }
+
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f5f5f7;
+        --surface: #fff;
+        --border: #d0d0da;
+        --text: #1a1a22;
+        --muted: #5a5a6e;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="hero">
+    <div class="wordmark">PrisM</div>
+    <p class="tagline">A fast, AI-native code editor with a built-in LLM gateway.<br>Your models, your keys, your rules.</p>
+
+    <a id="download-btn" class="download-primary" href="#">
+      ↓ Download for macOS
+    </a>
+    <br />
+    <p class="arch-note" id="arch-note">Detecting architecture…</p>
+
+    <div class="other-arch">
+      <a id="link-arm" href="https://github.com/harrisonju123/PrisM/releases/latest/download/Prism-aarch64.dmg">Apple Silicon (M1+)</a>
+      <a id="link-intel" href="https://github.com/harrisonju123/PrisM/releases/latest/download/Prism-x86_64.dmg">Intel (x86_64)</a>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="links">
+      <a href="https://github.com/harrisonju123/PrisM/releases">All releases</a>
+      <a href="https://github.com/harrisonju123/PrisM">GitHub</a>
+      <a href="/docs/">Docs</a>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const ARM_URL = "https://github.com/harrisonju123/PrisM/releases/latest/download/Prism-aarch64.dmg";
+      const INTEL_URL = "https://github.com/harrisonju123/PrisM/releases/latest/download/Prism-x86_64.dmg";
+
+      // navigator.userAgentData is available in newer browsers; fall back to UA string
+      const uad = navigator.userAgentData;
+      const isArm = uad
+        ? uad.platform === "macOS" && uad.brands && (
+            navigator.userAgentData?.getHighEntropyValues?.(['architecture'])
+              .then(v => v.architecture === 'arm')
+              .catch(() => false)
+          )
+        : /arm64|aarch64/i.test(navigator.userAgent) ||
+          // M1 Macs running Chrome/Safari before uaData report as "MacIntel" in JS
+          // but we can use a canvas trick or just default to arm for newer machines
+          (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
+      const btn = document.getElementById("download-btn");
+      const note = document.getElementById("arch-note");
+
+      if (uad && typeof uad.getHighEntropyValues === "function") {
+        uad.getHighEntropyValues(["architecture", "platform"]).then(function (v) {
+          const arm = v.platform === "macOS" && v.architecture === "arm";
+          btn.href = arm ? ARM_URL : INTEL_URL;
+          note.textContent = arm ? "Apple Silicon detected" : "Intel detected";
+        }).catch(function () {
+          btn.href = ARM_URL;
+          note.textContent = "Apple Silicon (default)";
+        });
+      } else {
+        // Safari / Firefox fallback
+        const arm = /arm64|aarch64/i.test(navigator.userAgent) ||
+          (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+        btn.href = arm ? ARM_URL : INTEL_URL;
+        note.textContent = arm ? "Apple Silicon detected" : "Intel detected";
+      }
+    })();
+  </script>
+</body>
+</html>

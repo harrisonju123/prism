@@ -3,6 +3,23 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+const BUILTINS: &[(&str, &str)] = &[
+    ("pr-reviewer", include_str!("personas/pr-reviewer.toml")),
+    (
+        "bug-investigator",
+        include_str!("personas/bug-investigator.toml"),
+    ),
+    ("refactorer", include_str!("personas/refactorer.toml")),
+    ("work-ducky", include_str!("personas/work-ducky.toml")),
+];
+
+fn load_builtin(name: &str) -> Option<Persona> {
+    BUILTINS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .and_then(|(_, toml_str)| toml::from_str::<Persona>(toml_str).ok())
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Persona {
     pub name: String,
@@ -85,6 +102,9 @@ pub fn load_persona(name: &str, project_root: Option<&Path>) -> Result<Persona> 
             }
         }
     }
+    if let Some(persona) = load_builtin(name) {
+        return Ok(persona);
+    }
     anyhow::bail!(
         "persona '{}' not found. Searched:\n{}",
         name,
@@ -137,9 +157,62 @@ fn collect_persona_entries(project_root: Option<&Path>) -> Vec<(String, String, 
         }
     }
 
+    // Append built-ins (disk entries take priority — deduplicated below)
+    for (name, toml_str) in BUILTINS {
+        if let Ok(persona) = toml::from_str::<Persona>(toml_str) {
+            let description = persona.description.unwrap_or_default();
+            results.push((
+                name.to_string(),
+                description,
+                PathBuf::from(format!("<built-in:{name}>")),
+            ));
+        }
+    }
+
     // Deduplicate by name (project-local takes priority, already first)
     let mut seen = std::collections::HashSet::new();
     results.retain(|(name, _, _)| seen.insert(name.clone()));
 
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_personas_parse() {
+        let expected = ["pr-reviewer", "bug-investigator", "refactorer", "work-ducky"];
+        for (name, toml_str) in BUILTINS {
+            let persona: Persona =
+                toml::from_str(toml_str).unwrap_or_else(|e| panic!("failed to parse {name}: {e}"));
+            assert!(
+                expected.contains(&persona.name.as_str()),
+                "unexpected persona name: {}",
+                persona.name
+            );
+        }
+        assert_eq!(BUILTINS.len(), expected.len());
+    }
+
+    #[test]
+    fn load_builtin_fallback() {
+        let persona = load_builtin("pr-reviewer");
+        assert!(persona.is_some());
+        assert_eq!(persona.unwrap().name, "pr-reviewer");
+    }
+
+    #[test]
+    fn list_includes_builtins() {
+        let names: Vec<String> = list_personas(None)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        for expected in ["pr-reviewer", "bug-investigator", "refactorer", "work-ducky"] {
+            assert!(
+                names.contains(&expected.to_string()),
+                "built-in '{expected}' missing from list"
+            );
+        }
+    }
 }
