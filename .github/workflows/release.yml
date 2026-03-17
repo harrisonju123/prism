@@ -44,6 +44,7 @@ jobs:
           APPLE_NOTARIZATION_KEY: ${{ secrets.APPLE_NOTARIZATION_KEY }}
           APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
           APPLE_NOTARIZATION_ISSUER_ID: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
+          ALLOW_MISSING_LICENSES: "1"
         run: script/bundle-mac ${{ matrix.arch }}-apple-darwin
 
       - name: Upload DMG
