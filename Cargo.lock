@@ -3918,7 +3918,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "async-tungstenite",
  "collections",
+ "dirs 4.0.0",
  "futures 0.3.32",
  "gpui",
  "http_client",
@@ -3926,6 +3928,7 @@ dependencies = [
  "net",
  "parking_lot",
  "postage",
+ "rand 0.9.2",
  "schemars",
  "serde",
  "serde_json",

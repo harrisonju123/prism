@@ -1,10 +1,12 @@
 pub mod client;
 pub mod listener;
+pub mod lock_file;
 pub mod protocol;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test;
 pub mod transport;
 pub mod types;
+pub mod ws_listener;
 
 use collections::HashMap;
 use http_client::HttpClient;

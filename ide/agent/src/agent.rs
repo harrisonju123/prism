@@ -3,6 +3,7 @@ mod db;
 mod edit_agent;
 mod hooks;
 mod legacy_thread;
+pub(crate) mod mcp_bridge;
 mod native_agent_server;
 pub mod outline;
 mod pattern_extraction;
@@ -259,6 +260,11 @@ pub struct NativeAgent {
     context_handle: Option<Arc<ContextHandle>>,
     /// Skill registry for the project (populated on first session)
     skill_registry: Option<Arc<prism_context::skills::SkillRegistry>>,
+    /// WebSocket MCP server — exposes IDE tools to external agents via the
+    /// lock-file protocol used by VS Code / JetBrains / Claude Code.
+    _mcp_server: Option<context_server::ws_listener::WsMcpServer>,
+    /// Lock file at `~/.claude/ide/<port>.lock`. Removed on drop.
+    _lock_file: Option<context_server::lock_file::IdeLockFile>,
 }
 
 impl NativeAgent {
@@ -275,6 +281,73 @@ impl NativeAgent {
         let project_context = cx
             .update(|cx| Self::build_project_context(&project, prompt_store.as_ref(), cx))
             .await;
+
+        // Start the WebSocket MCP server so external agents can connect.
+        let mut mcp_server = context_server::ws_listener::WsMcpServer::new(cx)
+            .await
+            .map_err(|e| log::warn!("Failed to start IDE MCP server: {e}"))
+            .ok();
+
+        if let Some(ref mut server) = mcp_server {
+            use context_server::types::{
+                Implementation, InitializeResponse, ProtocolVersion, ServerCapabilities,
+                ToolsCapabilities, LATEST_PROTOCOL_VERSION,
+                requests::Initialize,
+            };
+
+            server.add_tool(mcp_bridge::McpGetDiagnostics {
+                project: project.clone(),
+            });
+            server.add_tool(mcp_bridge::McpLspTool {
+                project: project.clone(),
+            });
+
+            server.handle_request::<Initialize>(|_params, _cx| {
+                Task::ready(Ok(InitializeResponse {
+                    protocol_version: ProtocolVersion(LATEST_PROTOCOL_VERSION.to_string()),
+                    capabilities: ServerCapabilities {
+                        tools: Some(ToolsCapabilities {
+                            list_changed: Some(false),
+                        }),
+                        experimental: None,
+                        logging: None,
+                        completions: None,
+                        prompts: None,
+                        resources: None,
+                    },
+                    server_info: Implementation {
+                        name: "PrisM".to_string(),
+                        version: env!("CARGO_PKG_VERSION").to_string(),
+                    },
+                    meta: None,
+                }))
+            });
+
+            log::info!(
+                "IDE MCP server listening on ws://127.0.0.1:{}",
+                server.port()
+            );
+        }
+
+        let lock_file = if let Some(ref server) = mcp_server {
+            let workspace_folders = cx.update(|cx| {
+                project
+                    .read(cx)
+                    .visible_worktrees(cx)
+                    .map(|wt| wt.read(cx).abs_path().to_string_lossy().to_string())
+                    .collect::<Vec<_>>()
+            });
+
+            context_server::lock_file::IdeLockFile::create(
+                server.port(),
+                workspace_folders,
+                server.auth_token(),
+            )
+            .map_err(|e| log::warn!("Failed to write IDE lock file: {e}"))
+            .ok()
+        } else {
+            None
+        };
 
         Ok(cx.new(|cx| {
             let context_handle = try_init_context_handle(&project, cx);
@@ -320,6 +393,8 @@ impl NativeAgent {
                 _subscriptions: subscriptions,
                 context_handle,
                 skill_registry: None,
+                _mcp_server: mcp_server,
+                _lock_file: lock_file,
             }
         }))
     }

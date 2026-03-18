@@ -69,7 +69,7 @@ impl LspTool {
     }
 }
 
-fn format_document_symbols(symbols: &[DocumentSymbol], indent: usize) -> String {
+pub fn format_document_symbols(symbols: &[DocumentSymbol], indent: usize) -> String {
     let mut out = String::new();
     for sym in symbols {
         let pad = "  ".repeat(indent);
@@ -89,7 +89,7 @@ fn format_document_symbols(symbols: &[DocumentSymbol], indent: usize) -> String 
     out
 }
 
-fn symbol_kind_str(kind: impl std::fmt::Debug) -> String {
+pub fn symbol_kind_str(kind: impl std::fmt::Debug) -> String {
     format!("{:?}", kind).to_lowercase()
 }
 

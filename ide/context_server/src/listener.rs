@@ -30,57 +30,37 @@ use crate::{
     },
 };
 
-pub struct McpServer {
-    socket_path: PathBuf,
-    tools: Rc<RefCell<HashMap<&'static str, RegisteredTool>>>,
-    handlers: Rc<RefCell<HashMap<&'static str, RequestHandler>>>,
-    _server_task: Task<()>,
+pub(crate) struct RegisteredTool {
+    pub(crate) tool: Tool,
+    pub(crate) handler: ToolHandler,
 }
 
-struct RegisteredTool {
-    tool: Tool,
-    handler: ToolHandler,
-}
-
-type ToolHandler = Box<
+pub(crate) type ToolHandler = Box<
     dyn Fn(
         Option<serde_json::Value>,
         &mut AsyncApp,
     ) -> Task<Result<ToolResponse<serde_json::Value>>>,
 >;
-type RequestHandler = Box<dyn Fn(RequestId, Option<Box<RawValue>>, &App) -> Task<String>>;
+pub(crate) type RequestHandler = Box<dyn Fn(RequestId, Option<Box<RawValue>>, &App) -> Task<String>>;
 
-impl McpServer {
-    pub fn new(cx: &AsyncApp) -> Task<Result<Self>> {
-        let task = cx.background_spawn(async move {
-            let temp_dir = tempfile::Builder::new().prefix("zed-mcp").tempdir()?;
-            let socket_path = temp_dir.path().join("mcp.sock");
-            let listener = UnixListener::bind(&socket_path).context("creating mcp socket")?;
+/// Shared dispatch state and logic for MCP server transports.
+///
+/// `McpDispatch` holds the tool registry and request handlers. Multiple
+/// transport implementations (Unix socket, WebSocket) clone this struct —
+/// each clone shares the same underlying Rc<RefCell<...>> maps — and call
+/// `dispatch_connection` to wire up per-connection dispatch loops.
+#[derive(Clone)]
+pub struct McpDispatch {
+    pub(crate) tools: Rc<RefCell<HashMap<&'static str, RegisteredTool>>>,
+    pub(crate) handlers: Rc<RefCell<HashMap<&'static str, RequestHandler>>>,
+}
 
-            anyhow::Ok((temp_dir, socket_path, listener))
-        });
-
-        cx.spawn(async move |cx| {
-            let (temp_dir, socket_path, listener) = task.await?;
-            let tools = Rc::new(RefCell::new(HashMap::default()));
-            let handlers = Rc::new(RefCell::new(HashMap::default()));
-            let server_task = cx.spawn({
-                let tools = tools.clone();
-                let handlers = handlers.clone();
-                async move |cx| {
-                    while let Ok((stream, _)) = listener.accept().await {
-                        Self::serve_connection(stream, tools.clone(), handlers.clone(), cx);
-                    }
-                    drop(temp_dir)
-                }
-            });
-            Ok(Self {
-                socket_path,
-                _server_task: server_task,
-                tools,
-                handlers,
-            })
-        })
+impl McpDispatch {
+    pub fn new() -> Self {
+        Self {
+            tools: Rc::new(RefCell::new(HashMap::default())),
+            handlers: Rc::new(RefCell::new(HashMap::default())),
+        }
     }
 
     pub fn add_tool<T: McpServerTool + Clone + 'static>(&mut self, tool: T) {
@@ -191,23 +171,18 @@ impl McpServer {
         );
     }
 
-    pub fn socket_path(&self) -> &Path {
-        &self.socket_path
-    }
-
-    fn serve_connection(
-        stream: UnixStream,
-        tools: Rc<RefCell<HashMap<&'static str, RegisteredTool>>>,
-        handlers: Rc<RefCell<HashMap<&'static str, RequestHandler>>>,
+    /// Spawn the JSON-RPC dispatch loop on the main thread.
+    ///
+    /// `incoming_rx` delivers parsed `RawRequest` messages; `outgoing_tx`
+    /// accepts serialized JSON-RPC response strings to send back.
+    pub fn dispatch_connection(
+        &self,
+        mut incoming_rx: UnboundedReceiver<RawRequest>,
+        outgoing_tx: UnboundedSender<String>,
         cx: &mut AsyncApp,
     ) {
-        let (read, write) = smol::io::split(stream);
-        let (incoming_tx, mut incoming_rx) = unbounded();
-        let (outgoing_tx, outgoing_rx) = unbounded();
-
-        cx.background_spawn(Self::handle_io(outgoing_rx, incoming_tx, write, read))
-            .detach();
-
+        let tools = self.tools.clone();
+        let handlers = self.handlers.clone();
         cx.spawn(async move |cx| {
             while let Some(request) = incoming_rx.next().await {
                 let Some(request_id) = request.id.clone() else {
@@ -215,10 +190,9 @@ impl McpServer {
                 };
 
                 if request.method == CallTool::METHOD {
-                    Self::handle_call_tool(request_id, request.params, &tools, &outgoing_tx, cx)
-                        .await;
+                    handle_call_tool(request_id, request.params, &tools, &outgoing_tx, cx).await;
                 } else if request.method == ListTools::METHOD {
-                    Self::handle_list_tools(request.id.unwrap(), &tools, &outgoing_tx);
+                    handle_list_tools(request.id.unwrap(), &tools, &outgoing_tx);
                 } else if let Some(handler) = handlers.borrow().get(&request.method.as_ref()) {
                     let outgoing_tx = outgoing_tx.clone();
 
@@ -229,7 +203,7 @@ impl McpServer {
                     })
                     .detach();
                 } else {
-                    Self::send_err(
+                    send_err(
                         request_id,
                         format!("unhandled method {}", request.method),
                         &outgoing_tx,
@@ -239,162 +213,229 @@ impl McpServer {
         })
         .detach();
     }
+}
 
-    fn handle_list_tools(
-        request_id: RequestId,
-        tools: &Rc<RefCell<HashMap<&'static str, RegisteredTool>>>,
-        outgoing_tx: &UnboundedSender<String>,
-    ) {
-        let response = ListToolsResponse {
-            tools: tools.borrow().values().map(|t| t.tool.clone()).collect(),
-            next_cursor: None,
-            meta: None,
-        };
+pub struct McpServer {
+    socket_path: PathBuf,
+    dispatch: McpDispatch,
+    _server_task: Task<()>,
+}
 
-        outgoing_tx
-            .unbounded_send(
-                serde_json::to_string(&Response {
-                    jsonrpc: "2.0",
-                    id: request_id,
-                    value: CspResult::Ok(Some(response)),
-                })
-                .unwrap_or_default(),
-            )
-            .ok();
+impl McpServer {
+    pub fn new(cx: &AsyncApp) -> Task<Result<Self>> {
+        let task = cx.background_spawn(async move {
+            let temp_dir = tempfile::Builder::new().prefix("zed-mcp").tempdir()?;
+            let socket_path = temp_dir.path().join("mcp.sock");
+            let listener = UnixListener::bind(&socket_path).context("creating mcp socket")?;
+
+            anyhow::Ok((temp_dir, socket_path, listener))
+        });
+
+        cx.spawn(async move |cx| {
+            let (temp_dir, socket_path, listener) = task.await?;
+            let dispatch = McpDispatch::new();
+            let dispatch_for_loop = dispatch.clone();
+            let server_task = cx.spawn({
+                async move |cx| {
+                    while let Ok((stream, _)) = listener.accept().await {
+                        Self::serve_connection(stream, dispatch_for_loop.clone(), cx);
+                    }
+                    drop(temp_dir)
+                }
+            });
+            Ok(Self {
+                socket_path,
+                dispatch,
+                _server_task: server_task,
+            })
+        })
     }
 
-    async fn handle_call_tool(
-        request_id: RequestId,
-        params: Option<Box<RawValue>>,
-        tools: &Rc<RefCell<HashMap<&'static str, RegisteredTool>>>,
-        outgoing_tx: &UnboundedSender<String>,
+    pub fn add_tool<T: McpServerTool + Clone + 'static>(&mut self, tool: T) {
+        self.dispatch.add_tool(tool);
+    }
+
+    pub fn handle_request<R: Request>(
+        &mut self,
+        f: impl Fn(R::Params, &App) -> Task<Result<R::Response>> + 'static,
+    ) {
+        self.dispatch.handle_request::<R>(f);
+    }
+
+    pub fn socket_path(&self) -> &Path {
+        &self.socket_path
+    }
+
+    fn serve_connection(
+        stream: UnixStream,
+        dispatch: McpDispatch,
         cx: &mut AsyncApp,
     ) {
-        let result: Result<CallToolParams, serde_json::Error> = match params.as_ref() {
-            Some(params) => serde_json::from_str(params.get()),
-            None => serde_json::from_value(serde_json::Value::Null),
-        };
+        let (read, write) = smol::io::split(stream);
+        let (incoming_tx, incoming_rx) = unbounded();
+        let (outgoing_tx, outgoing_rx) = unbounded();
 
-        match result {
-            Ok(params) => {
-                if let Some(tool) = tools.borrow().get(&params.name.as_ref()) {
-                    let outgoing_tx = outgoing_tx.clone();
+        cx.background_spawn(handle_io(outgoing_rx, incoming_tx, write, read))
+            .detach();
 
-                    let task = (tool.handler)(params.arguments, cx);
-                    cx.spawn(async move |_| {
-                        let response = match task.await {
-                            Ok(result) => CallToolResponse {
-                                content: result.content,
-                                is_error: Some(false),
-                                meta: None,
-                                structured_content: if result.structured_content.is_null() {
-                                    None
-                                } else {
-                                    Some(result.structured_content)
-                                },
-                            },
-                            Err(err) => CallToolResponse {
-                                content: vec![ToolResponseContent::Text {
-                                    text: err.to_string(),
-                                }],
-                                is_error: Some(true),
-                                meta: None,
-                                structured_content: None,
-                            },
-                        };
-
-                        outgoing_tx
-                            .unbounded_send(
-                                serde_json::to_string(&Response {
-                                    jsonrpc: "2.0",
-                                    id: request_id,
-                                    value: CspResult::Ok(Some(response)),
-                                })
-                                .unwrap_or_default(),
-                            )
-                            .ok();
-                    })
-                    .detach();
-                } else {
-                    Self::send_err(
-                        request_id,
-                        format!("Tool not found: {}", params.name),
-                        outgoing_tx,
-                    );
-                }
-            }
-            Err(err) => {
-                Self::send_err(request_id, err.to_string(), outgoing_tx);
-            }
-        }
+        dispatch.dispatch_connection(incoming_rx, outgoing_tx, cx);
     }
+}
 
-    fn send_err(
-        request_id: RequestId,
-        message: impl Into<String>,
-        outgoing_tx: &UnboundedSender<String>,
-    ) {
-        outgoing_tx
-            .unbounded_send(
-                serde_json::to_string(&Response::<()> {
-                    jsonrpc: "2.0",
-                    id: request_id,
-                    value: CspResult::Error(Some(crate::client::Error {
-                        message: message.into(),
-                        code: -32601,
-                    })),
+pub(crate) fn handle_list_tools(
+    request_id: RequestId,
+    tools: &Rc<RefCell<HashMap<&'static str, RegisteredTool>>>,
+    outgoing_tx: &UnboundedSender<String>,
+) {
+    let response = ListToolsResponse {
+        tools: tools.borrow().values().map(|t| t.tool.clone()).collect(),
+        next_cursor: None,
+        meta: None,
+    };
+
+    outgoing_tx
+        .unbounded_send(
+            serde_json::to_string(&Response {
+                jsonrpc: "2.0",
+                id: request_id,
+                value: CspResult::Ok(Some(response)),
+            })
+            .unwrap_or_default(),
+        )
+        .ok();
+}
+
+pub(crate) async fn handle_call_tool(
+    request_id: RequestId,
+    params: Option<Box<RawValue>>,
+    tools: &Rc<RefCell<HashMap<&'static str, RegisteredTool>>>,
+    outgoing_tx: &UnboundedSender<String>,
+    cx: &mut AsyncApp,
+) {
+    let result: Result<CallToolParams, serde_json::Error> = match params.as_ref() {
+        Some(params) => serde_json::from_str(params.get()),
+        None => serde_json::from_value(serde_json::Value::Null),
+    };
+
+    match result {
+        Ok(params) => {
+            if let Some(tool) = tools.borrow().get(&params.name.as_ref()) {
+                let outgoing_tx = outgoing_tx.clone();
+
+                let task = (tool.handler)(params.arguments, cx);
+                cx.spawn(async move |_| {
+                    let response = match task.await {
+                        Ok(result) => CallToolResponse {
+                            content: result.content,
+                            is_error: Some(false),
+                            meta: None,
+                            structured_content: if result.structured_content.is_null() {
+                                None
+                            } else {
+                                Some(result.structured_content)
+                            },
+                        },
+                        Err(err) => CallToolResponse {
+                            content: vec![ToolResponseContent::Text {
+                                text: err.to_string(),
+                            }],
+                            is_error: Some(true),
+                            meta: None,
+                            structured_content: None,
+                        },
+                    };
+
+                    outgoing_tx
+                        .unbounded_send(
+                            serde_json::to_string(&Response {
+                                jsonrpc: "2.0",
+                                id: request_id,
+                                value: CspResult::Ok(Some(response)),
+                            })
+                            .unwrap_or_default(),
+                        )
+                        .ok();
                 })
-                .unwrap(),
-            )
-            .ok();
-    }
-
-    async fn handle_io(
-        mut outgoing_rx: UnboundedReceiver<String>,
-        incoming_tx: UnboundedSender<RawRequest>,
-        mut outgoing_bytes: impl Unpin + AsyncWrite,
-        incoming_bytes: impl Unpin + AsyncRead,
-    ) -> Result<()> {
-        let mut output_reader = BufReader::new(incoming_bytes);
-        let mut incoming_line = String::new();
-        loop {
-            select_biased! {
-                message = outgoing_rx.next().fuse() => {
-                    if let Some(message) = message {
-                        log::trace!("send: {}", &message);
-                        outgoing_bytes.write_all(message.as_bytes()).await?;
-                        outgoing_bytes.write_all(&[b'\n']).await?;
-                    } else {
-                        break;
-                    }
-                }
-                bytes_read = output_reader.read_line(&mut incoming_line).fuse() => {
-                    if bytes_read? == 0 {
-                        break
-                    }
-                    log::trace!("recv: {}", &incoming_line);
-                    match serde_json::from_str(&incoming_line) {
-                        Ok(message) => {
-                            incoming_tx.unbounded_send(message).log_err();
-                        }
-                        Err(error) => {
-                            outgoing_bytes.write_all(serde_json::to_string(&json!({
-                                "jsonrpc": "2.0",
-                                "error": json!({
-                                    "code": -32603,
-                                    "message": format!("Failed to parse: {error}"),
-                                }),
-                            }))?.as_bytes()).await?;
-                            outgoing_bytes.write_all(&[b'\n']).await?;
-                            log::error!("failed to parse incoming message: {error}. Raw: {incoming_line}");
-                        }
-                    }
-                    incoming_line.clear();
-                }
+                .detach();
+            } else {
+                send_err(
+                    request_id,
+                    format!("Tool not found: {}", params.name),
+                    outgoing_tx,
+                );
             }
         }
-        Ok(())
+        Err(err) => {
+            send_err(request_id, err.to_string(), outgoing_tx);
+        }
     }
+}
+
+pub(crate) fn send_err(
+    request_id: RequestId,
+    message: impl Into<String>,
+    outgoing_tx: &UnboundedSender<String>,
+) {
+    outgoing_tx
+        .unbounded_send(
+            serde_json::to_string(&Response::<()> {
+                jsonrpc: "2.0",
+                id: request_id,
+                value: CspResult::Error(Some(crate::client::Error {
+                    message: message.into(),
+                    code: -32601,
+                })),
+            })
+            .unwrap(),
+        )
+        .ok();
+}
+
+pub(crate) async fn handle_io(
+    mut outgoing_rx: UnboundedReceiver<String>,
+    incoming_tx: UnboundedSender<RawRequest>,
+    mut outgoing_bytes: impl Unpin + AsyncWrite,
+    incoming_bytes: impl Unpin + AsyncRead,
+) -> Result<()> {
+    let mut output_reader = BufReader::new(incoming_bytes);
+    let mut incoming_line = String::new();
+    loop {
+        select_biased! {
+            message = outgoing_rx.next().fuse() => {
+                if let Some(message) = message {
+                    log::trace!("send: {}", &message);
+                    outgoing_bytes.write_all(message.as_bytes()).await?;
+                    outgoing_bytes.write_all(&[b'\n']).await?;
+                } else {
+                    break;
+                }
+            }
+            bytes_read = output_reader.read_line(&mut incoming_line).fuse() => {
+                if bytes_read? == 0 {
+                    break
+                }
+                log::trace!("recv: {}", &incoming_line);
+                match serde_json::from_str(&incoming_line) {
+                    Ok(message) => {
+                        incoming_tx.unbounded_send(message).log_err();
+                    }
+                    Err(error) => {
+                        outgoing_bytes.write_all(serde_json::to_string(&json!({
+                            "jsonrpc": "2.0",
+                            "error": json!({
+                                "code": -32603,
+                                "message": format!("Failed to parse: {error}"),
+                            }),
+                        }))?.as_bytes()).await?;
+                        outgoing_bytes.write_all(&[b'\n']).await?;
+                        log::error!("failed to parse incoming message: {error}. Raw: {incoming_line}");
+                    }
+                }
+                incoming_line.clear();
+            }
+        }
+    }
+    Ok(())
 }
 
 pub trait McpServerTool {
@@ -427,10 +468,10 @@ pub struct ToolResponse<T> {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct RawRequest {
+pub(crate) struct RawRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
-    id: Option<RequestId>,
-    method: String,
+    pub(crate) id: Option<RequestId>,
+    pub(crate) method: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    params: Option<Box<serde_json::value::RawValue>>,
+    pub(crate) params: Option<Box<serde_json::value::RawValue>>,
 }
