@@ -2675,17 +2675,17 @@ mod tests {
     #[gpui::test]
     async fn test_streaming_edit_file_symlink_escape_honors_deny_policy(cx: &mut TestAppContext) {
         init_test(cx);
-        cx.update(|cx| {
-            let mut settings = agent_settings::AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.tools.insert(
-                "edit_file".into(),
-                agent_settings::ToolRules {
-                    default: Some(settings::ToolPermissionMode::Deny),
-                    ..Default::default()
-                },
-            );
-            agent_settings::AgentSettings::override_global(settings, cx);
-        });
+        let mut perms = agent_settings::ToolPermissions {
+            default: settings::ToolPermissionMode::Allow,
+            tools: Default::default(),
+        };
+        perms.tools.insert(
+            std::sync::Arc::from("edit_file"),
+            agent_settings::ToolRules {
+                default: Some(settings::ToolPermissionMode::Deny),
+                ..Default::default()
+            },
+        );
 
         let fs = project::FakeFs::new(cx.executor());
         fs.insert_tree(
@@ -2711,7 +2711,7 @@ mod tests {
         let (tool, _project, _action_log, _fs, _thread) =
             setup_test_with_fs(cx, fs, &[path!("/root").as_ref()]).await;
 
-        let (stream_tx, mut stream_rx) = ToolCallEventStream::test();
+        let (stream_tx, mut stream_rx) = ToolCallEventStream::test_with_permissions(perms);
         let result = cx
             .update(|cx| {
                 tool.authorize(

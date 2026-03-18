@@ -239,6 +239,7 @@ pub struct ThreadView {
     pub edits_expanded: bool,
     pub plan_expanded: bool,
     pub queue_expanded: bool,
+    pub mission_expanded: bool,
     pub editor_expanded: bool,
     pub should_be_following: bool,
     pub editing_message: Option<usize>,
@@ -472,6 +473,7 @@ impl ThreadView {
             edits_expanded: false,
             plan_expanded: false,
             queue_expanded: true,
+            mission_expanded: false,
             editor_expanded: false,
             should_be_following: false,
             editing_message: None,
@@ -1968,8 +1970,10 @@ impl ThreadView {
         let changed_buffers = action_log.read(cx).changed_buffers(cx);
         let plan = thread.plan();
         let queue_is_empty = !self.has_queued_messages();
+        let mission_summary = self.as_native_thread(cx).and_then(|t| t.read(cx).mission_summary());
+        let has_mission = mission_summary.is_some();
 
-        if changed_buffers.is_empty() && plan.is_empty() && queue_is_empty {
+        if changed_buffers.is_empty() && plan.is_empty() && queue_is_empty && !has_mission {
             return None;
         }
 
@@ -1983,6 +1987,7 @@ impl ThreadView {
         let plan_expanded = self.plan_expanded;
         let edits_expanded = self.edits_expanded;
         let queue_expanded = self.queue_expanded;
+        let mission_expanded = self.mission_expanded;
 
         v_flex()
             .mt_1()
@@ -1998,6 +2003,16 @@ impl ThreadView {
                 blur_radius: px(3.),
                 spread_radius: px(0.),
             }])
+            .when(has_mission, |this| {
+                let summary = mission_summary.unwrap();
+                this.child(self.render_mission_summary(&summary, mission_expanded, cx))
+                    .when(mission_expanded, |parent| {
+                        parent.child(self.render_mission_detail(&summary, cx))
+                    })
+            })
+            .when(has_mission && !plan.is_empty(), |this| {
+                this.child(Divider::horizontal().color(DividerColor::Border))
+            })
             .when(!plan.is_empty(), |this| {
                 this.child(self.render_plan_summary(plan, window, cx))
                     .when(plan_expanded, |parent| {
@@ -2038,6 +2053,88 @@ impl ThreadView {
             })
             .into_any()
             .into()
+    }
+
+    fn render_mission_summary(
+        &self,
+        summary: &agent::MissionSummary,
+        expanded: bool,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let intent = if summary.intent.len() > 50 {
+            format!("{}…", &summary.intent[..50])
+        } else {
+            summary.intent.clone()
+        };
+        let progress = if summary.wp_total > 0 {
+            format!("{}/{}", summary.wp_done, summary.wp_total)
+        } else {
+            summary.phase.clone()
+        };
+
+        h_flex()
+            .id("mission_summary")
+            .p_1()
+            .w_full()
+            .gap_1()
+            .when(expanded, |this| {
+                this.border_b_1().border_color(cx.theme().colors().border)
+            })
+            .child(Disclosure::new("mission_disclosure", expanded))
+            .child(
+                Label::new(format!("Mission: {intent}"))
+                    .size(LabelSize::Small)
+                    .color(ui::Color::Accent),
+            )
+            .child(gpui::div().flex_1())
+            .child(Label::new(progress).size(LabelSize::Small).color(ui::Color::Muted))
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.mission_expanded = !this.mission_expanded;
+                cx.notify();
+            }))
+    }
+
+    fn render_mission_detail(
+        &self,
+        summary: &agent::MissionSummary,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        let mut detail = v_flex().px_2().py_1().gap_1();
+
+        // Phase
+        detail = detail.child(
+            h_flex().gap_1()
+                .child(Label::new("Phase:").size(LabelSize::Small).color(ui::Color::Muted))
+                .child(Label::new(summary.phase.clone()).size(LabelSize::Small)),
+        );
+
+        // Current WP
+        if let Some(ref wp) = summary.wp_current {
+            let wp_short = if wp.len() > 45 { format!("{}…", &wp[..45]) } else { wp.clone() };
+            detail = detail.child(
+                h_flex().gap_1()
+                    .child(Label::new("WP:").size(LabelSize::Small).color(ui::Color::Muted))
+                    .child(Label::new(wp_short).size(LabelSize::Small)),
+            );
+        }
+
+        // Warnings
+        if summary.open_blockers > 0 || summary.unverified_assumptions > 0 {
+            let mut warnings = Vec::new();
+            if summary.open_blockers > 0 {
+                warnings.push(format!("{} blocker{}", summary.open_blockers, if summary.open_blockers == 1 { "" } else { "s" }));
+            }
+            if summary.unverified_assumptions > 0 {
+                warnings.push(format!("{} unverified", summary.unverified_assumptions));
+            }
+            detail = detail.child(
+                Label::new(format!("⚠ {}", warnings.join(" · ")))
+                    .size(LabelSize::Small)
+                    .color(ui::Color::Warning),
+            );
+        }
+
+        detail
     }
 
     fn render_edited_files(

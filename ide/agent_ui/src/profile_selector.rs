@@ -329,8 +329,12 @@ impl ProfilePickerDelegate {
 
     fn documentation(candidate: &ProfileCandidate) -> Option<&'static str> {
         match candidate.id.as_str() {
-            builtin_profiles::WRITE => Some("Get help to write anything."),
-            builtin_profiles::ASK => Some("Chat about your codebase."),
+            builtin_profiles::WRITE => {
+                Some("Get help to write anything. Auto-approves tool actions.")
+            }
+            builtin_profiles::ASK => {
+                Some("Chat about your codebase. Prompts before tool actions.")
+            }
             builtin_profiles::MINIMAL => Some("Chat about anything with no tools."),
             _ => None,
         }

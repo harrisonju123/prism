@@ -4,7 +4,6 @@ use super::tool_permissions::{
     sensitive_settings_kind,
 };
 use agent_client_protocol as acp;
-use agent_settings::AgentSettings;
 use collections::FxHashSet;
 use futures::FutureExt as _;
 use gpui::{App, Entity, SharedString, Task};
@@ -12,7 +11,6 @@ use language::Buffer;
 use project::Project;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use settings::Settings;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use util::markdown::MarkdownInlineCode;
@@ -83,9 +81,8 @@ impl AgentTool for RestoreFileFromDiskTool {
             // Check for any immediate deny before doing async work.
             for path in &input.paths {
                 let path_str = path.to_string_lossy();
-                let decision = cx.update(|cx| {
-                    decide_permission_for_path(Self::NAME, &path_str, AgentSettings::get_global(cx))
-                });
+                let decision =
+                    decide_permission_for_path(Self::NAME, &path_str, event_stream.tool_permissions());
                 if let ToolPermissionDecision::Deny(reason) = decision {
                     return Err(reason);
                 }
@@ -100,9 +97,8 @@ impl AgentTool for RestoreFileFromDiskTool {
 
             for path in &input_paths {
                 let path_str = path.to_string_lossy();
-                let decision = cx.update(|cx| {
-                    decide_permission_for_path(Self::NAME, &path_str, AgentSettings::get_global(cx))
-                });
+                let decision =
+                    decide_permission_for_path(Self::NAME, &path_str, event_stream.tool_permissions());
                 let symlink_escape = project.read_with(cx, |project, cx| {
                     path_has_symlink_escape(project, path, &canonical_roots, cx)
                 });
@@ -309,12 +305,13 @@ impl AgentTool for RestoreFileFromDiskTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_settings::AgentSettings;
     use fs::Fs as _;
     use gpui::TestAppContext;
     use language::LineEnding;
     use project::FakeFs;
     use serde_json::json;
-    use settings::SettingsStore;
+    use settings::{Settings, SettingsStore};
     use util::path;
 
     fn init_test(cx: &mut TestAppContext) {
@@ -532,17 +529,17 @@ mod tests {
     #[gpui::test]
     async fn test_restore_file_symlink_escape_honors_deny_policy(cx: &mut TestAppContext) {
         init_test(cx);
-        cx.update(|cx| {
-            let mut settings = AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.tools.insert(
-                "restore_file_from_disk".into(),
-                agent_settings::ToolRules {
-                    default: Some(settings::ToolPermissionMode::Deny),
-                    ..Default::default()
-                },
-            );
-            AgentSettings::override_global(settings, cx);
-        });
+        let mut perms = agent_settings::ToolPermissions {
+            default: settings::ToolPermissionMode::Allow,
+            tools: Default::default(),
+        };
+        perms.tools.insert(
+            Arc::from("restore_file_from_disk"),
+            agent_settings::ToolRules {
+                default: Some(settings::ToolPermissionMode::Deny),
+                ..Default::default()
+            },
+        );
 
         let fs = FakeFs::new(cx.executor());
         fs.insert_tree(
@@ -570,7 +567,7 @@ mod tests {
 
         let tool = Arc::new(RestoreFileFromDiskTool::new(project));
 
-        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let (event_stream, mut event_rx) = ToolCallEventStream::test_with_permissions(perms);
         let result = cx
             .update(|cx| {
                 tool.clone().run(

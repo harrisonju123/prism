@@ -6,13 +6,11 @@ use crate::{
     AgentTool, ToolCallEventStream, ToolInput, ToolPermissionDecision, decide_permission_for_paths,
 };
 use agent_client_protocol::ToolKind;
-use agent_settings::AgentSettings;
 use futures::FutureExt as _;
 use gpui::{App, Entity, SharedString, Task};
 use project::Project;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use settings::Settings;
 use std::{path::Path, sync::Arc};
 use util::markdown::MarkdownInlineCode;
 
@@ -105,9 +103,7 @@ impl AgentTool for MovePathTool {
                 .await
                 .map_err(|e| format!("Failed to receive tool input: {e}"))?;
             let paths = vec![input.source_path.clone(), input.destination_path.clone()];
-            let decision = cx.update(|cx| {
-                decide_permission_for_paths(Self::NAME, &paths, AgentSettings::get_global(cx))
-            });
+            let decision = decide_permission_for_paths(Self::NAME, &paths, event_stream.tool_permissions());
             if let ToolPermissionDecision::Deny(reason) = decision {
                 return Err(reason);
             }
@@ -206,11 +202,12 @@ impl AgentTool for MovePathTool {
 mod tests {
     use super::*;
     use agent_client_protocol as acp;
+    use agent_settings::AgentSettings;
     use fs::Fs as _;
     use gpui::TestAppContext;
     use project::{FakeFs, Project};
     use serde_json::json;
-    use settings::SettingsStore;
+    use settings::{Settings, SettingsStore};
     use std::path::PathBuf;
     use util::path;
 
@@ -400,17 +397,17 @@ mod tests {
     #[gpui::test]
     async fn test_move_path_symlink_escape_honors_deny_policy(cx: &mut TestAppContext) {
         init_test(cx);
-        cx.update(|cx| {
-            let mut settings = AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.tools.insert(
-                "move_path".into(),
-                agent_settings::ToolRules {
-                    default: Some(settings::ToolPermissionMode::Deny),
-                    ..Default::default()
-                },
-            );
-            AgentSettings::override_global(settings, cx);
-        });
+        let mut perms = agent_settings::ToolPermissions {
+            default: settings::ToolPermissionMode::Allow,
+            tools: Default::default(),
+        };
+        perms.tools.insert(
+            Arc::from("move_path"),
+            agent_settings::ToolRules {
+                default: Some(settings::ToolPermissionMode::Deny),
+                ..Default::default()
+            },
+        );
 
         let fs = FakeFs::new(cx.executor());
         fs.insert_tree(
@@ -443,7 +440,7 @@ mod tests {
             destination_path: "project/external_moved".into(),
         };
 
-        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let (event_stream, mut event_rx) = ToolCallEventStream::test_with_permissions(perms);
         let result = cx
             .update(|cx| tool.run(ToolInput::resolved(input), event_stream, cx))
             .await;

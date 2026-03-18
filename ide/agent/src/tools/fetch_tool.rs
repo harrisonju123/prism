@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::{borrow::Cow, cell::RefCell};
 
 use agent_client_protocol as acp;
-use agent_settings::AgentSettings;
 use anyhow::{Context as _, Result, bail};
 use futures::{AsyncReadExt as _, FutureExt as _};
 use gpui::{App, AppContext as _, Task};
@@ -11,7 +10,6 @@ use html_to_markdown::{TagHandler, convert_html_to_markdown, markdown};
 use http_client::{AsyncBody, HttpClientWithUrl};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use settings::Settings;
 use ui::SharedString;
 use util::markdown::{MarkdownEscaped, MarkdownInlineCode};
 
@@ -153,13 +151,11 @@ impl AgentTool for FetchTool {
                 .await
                 .map_err(|e| format!("Failed to receive tool input: {e}"))?;
 
-            let decision = cx.update(|cx| {
-                decide_permission_from_settings(
-                    Self::NAME,
-                    std::slice::from_ref(&input.url),
-                    AgentSettings::get_global(cx),
-                )
-            });
+            let decision = decide_permission_from_settings(
+                Self::NAME,
+                std::slice::from_ref(&input.url),
+                event_stream.tool_permissions(),
+            );
 
             let authorize = match decision {
                 ToolPermissionDecision::Allow => None,

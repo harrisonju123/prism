@@ -89,6 +89,18 @@ impl AgentSettings {
             .map(|sel| ModelId::new(format!("{}/{}", sel.provider.0, sel.model)))
             .collect()
     }
+
+    /// Returns the effective tool permissions for a given profile.
+    /// If the profile specifies a `tool_permission_mode`, it overrides the global default.
+    pub fn effective_tool_permissions(&self, profile_id: &AgentProfileId) -> ToolPermissions {
+        let mut perms = self.tool_permissions.clone();
+        if let Some(profile) = self.profiles.get(profile_id) {
+            if let Some(mode) = profile.tool_permission_mode {
+                perms.default = mode;
+            }
+        }
+        perms
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Serialize, Deserialize, JsonSchema)]

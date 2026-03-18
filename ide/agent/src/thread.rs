@@ -20,8 +20,8 @@ use feature_flags::{FeatureFlagAppExt as _, StreamingEditFileToolFeatureFlag};
 
 use agent_client_protocol as acp;
 use agent_settings::{
-    AgentProfileId, AgentProfileSettings, AgentSettings, SUMMARIZE_THREAD_DETAILED_PROMPT,
-    SUMMARIZE_THREAD_PROMPT,
+    AgentProfileId, AgentProfileSettings, AgentSettings, ToolPermissions,
+    SUMMARIZE_THREAD_DETAILED_PROMPT, SUMMARIZE_THREAD_PROMPT,
 };
 use anyhow::{Context as _, Result, anyhow};
 use chrono::{DateTime, Utc};
@@ -75,6 +75,21 @@ use uuid::Uuid;
 const TOOL_CANCELED_MESSAGE: &str = "Tool canceled by user";
 pub const MAX_TOOL_NAME_LENGTH: usize = 64;
 pub const MAX_SUBAGENT_DEPTH: u8 = 1;
+
+/// Lightweight summary of the active mission state, suitable for UI display.
+#[derive(Clone, Debug)]
+pub struct MissionSummary {
+    pub intent: String,
+    pub phase: String,
+    pub autonomy: String,
+    pub status: String,
+    pub assumptions_count: usize,
+    pub unverified_assumptions: usize,
+    pub open_blockers: usize,
+    pub wp_done: usize,
+    pub wp_total: usize,
+    pub wp_current: Option<String>,
+}
 
 /// Context passed to a subagent thread for lifecycle management
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -934,6 +949,8 @@ pub struct Thread {
     running_subagents: Vec<WeakEntity<Thread>>,
     /// Linked context thread ID for cost attribution and context tracking
     context_thread_id: Option<String>,
+    /// Active prism-context plan ID (set when PlanGuard triggers or mission loads)
+    active_plan_id: Option<uuid::Uuid>,
     /// Guardrails that prevent common LLM failure modes
     guardrails: Guardrails,
     /// Skill registry discovered from worktree .prism/skills
@@ -1081,6 +1098,7 @@ impl Thread {
             ui_scroll_position: None,
             running_subagents: Vec::new(),
             context_thread_id: None,
+            active_plan_id: None,
             guardrails: Guardrails::new(),
             skill_registry: None,
             pending_skill_injections: Vec::new(),
@@ -1109,6 +1127,40 @@ impl Thread {
 
     pub fn set_context_thread_id(&mut self, id: String) {
         self.context_thread_id = Some(id);
+    }
+
+    pub fn active_plan_id(&self) -> Option<uuid::Uuid> {
+        self.active_plan_id
+    }
+
+    pub fn set_active_plan_id(&mut self, id: uuid::Uuid) {
+        self.active_plan_id = Some(id);
+    }
+
+    /// Returns a lightweight mission summary derived from the cached mission state.
+    /// Returns None if no active mission is loaded.
+    pub fn mission_summary(&self) -> Option<MissionSummary> {
+        let (plan, wps) = self.cached_mission.as_ref()?;
+        Some(MissionSummary {
+            intent: plan.intent.clone(),
+            phase: plan.current_phase.to_string(),
+            autonomy: plan.autonomy_level.to_string(),
+            status: plan.status.to_string(),
+            assumptions_count: plan.assumptions.len(),
+            unverified_assumptions: plan.assumptions.iter().filter(|a| {
+                a.status == prism_context::model::AssumptionStatus::Unverified
+            }).count(),
+            open_blockers: plan.blockers.iter().filter(|b| {
+                b.status == prism_context::model::BlockerStatus::Open
+            }).count(),
+            wp_done: wps.iter().filter(|w| {
+                w.status == prism_context::model::WorkPackageStatus::Done
+            }).count(),
+            wp_total: wps.len(),
+            wp_current: wps.iter().find(|w| {
+                w.status == prism_context::model::WorkPackageStatus::InProgress
+            }).map(|w| w.intent.clone()),
+        })
     }
 
     pub fn skill_registry(&self) -> Option<&Arc<SkillRegistry>> {
@@ -1270,6 +1322,7 @@ impl Thread {
                 stream.clone(),
                 Some(self.project.read(cx).fs().clone()),
                 cancellation_rx,
+                ToolPermissions::default(),
             );
             tool.replay(tool_use.input.clone(), output, tool_event_stream, cx)
                 .log_err();
@@ -1370,6 +1423,7 @@ impl Thread {
             }),
             running_subagents: Vec::new(),
             context_thread_id: db_thread.context_thread_id,
+            active_plan_id: db_thread.active_plan_id.as_deref().and_then(|s| s.parse().ok()),
             guardrails: Guardrails::new(),
             skill_registry: None,
             pending_skill_injections: Vec::new(),
@@ -1416,6 +1470,7 @@ impl Thread {
                 }
             }),
             context_thread_id: self.context_thread_id.clone(),
+            active_plan_id: self.active_plan_id.map(|id| id.to_string()),
         };
 
         cx.background_spawn(async move {
@@ -3016,7 +3071,26 @@ impl Thread {
         }
 
         // Write guards (Guard A, B, C) — only for create/overwrite operations
+        let plan_guard_was_triggered = self.guardrails.plan_guard.triggered;
         if let Some(denial) = self.check_write_guards(&tool_use, cx) {
+            // If PlanGuard just fired for the first time, create a context-store plan
+            if !plan_guard_was_triggered
+                && self.guardrails.plan_guard.triggered
+                && self.guardrails.plan_guard.plan_id.is_none()
+                && self.active_plan_id.is_none()
+            {
+                if let Some(ctx) = self.context_handle.clone() {
+                    cx.spawn(async move |this, cx| {
+                        if let Ok(plan) = ctx.create_plan("Auto-plan: new feature").await {
+                            let _ = this.update(cx, |thread, _| {
+                                thread.guardrails.plan_guard.plan_id = Some(plan.id);
+                                thread.active_plan_id = Some(plan.id);
+                            });
+                        }
+                    })
+                    .detach();
+                }
+            }
             return Some(Task::ready(LanguageModelToolResult {
                 content: LanguageModelToolResultContent::Text(Arc::from(denial)),
                 tool_use_id: tool_use.id,
@@ -3061,11 +3135,13 @@ impl Thread {
         cx: &mut Context<Self>,
     ) -> Task<LanguageModelToolResult> {
         let fs = self.project.read(cx).fs().clone();
+        let tool_permissions = AgentSettings::get_global(cx).effective_tool_permissions(self.profile());
         let tool_event_stream = ToolCallEventStream::new(
             tool_use_id.clone(),
             event_stream.clone(),
             Some(fs),
             cancellation_rx,
+            tool_permissions,
         );
         tool_event_stream.update_fields(
             acp::ToolCallUpdateFields::new().status(acp::ToolCallStatus::InProgress),
@@ -4511,6 +4587,7 @@ pub struct ToolCallEventStream {
     stream: ThreadEventStream,
     fs: Option<Arc<dyn Fs>>,
     cancellation_rx: watch::Receiver<bool>,
+    tool_permissions: ToolPermissions,
 }
 
 impl ToolCallEventStream {
@@ -4518,6 +4595,22 @@ impl ToolCallEventStream {
     pub fn test() -> (Self, ToolCallEventStreamReceiver) {
         let (stream, receiver, _cancellation_tx) = Self::test_with_cancellation();
         (stream, receiver)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test_with_permissions(tool_permissions: ToolPermissions) -> (Self, ToolCallEventStreamReceiver) {
+        let (events_tx, events_rx) = mpsc::unbounded::<Result<ThreadEvent>>();
+        let (_cancellation_tx, cancellation_rx) = watch::channel(false);
+
+        let stream = ToolCallEventStream::new(
+            "test_id".into(),
+            ThreadEventStream(events_tx),
+            None,
+            cancellation_rx,
+            tool_permissions,
+        );
+
+        (stream, ToolCallEventStreamReceiver(events_rx))
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -4530,6 +4623,11 @@ impl ToolCallEventStream {
             ThreadEventStream(events_tx),
             None,
             cancellation_rx,
+            // Default to Allow for tests so tools can run without confirmation prompts.
+            ToolPermissions {
+                default: ToolPermissionMode::Allow,
+                tools: Default::default(),
+            },
         );
 
         (
@@ -4550,13 +4648,19 @@ impl ToolCallEventStream {
         stream: ThreadEventStream,
         fs: Option<Arc<dyn Fs>>,
         cancellation_rx: watch::Receiver<bool>,
+        tool_permissions: ToolPermissions,
     ) -> Self {
         Self {
             tool_use_id,
             stream,
             fs,
             cancellation_rx,
+            tool_permissions,
         }
+    }
+
+    pub fn tool_permissions(&self) -> &ToolPermissions {
+        &self.tool_permissions
     }
 
     /// Returns a future that resolves when the user cancels the tool call.
@@ -4636,9 +4740,7 @@ impl ToolCallEventStream {
         display_name: String,
         cx: &mut App,
     ) -> Task<Result<()>> {
-        let settings = agent_settings::AgentSettings::get_global(cx);
-
-        let decision = decide_permission_from_settings(&tool_id, &[String::new()], &settings);
+        let decision = decide_permission_from_settings(&tool_id, &[String::new()], &self.tool_permissions);
 
         match decision {
             ToolPermissionDecision::Allow => return Task::ready(Ok(())),

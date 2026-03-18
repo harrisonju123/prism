@@ -5,7 +5,6 @@ use crate::{
     decide_permission_from_settings,
 };
 use agent_client_protocol as acp;
-use agent_settings::AgentSettings;
 use anyhow::Result;
 use cloud_llm_client::WebSearchResponse;
 use futures::FutureExt as _;
@@ -15,7 +14,6 @@ use language_model::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use settings::Settings;
 use ui::prelude::*;
 use util::markdown::MarkdownInlineCode;
 use web_search::WebSearchRegistry;
@@ -90,7 +88,7 @@ impl AgentTool for WebSearchTool {
                 let decision = decide_permission_from_settings(
                     Self::NAME,
                     std::slice::from_ref(&input.query),
-                    AgentSettings::get_global(cx),
+                    event_stream.tool_permissions(),
                 );
 
                 let authorize = match decision {

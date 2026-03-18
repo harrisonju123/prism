@@ -3,13 +3,11 @@ use super::tool_permissions::{
     detect_symlink_escape, sensitive_settings_kind,
 };
 use agent_client_protocol::ToolKind;
-use agent_settings::AgentSettings;
 use futures::FutureExt as _;
 use gpui::{App, Entity, SharedString, Task};
 use project::Project;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use settings::Settings;
 use std::sync::Arc;
 use util::markdown::MarkdownInlineCode;
 
@@ -80,9 +78,7 @@ impl AgentTool for CreateDirectoryTool {
                 .recv()
                 .await
                 .map_err(|e| format!("Failed to receive tool input: {e}"))?;
-            let decision = cx.update(|cx| {
-                decide_permission_for_path(Self::NAME, &input.path, AgentSettings::get_global(cx))
-            });
+            let decision = decide_permission_for_path(Self::NAME, &input.path, event_stream.tool_permissions());
 
             if let ToolPermissionDecision::Deny(reason) = decision {
                 return Err(reason);
@@ -170,11 +166,12 @@ impl AgentTool for CreateDirectoryTool {
 mod tests {
     use super::*;
     use agent_client_protocol as acp;
+    use agent_settings::AgentSettings;
     use fs::Fs as _;
     use gpui::TestAppContext;
     use project::{FakeFs, Project};
     use serde_json::json;
-    use settings::SettingsStore;
+    use settings::{Settings, SettingsStore};
     use std::path::PathBuf;
     use util::path;
 
@@ -380,17 +377,17 @@ mod tests {
     #[gpui::test]
     async fn test_create_directory_symlink_escape_honors_deny_policy(cx: &mut TestAppContext) {
         init_test(cx);
-        cx.update(|cx| {
-            let mut settings = AgentSettings::get_global(cx).clone();
-            settings.tool_permissions.tools.insert(
-                "create_directory".into(),
-                agent_settings::ToolRules {
-                    default: Some(settings::ToolPermissionMode::Deny),
-                    ..Default::default()
-                },
-            );
-            AgentSettings::override_global(settings, cx);
-        });
+        let mut perms = agent_settings::ToolPermissions {
+            default: settings::ToolPermissionMode::Allow,
+            tools: Default::default(),
+        };
+        perms.tools.insert(
+            Arc::from("create_directory"),
+            agent_settings::ToolRules {
+                default: Some(settings::ToolPermissionMode::Deny),
+                ..Default::default()
+            },
+        );
 
         let fs = FakeFs::new(cx.executor());
         fs.insert_tree(
@@ -418,7 +415,7 @@ mod tests {
 
         let tool = Arc::new(CreateDirectoryTool::new(project));
 
-        let (event_stream, mut event_rx) = ToolCallEventStream::test();
+        let (event_stream, mut event_rx) = ToolCallEventStream::test_with_permissions(perms);
         let result = cx
             .update(|cx| {
                 tool.run(

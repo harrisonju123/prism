@@ -36,6 +36,8 @@ pub struct DbThreadMetadata {
     /// The workspace folder paths this thread was created against, sorted
     /// lexicographically. Used for grouping threads by project in the sidebar.
     pub folder_paths: PathList,
+    pub context_thread_id: Option<String>,
+    pub active_plan_id: Option<String>,
 }
 
 impl From<&DbThreadMetadata> for acp_thread::AgentSessionInfo {
@@ -83,6 +85,8 @@ pub struct DbThread {
     pub ui_scroll_position: Option<SerializedScrollPosition>,
     #[serde(default)]
     pub context_thread_id: Option<String>,
+    #[serde(default)]
+    pub active_plan_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -133,6 +137,7 @@ impl SharedThread {
             draft_prompt: None,
             ui_scroll_position: None,
             context_thread_id: None,
+            active_plan_id: None,
         }
     }
 
@@ -313,6 +318,7 @@ impl DbThread {
             draft_prompt: None,
             ui_scroll_position: None,
             context_thread_id: None,
+            active_plan_id: None,
         })
     }
 }
@@ -436,6 +442,18 @@ impl ThreadsDatabase {
             }
         }
 
+        if let Ok(mut s) = connection.exec(indoc! {"
+            ALTER TABLE threads ADD COLUMN context_thread_id TEXT;
+        "}) {
+            s().ok();
+        }
+
+        if let Ok(mut s) = connection.exec(indoc! {"
+            ALTER TABLE threads ADD COLUMN active_plan_id TEXT;
+        "}) {
+            s().ok();
+        }
+
         let db = Self {
             executor,
             connection: Arc::new(Mutex::new(connection)),
@@ -465,6 +483,8 @@ impl ThreadsDatabase {
             .subagent_context
             .as_ref()
             .map(|ctx| ctx.parent_thread_id.0.clone());
+        let context_thread_id = thread.context_thread_id.clone();
+        let active_plan_id = thread.active_plan_id.clone();
         let serialized_folder_paths = folder_paths.serialize();
         let (folder_paths_str, folder_paths_order_str): (Option<String>, Option<String>) =
             if folder_paths.is_empty() {
@@ -488,9 +508,9 @@ impl ThreadsDatabase {
 
         let created_at = Utc::now().to_rfc3339();
 
-        let mut insert = connection.exec_bound::<(Arc<str>, Option<Arc<str>>, Option<String>, Option<String>, String, String, DataType, Vec<u8>, String)>(indoc! {"
-            INSERT INTO threads (id, parent_id, folder_paths, folder_paths_order, summary, updated_at, data_type, data, created_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        let mut insert = connection.exec_bound::<(Arc<str>, Option<Arc<str>>, Option<String>, Option<String>, String, String, DataType, Vec<u8>, String, Option<String>, Option<String>)>(indoc! {"
+            INSERT INTO threads (id, parent_id, folder_paths, folder_paths_order, summary, updated_at, data_type, data, created_at, context_thread_id, active_plan_id)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             ON CONFLICT(id) DO UPDATE SET
                 parent_id = excluded.parent_id,
                 folder_paths = excluded.folder_paths,
@@ -498,7 +518,9 @@ impl ThreadsDatabase {
                 summary = excluded.summary,
                 updated_at = excluded.updated_at,
                 data_type = excluded.data_type,
-                data = excluded.data
+                data = excluded.data,
+                context_thread_id = excluded.context_thread_id,
+                active_plan_id = excluded.active_plan_id
         "})?;
 
         insert((
@@ -511,6 +533,8 @@ impl ThreadsDatabase {
             data_type,
             data,
             created_at,
+            context_thread_id,
+            active_plan_id,
         ))?;
 
         Ok(())
@@ -523,14 +547,14 @@ impl ThreadsDatabase {
             let connection = connection.lock();
 
             let mut select = connection
-                .select_bound::<(), (Arc<str>, Option<Arc<str>>, Option<String>, Option<String>, String, String, Option<String>)>(indoc! {"
-                SELECT id, parent_id, folder_paths, folder_paths_order, summary, updated_at, created_at FROM threads ORDER BY updated_at DESC, created_at DESC
+                .select_bound::<(), (Arc<str>, Option<Arc<str>>, Option<String>, Option<String>, String, String, Option<String>, Option<String>, Option<String>)>(indoc! {"
+                SELECT id, parent_id, folder_paths, folder_paths_order, summary, updated_at, created_at, context_thread_id, active_plan_id FROM threads ORDER BY updated_at DESC, created_at DESC
             "})?;
 
             let rows = select(())?;
             let mut threads = Vec::new();
 
-            for (id, parent_id, folder_paths, folder_paths_order, summary, updated_at, created_at) in rows {
+            for (id, parent_id, folder_paths, folder_paths_order, summary, updated_at, created_at, context_thread_id, active_plan_id) in rows {
                 let folder_paths = folder_paths
                     .map(|paths| {
                         PathList::deserialize(&util::path_list::SerializedPathList {
@@ -552,6 +576,8 @@ impl ThreadsDatabase {
                     updated_at: DateTime::parse_from_rfc3339(&updated_at)?.with_timezone(&Utc),
                     created_at,
                     folder_paths,
+                    context_thread_id,
+                    active_plan_id,
                 });
             }
 
@@ -696,6 +722,7 @@ mod tests {
             draft_prompt: None,
             ui_scroll_position: None,
             context_thread_id: None,
+            active_plan_id: None,
         }
     }
 

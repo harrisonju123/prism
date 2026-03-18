@@ -310,6 +310,7 @@ impl PickerDelegate for ToolPickerDelegate {
                             })
                             .collect(),
                         default_model: default_profile.default_model.clone(),
+                        tool_permission_mode: default_profile.tool_permission_mode,
                     });
 
                 if let Some(server_id) = server_id {

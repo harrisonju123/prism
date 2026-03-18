@@ -2,16 +2,14 @@ mod agent_spawner;
 mod agent_view;
 pub mod activity_bus;
 pub mod approval_gate;
-pub mod context_panel;
 pub mod context_service;
 pub mod decision_executor;
 mod dispatch;
 mod hq_state;
 mod inline_forms;
-pub mod mission_panel;
 mod notification;
-pub mod review_panel;
 mod plan_dispatch;
+pub mod plans_panel;
 pub mod review_packet;
 mod running_agents;
 mod status_indicator;
@@ -20,10 +18,8 @@ mod types;
 
 pub use activity_bus::{AgentActivityBus, AgentActivityBusInner, global_inner as activity_bus_inner};
 pub use approval_gate::{ApprovalDecision, ApprovalGate};
-pub use context_panel::{ContextPanel, ToggleContextPanel};
-pub use mission_panel::{MissionPanel, ToggleMissionPanel};
+pub use plans_panel::{OpenAgentChatSession, PlansPanel, TogglePlansPanel};
 pub use review_packet::ReviewPacket;
-pub use review_panel::{ReviewPanel, ToggleReviewPanel};
 pub use agent_view::{AgentViewItem, OpenAgentView, open_agent_view};
 pub use context_service::{ContextHandle, ContextService, get_context_handle};
 pub use dispatch::{DispatchTask, TaskDispatchModal};
@@ -103,14 +99,8 @@ pub fn init(cx: &mut App) {
             workspace.register_action(|_workspace, _: &OpenThreadView, _window, _cx| {
                 // OpenThreadView requires a thread name — triggered programmatically via open_thread_view()
             });
-            workspace.register_action(|workspace, _: &ToggleContextPanel, window, cx| {
-                workspace.toggle_panel_focus::<ContextPanel>(window, cx);
-            });
-            workspace.register_action(|workspace, _: &ToggleMissionPanel, window, cx| {
-                workspace.toggle_panel_focus::<MissionPanel>(window, cx);
-            });
-            workspace.register_action(|workspace, _: &ToggleReviewPanel, window, cx| {
-                workspace.toggle_panel_focus::<ReviewPanel>(window, cx);
+            workspace.register_action(|workspace, _: &TogglePlansPanel, window, cx| {
+                workspace.toggle_panel_focus::<PlansPanel>(window, cx);
             });
 
             // Show a toast when an agent exits.

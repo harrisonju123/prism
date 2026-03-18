@@ -1,12 +1,10 @@
 use agent_client_protocol as acp;
-use agent_settings::AgentSettings;
 use anyhow::Result;
 use futures::FutureExt as _;
 use gpui::{App, Entity, SharedString, Task};
 use project::Project;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use settings::Settings;
 use std::{
     path::{Path, PathBuf},
     rc::Rc,
@@ -102,7 +100,7 @@ impl AgentTool for TerminalTool {
                 let decision = decide_permission_from_settings(
                     Self::NAME,
                     std::slice::from_ref(&input.command),
-                    AgentSettings::get_global(cx),
+                    event_stream.tool_permissions(),
                 );
 
                 let authorize = match decision {

@@ -557,6 +557,11 @@ impl ContextHandle {
         Ok(self.store.update_validation_status(self.workspace_id, wp_id, status).await?)
     }
 
+    /// Create a new plan in the context store with the given intent.
+    pub async fn create_plan(&self, intent: &str) -> anyhow::Result<Plan> {
+        Ok(self.store.create_plan(self.workspace_id, intent).await?)
+    }
+
     /// Auto-extract memories from session output. Auto-injects workspace_id and agent_name.
     pub async fn auto_extract_memories(
         &self,

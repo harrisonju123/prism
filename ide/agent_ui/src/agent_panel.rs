@@ -358,7 +358,24 @@ pub fn init(cx: &mut App) {
                 })
                 .register_action(|workspace, _: &SpawnInNewWorktree, window, cx| {
                     worktree_spawn::open(workspace, window, cx);
-                });
+                })
+                .register_action(
+                    |workspace, action: &prism_hq::OpenAgentChatSession, window, cx| {
+                        let Some(thread_store) = ThreadStore::try_global(cx) else {
+                            return;
+                        };
+                        let session_id = thread_store.read(cx)
+                            .find_session_by_context_thread_id(&action.context_thread_id);
+                        let Some(session_id) = session_id else { return };
+                        let title = action.title.clone().map(Into::into);
+                        if let Some(panel) = workspace.panel::<AgentPanel>(cx) {
+                            workspace.focus_panel::<AgentPanel>(window, cx);
+                            panel.update(cx, |panel, cx| {
+                                panel.load_agent_thread(session_id, None, title, window, cx);
+                            });
+                        }
+                    },
+                );
         },
     )
     .detach();

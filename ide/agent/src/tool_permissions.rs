@@ -1,6 +1,6 @@
 use crate::AgentTool;
 use crate::tools::TerminalTool;
-use agent_settings::{AgentSettings, CompiledRegex, ToolPermissions, ToolRules};
+use agent_settings::{CompiledRegex, ToolPermissions, ToolRules};
 use settings::ToolPermissionMode;
 use shell_command_parser::extract_commands;
 use std::path::{Component, Path};
@@ -424,20 +424,19 @@ fn check_invalid_patterns(tool_name: &str, rules: &ToolRules) -> Option<String> 
     ))
 }
 
-/// Convenience wrapper that extracts permission settings from `AgentSettings`.
+/// Checks permissions against the given `ToolPermissions`.
 ///
-/// This is the primary entry point for tools to check permissions. It extracts
-/// `tool_permissions` from the settings and
-/// delegates to [`ToolPermissionDecision::from_input`], using the system shell.
+/// This is the primary entry point for tools to check permissions. It delegates to
+/// [`ToolPermissionDecision::from_input`], using the system shell.
 pub fn decide_permission_from_settings(
     tool_name: &str,
     inputs: &[String],
-    settings: &AgentSettings,
+    permissions: &ToolPermissions,
 ) -> ToolPermissionDecision {
     ToolPermissionDecision::from_input(
         tool_name,
         inputs,
-        &settings.tool_permissions,
+        permissions,
         ShellKind::system(),
     )
 }
@@ -479,10 +478,10 @@ pub fn normalize_path(raw: &str) -> String {
 pub fn decide_permission_for_paths(
     tool_name: &str,
     raw_paths: &[String],
-    settings: &AgentSettings,
+    permissions: &ToolPermissions,
 ) -> ToolPermissionDecision {
     let raw_inputs: Vec<String> = raw_paths.to_vec();
-    let raw_decision = decide_permission_from_settings(tool_name, &raw_inputs, settings);
+    let raw_decision = decide_permission_from_settings(tool_name, &raw_inputs, permissions);
 
     let normalized: Vec<String> = raw_paths.iter().map(|p| normalize_path(p)).collect();
     let any_changed = raw_paths
@@ -493,7 +492,7 @@ pub fn decide_permission_for_paths(
         return raw_decision;
     }
 
-    let normalized_decision = decide_permission_from_settings(tool_name, &normalized, settings);
+    let normalized_decision = decide_permission_from_settings(tool_name, &normalized, permissions);
 
     most_restrictive(raw_decision, normalized_decision)
 }
@@ -501,9 +500,9 @@ pub fn decide_permission_for_paths(
 pub fn decide_permission_for_path(
     tool_name: &str,
     raw_path: &str,
-    settings: &AgentSettings,
+    permissions: &ToolPermissions,
 ) -> ToolPermissionDecision {
-    decide_permission_for_paths(tool_name, &[raw_path.to_string()], settings)
+    decide_permission_for_paths(tool_name, &[raw_path.to_string()], permissions)
 }
 
 pub fn most_restrictive(
@@ -526,43 +525,8 @@ mod tests {
     use crate::AgentTool;
     use crate::pattern_extraction::extract_terminal_pattern;
     use crate::tools::{DeletePathTool, EditFileTool, FetchTool, TerminalTool};
-    use agent_settings::{AgentProfileId, CompiledRegex, InvalidRegexPattern, ToolRules};
-    use gpui::px;
-    use settings::{DefaultAgentView, DockPosition, NotifyWhenAgentWaiting};
+    use agent_settings::{CompiledRegex, InvalidRegexPattern, ToolRules};
     use std::sync::Arc;
-
-    fn test_agent_settings(tool_permissions: ToolPermissions) -> AgentSettings {
-        AgentSettings {
-            enabled: true,
-            button: true,
-            dock: DockPosition::Right,
-            default_width: px(300.),
-            default_height: px(600.),
-            default_model: None,
-            inline_assistant_model: None,
-            inline_assistant_use_streaming_tools: false,
-            commit_message_model: None,
-            thread_summary_model: None,
-            inline_alternatives: vec![],
-            favorite_models: vec![],
-            default_profile: AgentProfileId::default(),
-            default_view: DefaultAgentView::Thread,
-            profiles: Default::default(),
-            notify_when_agent_waiting: NotifyWhenAgentWaiting::default(),
-            play_sound_when_agent_done: false,
-            single_file_review: false,
-            edit_review_mode: Default::default(),
-            model_parameters: vec![],
-            enable_feedback: false,
-            expand_edit_card: true,
-            expand_terminal_card: true,
-            cancel_generation_on_terminal_stop: true,
-            use_modifier_to_send: true,
-            message_editor_min_lines: 1,
-            tool_permissions,
-            show_turn_stats: false,
-        }
-    }
 
     fn pattern(command: &str) -> &'static str {
         Box::leak(
@@ -2080,11 +2044,11 @@ mod tests {
     fn decide_permission_for_path_no_dots_early_return() {
         // When the path has no `.` or `..`, normalize_path returns the same string,
         // so decide_permission_for_path returns the raw decision directly.
-        let settings = test_agent_settings(ToolPermissions {
+        let permissions = ToolPermissions {
             default: ToolPermissionMode::Confirm,
             tools: Default::default(),
-        });
-        let decision = decide_permission_for_path(EditFileTool::NAME, "src/main.rs", &settings);
+        };
+        let decision = decide_permission_for_path(EditFileTool::NAME, "src/main.rs", &permissions);
         assert_eq!(decision, ToolPermissionDecision::Confirm);
     }
 
@@ -2102,13 +2066,13 @@ mod tests {
                 invalid_patterns: vec![],
             },
         );
-        let settings = test_agent_settings(ToolPermissions {
+        let permissions = ToolPermissions {
             default: ToolPermissionMode::Confirm,
             tools,
-        });
+        };
 
         let decision =
-            decide_permission_for_path(EditFileTool::NAME, "/tmp/../etc/passwd", &settings);
+            decide_permission_for_path(EditFileTool::NAME, "/tmp/../etc/passwd", &permissions);
         assert!(
             matches!(decision, ToolPermissionDecision::Deny(_)),
             "expected Deny for traversal to /etc/passwd, got {:?}",

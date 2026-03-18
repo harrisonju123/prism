@@ -223,6 +223,9 @@ pub struct AgentProfileContent {
     pub context_servers: IndexMap<Arc<str>, ContextServerPresetContent>,
     /// The default language model selected when using this profile.
     pub default_model: Option<LanguageModelSelection>,
+    /// Permission mode override for this profile.
+    /// When set, overrides the global `tool_permissions.default` fallback.
+    pub tool_permission_mode: Option<ToolPermissionMode>,
 }
 
 #[with_fallible_options]

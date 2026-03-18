@@ -7,7 +7,7 @@ use fs::Fs;
 use gpui::{App, SharedString};
 use settings::{
     AgentProfileContent, ContextServerPresetContent, LanguageModelSelection, Settings as _,
-    SettingsContent, update_settings_file,
+    SettingsContent, ToolPermissionMode, update_settings_file,
 };
 use util::ResultExt as _;
 
@@ -70,6 +70,9 @@ impl AgentProfile {
         let default_model = base_profile
             .as_ref()
             .and_then(|profile| profile.default_model.clone());
+        let tool_permission_mode = base_profile
+            .as_ref()
+            .and_then(|profile| profile.tool_permission_mode);
 
         let profile_settings = AgentProfileSettings {
             name: name.into(),
@@ -77,6 +80,7 @@ impl AgentProfile {
             enable_all_context_servers,
             context_servers,
             default_model,
+            tool_permission_mode,
         };
 
         update_settings_file(fs, cx, {
@@ -109,6 +113,8 @@ pub struct AgentProfileSettings {
     pub context_servers: IndexMap<Arc<str>, ContextServerPreset>,
     /// Default language model to apply when this profile becomes active.
     pub default_model: Option<LanguageModelSelection>,
+    /// When set, overrides the global `tool_permissions.default` fallback.
+    pub tool_permission_mode: Option<ToolPermissionMode>,
 }
 
 impl AgentProfileSettings {
@@ -158,6 +164,7 @@ impl AgentProfileSettings {
                     })
                     .collect(),
                 default_model: self.default_model.clone(),
+                tool_permission_mode: self.tool_permission_mode,
             },
         );
 
@@ -173,6 +180,7 @@ impl From<AgentProfileContent> for AgentProfileSettings {
             enable_all_context_servers,
             context_servers,
             default_model,
+            tool_permission_mode,
         } = content;
 
         Self {
@@ -184,6 +192,7 @@ impl From<AgentProfileContent> for AgentProfileSettings {
                 .map(|(server_id, preset)| (server_id, preset.into()))
                 .collect(),
             default_model,
+            tool_permission_mode,
         }
     }
 }

@@ -119,6 +119,16 @@ impl ThreadStore {
             .iter()
             .filter(move |thread| &thread.folder_paths == paths)
     }
+
+    pub fn find_session_by_context_thread_id(
+        &self,
+        context_thread_id: &str,
+    ) -> Option<acp::SessionId> {
+        self.threads
+            .iter()
+            .find(|t| t.context_thread_id.as_deref() == Some(context_thread_id))
+            .map(|t| t.id.clone())
+    }
 }
 
 #[cfg(test)]
@@ -152,6 +162,7 @@ mod tests {
             draft_prompt: None,
             ui_scroll_position: None,
             context_thread_id: None,
+            active_plan_id: None,
         }
     }
 

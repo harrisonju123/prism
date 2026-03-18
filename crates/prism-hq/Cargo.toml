@@ -28,6 +28,7 @@ project.workspace = true
 prism-client = { workspace = true }
 prism-context.workspace = true
 prism-types.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 settings.workspace = true

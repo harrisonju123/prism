@@ -426,6 +426,8 @@ pub struct PlanGuard {
     pub triggered: bool,
     /// Path of the auto-generated plan file (set when triggered).
     pub plan_file: Option<String>,
+    /// Context-store plan ID created when plan mode triggered (persists across turns).
+    pub plan_id: Option<uuid::Uuid>,
 }
 
 impl PlanGuard {
@@ -434,6 +436,7 @@ impl PlanGuard {
             new_file_count: 0,
             triggered: false,
             plan_file: None,
+            plan_id: None,
         }
     }
 

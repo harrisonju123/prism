@@ -1,5 +1,4 @@
 use super::*;
-use agent_settings::AgentSettings;
 use gpui::{App, SharedString, Task};
 use std::future;
 use std::sync::Mutex;
@@ -256,13 +255,11 @@ impl AgentTool for ToolRequiringPermission {
                 .await
                 .map_err(|e| format!("Failed to receive tool input: {e}"))?;
 
-            let decision = cx.update(|cx| {
-                decide_permission_from_settings(
-                    Self::NAME,
-                    &[String::new()],
-                    AgentSettings::get_global(cx),
-                )
-            });
+            let decision = decide_permission_from_settings(
+                Self::NAME,
+                &[String::new()],
+                event_stream.tool_permissions(),
+            );
 
             let authorize = match decision {
                 ToolPermissionDecision::Allow => None,
