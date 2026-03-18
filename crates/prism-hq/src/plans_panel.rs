@@ -13,7 +13,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use ui::{
     Button, ButtonStyle, Color, Disclosure, Divider, DividerColor,
-    Icon, IconName, Label, LabelSize, prelude::*, v_flex, h_flex,
+    Icon, IconName, Label, LabelSize, Tooltip, prelude::*, v_flex, h_flex,
 };
 use uuid::Uuid;
 use workspace::dock::{DockPosition, Panel, PanelEvent};
@@ -535,7 +535,29 @@ impl Render for PlansPanel {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.refresh(cx);
                             })),
-                    ),
+                    )
+                    .child({
+                        let enabled = HqState::global(cx)
+                            .map(|hq| hq.read(cx).supervisor_config.enabled)
+                            .unwrap_or(false);
+                        Button::new(
+                            "supervisor-toggle",
+                            if enabled { "Auto ●" } else { "Auto ○" },
+                        )
+                        .style(ButtonStyle::Transparent)
+                        .tooltip(Tooltip::text(if enabled {
+                            "Supervisor loop on — click to disable"
+                        } else {
+                            "Supervisor loop off — click to enable"
+                        }))
+                        .on_click(cx.listener(move |_, _, _, cx| {
+                            if let Some(hq) = HqState::global(cx) {
+                                hq.update(cx, |hq, _| {
+                                    hq.set_supervisor_enabled(!enabled);
+                                });
+                            }
+                        }))
+                    }),
             )
             .child(content)
     }

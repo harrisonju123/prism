@@ -207,6 +207,21 @@ pub async fn supervisor_tick(
                                 Some("work_package"),
                                 Some(wp.id),
                             );
+                            // Route escalation into the IDE agent's chat so the user sees it inline.
+                            let chat_msg = format!(
+                                "[Escalation from {}] {}\n\nOptions:\n{}",
+                                event.agent_name,
+                                summary,
+                                options
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, o)| format!("  {}. {}", i + 1, o))
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            );
+                            let ide_agent = std::env::var("PRISM_AGENT_NAME")
+                                .unwrap_or_else(|_| "zed-agent".to_string());
+                            let _ = handle.send_message("supervisor", &ide_agent, &chat_msg);
                         }
                         FilterVerdict::Relay { to_agent, message } => {
                             let _ = handle.send_message("supervisor", &to_agent, &message);

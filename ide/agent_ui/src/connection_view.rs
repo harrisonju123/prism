@@ -364,6 +364,28 @@ impl ConnectionView {
         }
     }
 
+    /// Navigate to a session without requiring Window (emits ActiveThreadChanged).
+    pub fn switch_to_session(&mut self, session_id: acp::SessionId, cx: &mut Context<Self>) {
+        if let Some(connected) = self.as_connected_mut() {
+            connected.navigate_to_session(session_id);
+        }
+        cx.emit(AcpServerViewEvent::ActiveThreadChanged);
+        cx.notify();
+    }
+
+    /// Returns (session_id, title) for all subagent (non-root) threads in this connection.
+    pub fn subagent_thread_views(&self, cx: &App) -> Vec<(acp::SessionId, SharedString)> {
+        let Some(connected) = self.as_connected() else {
+            return vec![];
+        };
+        connected
+            .threads
+            .iter()
+            .filter(|(_, tv)| tv.read(cx).thread.read(cx).parent_session_id().is_some())
+            .map(|(id, tv)| (id.clone(), tv.read(cx).thread.read(cx).title()))
+            .collect()
+    }
+
     pub fn pending_tool_call<'a>(
         &'a self,
         cx: &'a App,

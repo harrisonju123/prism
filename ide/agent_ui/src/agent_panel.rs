@@ -394,10 +394,10 @@ enum ActiveView {
     },
     /// Viewing a worker (sub-agent) session with breadcrumb back to the supervisor.
     WorkerView {
-        /// The worker's ConnectionView.
-        worker_server_view: Entity<ConnectionView>,
-        /// The supervisor's ConnectionView, for breadcrumb navigation back.
-        supervisor_server_view: Entity<ConnectionView>,
+        /// The supervisor's ConnectionView, navigated to the worker session.
+        server_view: Entity<ConnectionView>,
+        /// The supervisor's session ID, to restore when clicking "back".
+        supervisor_session_id: acp::SessionId,
     },
     TextThread {
         text_thread_editor: Entity<TextThreadEditor>,
@@ -1044,9 +1044,7 @@ impl AgentPanel {
     pub fn active_connection_view(&self) -> Option<&Entity<ConnectionView>> {
         match &self.active_view {
             ActiveView::AgentThread { server_view, .. } => Some(server_view),
-            ActiveView::WorkerView {
-                worker_server_view, ..
-            } => Some(worker_server_view),
+            ActiveView::WorkerView { server_view, .. } => Some(server_view),
             ActiveView::Uninitialized
             | ActiveView::TextThread { .. }
             | ActiveView::History { .. }
@@ -1730,16 +1728,23 @@ impl AgentPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Worker must be in background_threads
-        let Some(worker_server_view) = self.background_threads.get(session_id).cloned() else {
+        // Need the supervisor's server_view and its current session_id for back navigation
+        let Some(server_view) = self.as_active_server_view().cloned() else {
             return;
         };
-        // Supervisor is the currently active AgentThread view
-        let Some(supervisor_server_view) = self.as_active_server_view().cloned() else {
+        let Some(supervisor_session_id) = server_view
+            .read(cx)
+            .active_thread()
+            .map(|tv| tv.read(cx).id.clone())
+        else {
             return;
         };
-        // Mark the worker's active thread as read-only
-        if let Some(thread_view) = worker_server_view.read(cx).active_thread().cloned() {
+        // Navigate the server_view to the worker session
+        server_view.update(cx, |sv, cx| {
+            sv.switch_to_session(session_id.clone(), cx);
+        });
+        // Mark the worker's now-active thread as read-only
+        if let Some(thread_view) = server_view.read(cx).active_thread().cloned() {
             thread_view.update(cx, |tv, cx| {
                 tv.read_only = true;
                 cx.notify();
@@ -1747,8 +1752,8 @@ impl AgentPanel {
         }
         self.set_active_view(
             ActiveView::WorkerView {
-                worker_server_view,
-                supervisor_server_view,
+                server_view,
+                supervisor_session_id,
             },
             true,
             window,
@@ -2794,9 +2799,7 @@ impl Focusable for AgentPanel {
         match &self.active_view {
             ActiveView::Uninitialized => self.focus_handle.clone(),
             ActiveView::AgentThread { server_view, .. } => server_view.focus_handle(cx),
-            ActiveView::WorkerView {
-                worker_server_view, ..
-            } => worker_server_view.focus_handle(cx),
+            ActiveView::WorkerView { server_view, .. } => server_view.focus_handle(cx),
             ActiveView::History { kind } => match kind {
                 HistoryKind::AgentThreads => self.acp_history.focus_handle(cx),
                 HistoryKind::TextThreads => self.text_thread_history.focus_handle(cx),
@@ -3040,10 +3043,8 @@ impl AgentPanel {
                 };
                 Label::new(title).truncate().into_any_element()
             }
-            ActiveView::WorkerView {
-                worker_server_view, ..
-            } => {
-                let title = worker_server_view.read(cx).title(cx);
+            ActiveView::WorkerView { server_view, .. } => {
+                let title = server_view.read(cx).title(cx);
                 Label::new(title).color(Color::Muted).truncate().into_any_element()
             }
             ActiveView::Configuration => Label::new("Settings").truncate().into_any_element(),
@@ -3251,23 +3252,20 @@ impl AgentPanel {
             })
     }
 
-    /// Render the worker tab strip when there are background (sub-agent) sessions.
+    /// Render the worker tab strip when there are active sub-agent sessions.
     fn render_worker_tab_strip(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        // Only show the tab strip when in an AgentThread view and there are background workers
-        let ActiveView::AgentThread { .. } = &self.active_view else {
+        // Only show the tab strip when in an AgentThread view
+        let ActiveView::AgentThread { server_view } = &self.active_view else {
             return None;
         };
-        if self.background_threads.is_empty() {
+        let subagent_sessions = server_view.read(cx).subagent_thread_views(cx);
+        if subagent_sessions.is_empty() {
             return None;
         }
 
-        let tabs: Vec<WorkerTabInfo> = self
-            .background_threads
-            .iter()
-            .map(|(session_id, server_view)| WorkerTabInfo {
-                session_id: session_id.clone(),
-                name: server_view.read(cx).title(cx),
-            })
+        let tabs: Vec<WorkerTabInfo> = subagent_sessions
+            .into_iter()
+            .map(|(session_id, name)| WorkerTabInfo { session_id, name })
             .collect();
 
         Some(
@@ -4434,10 +4432,12 @@ impl Render for AgentPanel {
                         .child(server_view.clone())
                         .child(self.render_drag_target(cx)),
                     ActiveView::WorkerView {
-                        worker_server_view,
-                        supervisor_server_view,
+                        server_view,
+                        supervisor_session_id,
                     } => {
-                        let supervisor_server_view = supervisor_server_view.clone();
+                        let supervisor_session_id = supervisor_session_id.clone();
+                        let server_view_clone = server_view.clone();
+                        let worker_title = server_view.read(cx).title(cx);
                         parent
                             // Breadcrumb: "Supervisor > Worker"
                             .child(
@@ -4456,10 +4456,16 @@ impl Render for AgentPanel {
                                             )
                                             .on_click(cx.listener(
                                                 move |this, _, window, cx| {
+                                                    // Restore supervisor session, then go back to AgentThread
+                                                    server_view_clone.update(cx, |sv, cx| {
+                                                        sv.switch_to_session(
+                                                            supervisor_session_id.clone(),
+                                                            cx,
+                                                        );
+                                                    });
                                                     this.set_active_view(
                                                         ActiveView::AgentThread {
-                                                            server_view: supervisor_server_view
-                                                                .clone(),
+                                                            server_view: server_view_clone.clone(),
                                                         },
                                                         true,
                                                         window,
@@ -4470,12 +4476,12 @@ impl Render for AgentPanel {
                                     )
                                     .child(Label::new("›").size(LabelSize::Small).color(Color::Muted))
                                     .child(
-                                        Label::new("Worker")
+                                        Label::new(worker_title)
                                             .size(LabelSize::Small)
                                             .color(Color::Default),
                                     ),
                             )
-                            .child(worker_server_view.clone())
+                            .child(server_view.clone())
                     }
                     ActiveView::History { kind } => match kind {
                         HistoryKind::AgentThreads => parent.child(self.acp_history.clone()),
