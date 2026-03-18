@@ -1,11 +1,16 @@
 use std::sync::Arc;
 
 use gpui::{Context, Render};
-use prism_context::model::AgentState;
-use ui::{ButtonLike, Color, ContextMenu, Label, LabelSize, PopoverMenu, PopoverMenuHandle, prelude::*};
+use prism_context::model::{AgentState, InboxEntryType, InboxSeverity};
+use ui::{
+    ButtonLike, Color, ContextMenu, ContextMenuEntry, Label, LabelSize, PopoverMenu,
+    PopoverMenuHandle, prelude::*,
+};
+use uuid::Uuid;
 use workspace::StatusItemView;
 
 use crate::activity_bus;
+use crate::context_service::ContextService;
 use crate::hq_state::HqState;
 
 pub struct PrismStatusIndicator {
@@ -15,6 +20,8 @@ pub struct PrismStatusIndicator {
     /// (name, state, current_thread) — Arc for cheap clones in render
     agent_summaries: Arc<Vec<(String, AgentState, Option<String>)>>,
     actionable_count: usize,
+    /// Unread inbox entries for popover display: (id, severity, type_label, title, source_agent)
+    inbox_entries: Arc<Vec<(Uuid, InboxSeverity, String, String, Option<String>)>>,
     /// Count of High-severity unverified risks.
     high_risk_count: usize,
     /// Current mission phase label (e.g. "implement"), if an active plan exists.
@@ -32,7 +39,6 @@ pub struct PrismStatusIndicator {
     waiting_for_approval: bool,
 }
 
-
 fn status_row(
     text: String,
 ) -> impl Fn(&mut gpui::Window, &mut gpui::App) -> gpui::AnyElement + 'static {
@@ -44,12 +50,32 @@ fn status_row(
     }
 }
 
+fn entry_type_label(t: &InboxEntryType) -> &'static str {
+    match t {
+        InboxEntryType::Approval => "Approval",
+        InboxEntryType::Blocked => "Blocked",
+        InboxEntryType::Suggestion => "Suggestion",
+        InboxEntryType::Risk => "Risk",
+        InboxEntryType::CostSpike => "Cost",
+        InboxEntryType::Completed => "Done",
+    }
+}
+
+fn severity_dot(s: &InboxSeverity) -> &'static str {
+    match s {
+        InboxSeverity::Critical => "⚠",
+        InboxSeverity::Warning => "◆",
+        InboxSeverity::Info => "·",
+    }
+}
+
 impl PrismStatusIndicator {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let hq_subscription = HqState::global(cx).map(|hq_entity| {
             cx.observe(&hq_entity, |this, hq_entity, cx| {
                 let hq = hq_entity.read(cx);
-                let new_actionable = hq.inbox_entries.iter().filter(|e| !e.read).count();
+                let unread: Vec<_> = hq.inbox_entries.iter().filter(|e| !e.read).collect();
+                let new_actionable = unread.len();
                 let new_high_risks = hq.high_risk_count;
                 let new_mission_phase = hq.active_plan().map(|p| p.current_phase.to_string());
                 let new_cost = hq.cumulative_cost_usd;
@@ -78,6 +104,20 @@ impl PrismStatusIndicator {
                         .map(|a| (a.name.clone(), a.state.clone(), a.current_thread.clone()))
                         .collect::<Vec<_>>(),
                 );
+                this.inbox_entries = Arc::new(
+                    unread
+                        .into_iter()
+                        .map(|e| {
+                            (
+                                e.id,
+                                e.severity.clone(),
+                                entry_type_label(&e.entry_type).to_string(),
+                                e.title.clone(),
+                                e.source_agent.clone(),
+                            )
+                        })
+                        .collect(),
+                );
                 this.actionable_count = new_actionable;
                 this.high_risk_count = new_high_risks;
                 this.active_mission_phase = new_mission_phase;
@@ -88,33 +128,32 @@ impl PrismStatusIndicator {
             })
         });
 
-        let activity_subscription = activity_bus::global_inner(cx)
-                .map(|bus_entity| {
-                    cx.observe(&bus_entity, |this, bus_entity, cx| {
-                        let bus = bus_entity.read(cx);
-                        let new_generating = bus.is_generating;
-                        let new_waiting = bus.waiting_for_approval;
-                        let new_tool = bus.current_tool.clone();
-                        let new_file = bus.current_file.clone();
+        let activity_subscription =
+            activity_bus::global_inner(cx).map(|bus_entity| {
+                cx.observe(&bus_entity, |this, bus_entity, cx| {
+                    let bus = bus_entity.read(cx);
+                    let new_generating = bus.is_generating;
+                    let new_waiting = bus.waiting_for_approval;
+                    let new_tool = bus.current_tool.clone();
+                    let new_file = bus.current_file.clone();
 
-                        // Only recompute if something changed.
-                        if this.is_generating == new_generating
-                            && this.waiting_for_approval == new_waiting
-                            && this.live_tool == new_tool
-                            && this.live_file == new_file
-                        {
-                            return;
-                        }
+                    if this.is_generating == new_generating
+                        && this.waiting_for_approval == new_waiting
+                        && this.live_tool == new_tool
+                        && this.live_file == new_file
+                    {
+                        return;
+                    }
 
-                        this.is_generating = new_generating;
-                        this.waiting_for_approval = new_waiting;
-                        this.live_tool = new_tool;
-                        this.live_file = new_file;
-                        this.label = this.compute_label();
-                        this.dot_color = this.compute_dot_color();
-                        cx.notify();
-                    })
-                });
+                    this.is_generating = new_generating;
+                    this.waiting_for_approval = new_waiting;
+                    this.live_tool = new_tool;
+                    this.live_file = new_file;
+                    this.label = this.compute_label();
+                    this.dot_color = this.compute_dot_color();
+                    cx.notify();
+                })
+            });
 
         Self {
             popover_menu_handle: PopoverMenuHandle::default(),
@@ -122,6 +161,7 @@ impl PrismStatusIndicator {
             _activity_subscription: activity_subscription,
             agent_summaries: Arc::new(Vec::new()),
             actionable_count: 0,
+            inbox_entries: Arc::new(Vec::new()),
             high_risk_count: 0,
             active_mission_phase: None,
             cumulative_cost_usd: 0.0,
@@ -170,7 +210,13 @@ impl PrismStatusIndicator {
         }
         let agent_count = self.agent_summaries.len();
         if agent_count == 0 {
-            if let Some(phase) = &self.active_mission_phase {
+            if self.actionable_count > 0 {
+                format!(
+                    "P ● {} review{}",
+                    self.actionable_count,
+                    if self.actionable_count == 1 { "" } else { "s" }
+                )
+            } else if let Some(phase) = &self.active_mission_phase {
                 format!("P ● idle · {phase}")
             } else {
                 "P ● idle".to_string()
@@ -217,7 +263,8 @@ impl Render for PrismStatusIndicator {
     ) -> impl gpui::IntoElement {
         let label = self.label.clone();
         let dot_color = self.dot_color;
-        let agent_summaries = self.agent_summaries.clone(); // cheap Arc clone
+        let agent_summaries = self.agent_summaries.clone();
+        let inbox_entries = self.inbox_entries.clone();
         let actionable_count = self.actionable_count;
         let live_tool = self.live_tool.clone();
         let live_file = self.live_file.clone();
@@ -229,18 +276,19 @@ impl Render for PrismStatusIndicator {
             PopoverMenu::new("prism-status-popover")
                 .anchor(gpui::Corner::BottomLeft)
                 .menu(move |window, cx| {
-                    let agent_summaries = agent_summaries.clone(); // cheap Arc clone
+                    let agent_summaries = agent_summaries.clone();
+                    let inbox_entries = inbox_entries.clone();
                     let live_tool = live_tool.clone();
                     let live_file = live_file.clone();
                     Some(ContextMenu::build(window, cx, move |menu, _, _| {
-                        // Cost header if non-zero
+                        // Cost header
                         let mut menu = if cost > 0.0 {
                             menu.header(format!("Session cost: ${cost:.2}"))
                         } else {
                             menu
                         };
 
-                        // Current activity section (shown only when generating)
+                        // Current activity
                         menu = if is_generating || waiting_for_approval {
                             let activity_label = if waiting_for_approval {
                                 "Waiting for tool approval".to_string()
@@ -280,11 +328,63 @@ impl Render for PrismStatusIndicator {
                             }
                         }
 
+                        // Review items — show each entry with dismiss action
                         if actionable_count > 0 {
                             menu = menu.separator().header(format!(
-                                "{actionable_count} item{} need review",
-                                if actionable_count == 1 { "" } else { "s" }
+                                "Review ({actionable_count})"
                             ));
+
+                            for (id, severity, type_label, title, source) in inbox_entries.as_ref() {
+                                let dot = severity_dot(severity);
+                                let prefix = if let Some(src) = source {
+                                    format!("{dot} [{type_label}] {src}: ")
+                                } else {
+                                    format!("{dot} [{type_label}] ")
+                                };
+                                // Truncate title to keep menu readable
+                                let short_title: String = title.chars().take(60).collect();
+                                let row_text = format!("{prefix}{short_title}");
+                                menu = menu.custom_row(status_row(row_text));
+
+                                let dismiss_id = *id;
+                                menu = menu.item(
+                                    ContextMenuEntry::new(format!("  Dismiss ↑"))
+                                        .handler(move |_window, cx| {
+                                            if let Some(handle) = cx
+                                                .try_global::<ContextService>()
+                                                .and_then(|s| s.handle())
+                                            {
+                                                cx.background_spawn(async move {
+                                                    let _ = handle.dismiss_inbox_entry(dismiss_id);
+                                                })
+                                                .detach();
+                                            }
+                                        }),
+                                );
+                            }
+
+                            // Dismiss-all shortcut
+                            let all_ids: Vec<Uuid> =
+                                inbox_entries.iter().map(|(id, ..)| *id).collect();
+                            if all_ids.len() > 1 {
+                                menu = menu.item(
+                                    ContextMenuEntry::new("Dismiss All")
+                                        .handler(move |_window, cx| {
+                                            if let Some(handle) = cx
+                                                .try_global::<ContextService>()
+                                                .and_then(|s| s.handle())
+                                            {
+                                                let ids = all_ids.clone();
+                                                cx.background_spawn(async move {
+                                                    for id in ids {
+                                                        let _ = handle.dismiss_inbox_entry(id);
+                                                    }
+                                                })
+                                                .detach();
+                                            }
+                                        }),
+                                );
+                            }
                         }
 
                         menu

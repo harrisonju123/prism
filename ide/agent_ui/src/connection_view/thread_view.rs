@@ -5345,7 +5345,9 @@ impl ThreadView {
         let has_terminals = tool_call.terminals().next().is_some();
 
         div().w_full().map(|this| {
-            if tool_call.tool_name.as_ref().is_some_and(|n| n.as_ref() == "escalate_decision") {
+            if tool_call.tool_name.as_ref().is_some_and(|n| {
+                n.as_ref() == "escalate_decision" || n.as_ref() == "ask_human"
+            }) {
                 this.child(
                     self.render_decision_card(active_session_id, entry_ix, tool_call, focus_handle, window, cx),
                 )
@@ -5407,7 +5409,7 @@ impl ThreadView {
             .to_string()
             .into();
         let summary: SharedString = raw
-            .and_then(|v| v["summary"].as_str())
+            .and_then(|v| v["summary"].as_str().or_else(|| v["question"].as_str()))
             .unwrap_or("Input required")
             .to_string()
             .into();
@@ -5415,6 +5417,15 @@ impl ThreadView {
             .and_then(|v| v["context"].as_str())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string().into());
+        let options: Vec<SharedString> = raw
+            .and_then(|v| v["options"].as_array())
+            .map(|arr| {
+                arr.iter()
+                    .enumerate()
+                    .filter_map(|(i, v)| v.as_str().map(|s| format!("{}. {}", i + 1, s).into()))
+                    .collect()
+            })
+            .unwrap_or_default();
 
         let needs_decision = matches!(
             tool_call.status,
@@ -5478,6 +5489,15 @@ impl ThreadView {
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                         )
+                    })
+                    .when(!options.is_empty(), |this| {
+                        options.iter().fold(this, |acc, opt| {
+                            acc.child(
+                                Label::new(opt.clone())
+                                    .size(LabelSize::Small)
+                                    .color(Color::Muted),
+                            )
+                        })
                     }),
             )
             .map(|this| {

@@ -1,5 +1,6 @@
 mod add_dir_tool;
 mod ask_human_tool;
+mod escalate_decision_tool;
 mod skill_tool;
 mod codebase_search_tool;
 mod context_handle;
@@ -55,6 +56,7 @@ use language_model::{LanguageModelRequestTool, LanguageModelToolSchemaFormat};
 
 pub use add_dir_tool::*;
 pub use ask_human_tool::*;
+pub use escalate_decision_tool::*;
 pub use skill_tool::*;
 pub use codebase_search_tool::*;
 pub use context_handle::*;
@@ -175,6 +177,7 @@ macro_rules! tools {
 tools! {
     AddDirTool,
     AskHumanTool,
+    EscalateDecisionTool,
     CodebaseSearchTool,
     ContextOverviewTool,
     CopyPathTool,

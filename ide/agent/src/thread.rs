@@ -1,5 +1,5 @@
 use crate::{
-    AddDirTool, AskHumanTool, ContextHandle, ContextOverviewTool, ContextServerRegistry,
+    AddDirTool, AskHumanTool, EscalateDecisionTool, ContextHandle, ContextOverviewTool, ContextServerRegistry,
     CopyPathTool, CreateDirectoryTool, CreateSnapshotTool, DbLanguageModel, DbThread, DeletePathTool,
     DiagnosticsTool, EditFileTool, FetchTool, FindPathTool, FlagRiskTool, ForgetMemoryTool,
     GrepTool, ListDirectoryTool, ListMemoriesTool, ListSnapshotsTool, LspTool,
@@ -1691,6 +1691,7 @@ impl Thread {
         }
 
         self.add_tool(AskHumanTool);
+        self.add_tool(EscalateDecisionTool);
         if let Some(ctx) = context_handle {
             self.add_tool(SaveMemoryTool::new(ctx.clone()));
             self.add_tool(RecallTool::new(ctx.clone()));

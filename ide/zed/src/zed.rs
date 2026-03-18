@@ -918,6 +918,14 @@ fn initialize_panels(
             .map_err(|e| e.into());
         plans_panel_result.log_err();
 
+        // Pixel Office panel — animated pixel art agent visualization.
+        workspace_handle
+            .update_in(cx, |workspace, window, cx| {
+                let panel = cx.new(|cx| prism_hq::PixelOfficePanel::new(window, cx));
+                workspace.add_panel(panel, window, cx);
+            })
+            .log_err();
+
         futures::join!(
             add_panel_when_ready(project_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(outline_panel, workspace_handle.clone(), cx.clone()),

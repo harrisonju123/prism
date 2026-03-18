@@ -6,6 +6,7 @@ pub struct AgentActivityBus(pub Entity<AgentActivityBusInner>);
 
 impl Global for AgentActivityBus {}
 
+#[derive(Clone)]
 pub struct AgentActivityBusInner {
     pub is_generating: bool,
     /// Programmatic tool name (e.g. "edit_file", "bash")

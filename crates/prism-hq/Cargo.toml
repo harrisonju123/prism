@@ -38,3 +38,5 @@ ui.workspace = true
 util.workspace = true
 uuid = { workspace = true }
 workspace.workspace = true
+image.workspace = true
+rand.workspace = true
