@@ -34,7 +34,7 @@ use crate::{
     OpenAgentDiff, OpenHistory, ResetTrialEndUpsell, ResetTrialUpsell, StartThreadIn,
     ToggleNavigationMenu, ToggleNewThreadMenu, ToggleOptionsMenu,
     agent_configuration::{AgentConfiguration, AssistantConfigurationEvent},
-    connection_view::{AcpThreadViewEvent, ThreadView},
+    connection_view::{AcpServerViewEvent, AcpThreadViewEvent, ThreadView},
     slash_command::SlashCommandCompletionProvider,
     text_thread_editor::{AgentPanelDelegate, TextThreadEditor, make_lsp_adapter_delegate},
     ui::EndTrialUpsell,
@@ -392,6 +392,13 @@ enum ActiveView {
     AgentThread {
         server_view: Entity<ConnectionView>,
     },
+    /// Viewing a worker (sub-agent) session with breadcrumb back to the supervisor.
+    WorkerView {
+        /// The worker's ConnectionView.
+        worker_server_view: Entity<ConnectionView>,
+        /// The supervisor's ConnectionView, for breadcrumb navigation back.
+        supervisor_server_view: Entity<ConnectionView>,
+    },
     TextThread {
         text_thread_editor: Entity<TextThreadEditor>,
         title_editor: Entity<Editor>,
@@ -402,6 +409,13 @@ enum ActiveView {
         kind: HistoryKind,
     },
     Configuration,
+}
+
+/// Info for a worker tab in the panel header.
+#[derive(Clone)]
+struct WorkerTabInfo {
+    session_id: acp::SessionId,
+    name: SharedString,
 }
 
 enum WhichFontSize {
@@ -471,6 +485,7 @@ impl ActiveView {
         match self {
             ActiveView::Uninitialized
             | ActiveView::AgentThread { .. }
+            | ActiveView::WorkerView { .. }
             | ActiveView::History { .. } => WhichFontSize::AgentFont,
             ActiveView::TextThread { .. } => WhichFontSize::BufferFont,
             ActiveView::Configuration => WhichFontSize::None,
@@ -601,6 +616,7 @@ pub struct AgentPanel {
     worktree_creation_status: Option<WorktreeCreationStatus>,
     _thread_view_subscription: Option<Subscription>,
     _active_thread_focus_subscription: Option<Subscription>,
+    _server_view_event_subscription: Option<Subscription>,
     _worktree_creation_task: Option<Task<()>>,
     show_trust_workspace_message: bool,
     last_configuration_error_telemetry: Option<String>,
@@ -929,6 +945,7 @@ impl AgentPanel {
             worktree_creation_status: None,
             _thread_view_subscription: None,
             _active_thread_focus_subscription: None,
+            _server_view_event_subscription: None,
             _worktree_creation_task: None,
             show_trust_workspace_message: false,
             last_configuration_error_telemetry: None,
@@ -1027,6 +1044,9 @@ impl AgentPanel {
     pub fn active_connection_view(&self) -> Option<&Entity<ConnectionView>> {
         match &self.active_view {
             ActiveView::AgentThread { server_view, .. } => Some(server_view),
+            ActiveView::WorkerView {
+                worker_server_view, ..
+            } => Some(worker_server_view),
             ActiveView::Uninitialized
             | ActiveView::TextThread { .. }
             | ActiveView::History { .. }
@@ -1703,6 +1723,32 @@ impl AgentPanel {
         }
     }
 
+    /// Activate a worker (sub-agent) tab by session ID, showing it with a breadcrumb back to the supervisor.
+    pub fn activate_worker_tab(
+        &mut self,
+        session_id: &acp::SessionId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Worker must be in background_threads
+        let Some(worker_server_view) = self.background_threads.get(session_id).cloned() else {
+            return;
+        };
+        // Supervisor is the currently active AgentThread view
+        let Some(supervisor_server_view) = self.as_active_server_view().cloned() else {
+            return;
+        };
+        self.set_active_view(
+            ActiveView::WorkerView {
+                worker_server_view,
+                supervisor_server_view,
+            },
+            true,
+            window,
+            cx,
+        );
+    }
+
     /// Returns the primary thread views for all retained connections: the
     pub fn is_background_thread(&self, session_id: &acp::SessionId) -> bool {
         self.background_threads.contains_key(session_id)
@@ -1819,6 +1865,12 @@ impl AgentPanel {
                         cx.emit(AgentPanelEvent::ThreadFocused);
                         cx.notify();
                     }));
+                self._server_view_event_subscription =
+                    Some(cx.subscribe_in(server_view, window, |this, _view, event, window, cx| {
+                        if let AcpServerViewEvent::ActivateWorkerTab { session_id } = event {
+                            this.activate_worker_tab(session_id, window, cx);
+                        }
+                    }));
                 Some(
                     cx.observe_in(server_view, window, |this, server_view, window, cx| {
                         this._thread_view_subscription =
@@ -1832,6 +1884,7 @@ impl AgentPanel {
             _ => {
                 self._thread_view_subscription = None;
                 self._active_thread_focus_subscription = None;
+                self._server_view_event_subscription = None;
                 None
             }
         };
@@ -2734,6 +2787,9 @@ impl Focusable for AgentPanel {
         match &self.active_view {
             ActiveView::Uninitialized => self.focus_handle.clone(),
             ActiveView::AgentThread { server_view, .. } => server_view.focus_handle(cx),
+            ActiveView::WorkerView {
+                worker_server_view, ..
+            } => worker_server_view.focus_handle(cx),
             ActiveView::History { kind } => match kind {
                 HistoryKind::AgentThreads => self.acp_history.focus_handle(cx),
                 HistoryKind::TextThreads => self.text_thread_history.focus_handle(cx),
@@ -2977,6 +3033,12 @@ impl AgentPanel {
                 };
                 Label::new(title).truncate().into_any_element()
             }
+            ActiveView::WorkerView {
+                worker_server_view, ..
+            } => {
+                let title = worker_server_view.read(cx).title(cx);
+                Label::new(title).color(Color::Muted).truncate().into_any_element()
+            }
             ActiveView::Configuration => Label::new("Settings").truncate().into_any_element(),
             ActiveView::Uninitialized => Label::new("Agent").truncate().into_any_element(),
         };
@@ -3182,6 +3244,43 @@ impl AgentPanel {
             })
     }
 
+    /// Render the worker tab strip when there are background (sub-agent) sessions.
+    fn render_worker_tab_strip(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        // Only show the tab strip when in an AgentThread view and there are background workers
+        let ActiveView::AgentThread { .. } = &self.active_view else {
+            return None;
+        };
+        if self.background_threads.is_empty() {
+            return None;
+        }
+
+        let tabs: Vec<WorkerTabInfo> = self
+            .background_threads
+            .iter()
+            .map(|(session_id, server_view)| WorkerTabInfo {
+                session_id: session_id.clone(),
+                name: server_view.read(cx).title(cx),
+            })
+            .collect();
+
+        Some(
+            h_flex()
+                .px_1()
+                .gap_1()
+                .border_b_1()
+                .border_color(cx.theme().colors().border)
+                .child(Label::new("Workers:").size(LabelSize::Small).color(Color::Muted))
+                .children(tabs.into_iter().map(|tab| {
+                    let session_id = tab.session_id.clone();
+                    ButtonLike::new(SharedString::from(format!("worker-tab-{}", tab.session_id)))
+                        .child(Label::new(tab.name).size(LabelSize::Small).color(Color::Accent))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.activate_worker_tab(&session_id, window, cx);
+                        }))
+                })),
+        )
+    }
+
     fn render_toolbar_back_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let focus_handle = self.focus_handle(cx);
 
@@ -3308,6 +3407,7 @@ impl AgentPanel {
         let active_thread = match &self.active_view {
             ActiveView::AgentThread { server_view } => server_view.read(cx).as_native_thread(cx),
             ActiveView::Uninitialized
+            | ActiveView::WorkerView { .. }
             | ActiveView::TextThread { .. }
             | ActiveView::History { .. }
             | ActiveView::Configuration => None,
@@ -3890,6 +3990,7 @@ impl AgentPanel {
             }
             ActiveView::Uninitialized
             | ActiveView::AgentThread { .. }
+            | ActiveView::WorkerView { .. }
             | ActiveView::History { .. }
             | ActiveView::Configuration => return false,
         }
@@ -4214,7 +4315,10 @@ impl AgentPanel {
                     );
                 });
             }
-            ActiveView::Uninitialized | ActiveView::History { .. } | ActiveView::Configuration => {}
+            ActiveView::Uninitialized
+            | ActiveView::WorkerView { .. }
+            | ActiveView::History { .. }
+            | ActiveView::Configuration => {}
         }
     }
 
@@ -4254,7 +4358,9 @@ impl AgentPanel {
         let mut key_context = KeyContext::new_with_defaults();
         key_context.add("AgentPanel");
         match &self.active_view {
-            ActiveView::AgentThread { .. } => key_context.add("acp_thread"),
+            ActiveView::AgentThread { .. } | ActiveView::WorkerView { .. } => {
+                key_context.add("acp_thread")
+            }
             ActiveView::TextThread { .. } => key_context.add("text_thread"),
             ActiveView::Uninitialized | ActiveView::History { .. } | ActiveView::Configuration => {}
         }
@@ -4302,6 +4408,7 @@ impl Render for AgentPanel {
                 }
             }))
             .child(self.render_toolbar(window, cx))
+            .children(self.render_worker_tab_strip(cx))
             .children(self.render_worktree_creation_status(cx))
             .children(self.render_workspace_trust_message(cx))
             .children(self.render_onboarding(window, cx))
@@ -4319,6 +4426,50 @@ impl Render for AgentPanel {
                     ActiveView::AgentThread { server_view, .. } => parent
                         .child(server_view.clone())
                         .child(self.render_drag_target(cx)),
+                    ActiveView::WorkerView {
+                        worker_server_view,
+                        supervisor_server_view,
+                    } => {
+                        let supervisor_server_view = supervisor_server_view.clone();
+                        parent
+                            // Breadcrumb: "Supervisor > Worker"
+                            .child(
+                                h_flex()
+                                    .px_2()
+                                    .py_1()
+                                    .gap_1()
+                                    .border_b_1()
+                                    .border_color(cx.theme().colors().border)
+                                    .child(
+                                        ButtonLike::new("supervisor-breadcrumb")
+                                            .child(
+                                                Label::new("Supervisor")
+                                                    .size(LabelSize::Small)
+                                                    .color(Color::Accent),
+                                            )
+                                            .on_click(cx.listener(
+                                                move |this, _, window, cx| {
+                                                    this.set_active_view(
+                                                        ActiveView::AgentThread {
+                                                            server_view: supervisor_server_view
+                                                                .clone(),
+                                                        },
+                                                        true,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                },
+                                            )),
+                                    )
+                                    .child(Label::new("›").size(LabelSize::Small).color(Color::Muted))
+                                    .child(
+                                        Label::new("Worker")
+                                            .size(LabelSize::Small)
+                                            .color(Color::Default),
+                                    ),
+                            )
+                            .child(worker_server_view.clone())
+                    }
                     ActiveView::History { kind } => match kind {
                         HistoryKind::AgentThreads => parent.child(self.acp_history.clone()),
                         HistoryKind::TextThreads => parent.child(self.text_thread_history.clone()),

@@ -8,11 +8,13 @@ mod dispatch;
 mod hq_state;
 mod inline_forms;
 mod notification;
+mod orchestrator_filter;
 mod plan_dispatch;
 pub mod plans_panel;
 pub mod review_packet;
 mod running_agents;
 mod status_indicator;
+mod supervisor;
 mod thread_view;
 mod types;
 

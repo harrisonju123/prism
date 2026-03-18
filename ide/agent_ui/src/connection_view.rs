@@ -329,6 +329,7 @@ impl Conversation {
 
 pub enum AcpServerViewEvent {
     ActiveThreadChanged,
+    ActivateWorkerTab { session_id: acp::SessionId },
 }
 
 impl EventEmitter<AcpServerViewEvent> for ConnectionView {}

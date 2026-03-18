@@ -262,6 +262,8 @@ pub struct ThreadView {
     pub in_flight_prompt: Option<Vec<acp::ContentBlock>>,
     pub _subscriptions: Vec<Subscription>,
     pub message_editor: Entity<MessageEditor>,
+    /// When true, the message editor is hidden (used for worker/subagent views).
+    pub read_only: bool,
     pub add_context_menu_handle: PopoverMenuHandle<ContextMenu>,
     pub thinking_effort_menu_handle: PopoverMenuHandle<ContextMenu>,
     pub project: WeakEntity<Project>,
@@ -494,6 +496,7 @@ impl ThreadView {
             hovered_edited_file_buttons: None,
             in_flight_prompt: None,
             message_editor,
+            read_only: false,
             add_context_menu_handle: PopoverMenuHandle::default(),
             thinking_effort_menu_handle: PopoverMenuHandle::default(),
             project,
@@ -5342,7 +5345,11 @@ impl ThreadView {
         let has_terminals = tool_call.terminals().next().is_some();
 
         div().w_full().map(|this| {
-            if tool_call.is_subagent() {
+            if tool_call.tool_name.as_ref().is_some_and(|n| n.as_ref() == "escalate_decision") {
+                this.child(
+                    self.render_decision_card(active_session_id, entry_ix, tool_call, focus_handle, window, cx),
+                )
+            } else if tool_call.is_subagent() {
                 this.child(
                     self.render_subagent_tool_call(
                         active_session_id,
@@ -5382,6 +5389,118 @@ impl ThreadView {
                 ))
             }
         })
+    }
+
+    fn render_decision_card(
+        &self,
+        active_session_id: &acp::SessionId,
+        entry_ix: usize,
+        tool_call: &ToolCall,
+        focus_handle: &FocusHandle,
+        _window: &Window,
+        cx: &Context<Self>,
+    ) -> Div {
+        let raw = tool_call.raw_input.as_ref();
+        let worker: SharedString = raw
+            .and_then(|v| v["worker"].as_str())
+            .unwrap_or("Agent")
+            .to_string()
+            .into();
+        let summary: SharedString = raw
+            .and_then(|v| v["summary"].as_str())
+            .unwrap_or("Input required")
+            .to_string()
+            .into();
+        let context_text: Option<SharedString> = raw
+            .and_then(|v| v["context"].as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string().into());
+
+        let needs_decision = matches!(
+            tool_call.status,
+            ToolCallStatus::WaitingForConfirmation { .. }
+        );
+        let is_resolved = matches!(
+            tool_call.status,
+            ToolCallStatus::Completed | ToolCallStatus::Rejected | ToolCallStatus::Canceled
+        );
+
+        if is_resolved {
+            return div()
+                .ml_5()
+                .mr_5()
+                .my_1()
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .child(
+                            Icon::new(IconName::Check)
+                                .color(Color::Success)
+                                .size(IconSize::XSmall),
+                        )
+                        .child(
+                            Label::new(format!("Decision resolved — {worker}"))
+                                .color(Color::Muted)
+                                .size(LabelSize::Small),
+                        ),
+                );
+        }
+
+        div()
+            .ml_5()
+            .mr_5()
+            .my_1p5()
+            .rounded_md()
+            .border_1()
+            .border_color(self.tool_card_border_color(cx))
+            .bg(cx.theme().colors().editor_background)
+            .overflow_hidden()
+            .child(
+                h_flex()
+                    .p_1p5()
+                    .gap_1()
+                    .bg(self.tool_card_header_bg(cx))
+                    .child(
+                        Icon::new(IconName::Warning)
+                            .color(Color::Warning)
+                            .size(IconSize::Small),
+                    )
+                    .child(Label::new(format!("{worker} needs input")).size(LabelSize::Small)),
+            )
+            .child(
+                v_flex()
+                    .p_2()
+                    .gap_1()
+                    .child(Label::new(summary).size(LabelSize::Small))
+                    .when_some(context_text, |this, ctx| {
+                        this.child(
+                            Label::new(ctx)
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        )
+                    }),
+            )
+            .map(|this| {
+                if needs_decision {
+                    if let ToolCallStatus::WaitingForConfirmation { options, .. } =
+                        &tool_call.status
+                    {
+                        this.child(self.render_permission_buttons(
+                            active_session_id.clone(),
+                            true,
+                            options,
+                            entry_ix,
+                            tool_call.id.clone(),
+                            focus_handle,
+                            cx,
+                        ))
+                    } else {
+                        this
+                    }
+                } else {
+                    this
+                }
+            })
     }
 
     fn render_tool_call(
@@ -6972,12 +7091,15 @@ impl ThreadView {
                             .color(Color::Muted)
                             .size(IconSize::Small),
                     )
-                    .tooltip(Tooltip::text("Make Subagent Full Screen"))
-                    .on_click(cx.listener(move |this, _event, window, cx| {
+                    .tooltip(Tooltip::text("Open in Worker Tab"))
+                    .on_click(cx.listener(move |this, _event, _window, cx| {
                         telemetry::event!("Subagent Maximized");
                         this.server_view
-                            .update(cx, |this, cx| {
-                                this.navigate_to_session(session_id.clone(), window, cx);
+                            .update(cx, |server_view, cx| {
+                                cx.emit(AcpServerViewEvent::ActivateWorkerTab {
+                                    session_id: session_id.clone(),
+                                });
+                                let _ = server_view;
                             })
                             .ok();
                     }));
@@ -7996,7 +8118,9 @@ impl Render for ThreadView {
                 |this, version| this.child(self.render_new_version_callout(&version, cx)),
             )
             .children(self.render_token_limit_callout(cx))
-            .child(self.render_message_editor(window, cx))
+            .when(!self.read_only, |this| {
+                this.child(self.render_message_editor(window, cx))
+            })
     }
 }
 

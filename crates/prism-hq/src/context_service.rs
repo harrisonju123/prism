@@ -727,6 +727,38 @@ impl ContextHandle {
         })
     }
 
+    /// Reap timed-out handoffs (Running/Accepted → Failed).
+    pub fn reap_timed_out_handoffs(&self) -> Result<Vec<prism_context::model::Handoff>> {
+        let store = self.store.clone();
+        let wid = self.workspace_id;
+        self.handle.block_on(async move {
+            prism_context::scheduler::reap_timed_out_handoffs(&*store, wid)
+                .await
+                .map_err(Into::into)
+        })
+    }
+
+    /// Compute which ready work packages should be assigned this tick.
+    pub fn compute_assignments(
+        &self,
+        config: &prism_context::scheduler::SchedulerConfig,
+    ) -> Result<Vec<prism_context::scheduler::Assignment>> {
+        let store = self.store.clone();
+        let wid = self.workspace_id;
+        let max = config.max_assignments_per_tick;
+        self.handle.block_on(async move {
+            prism_context::scheduler::compute_assignments(
+                &*store,
+                wid,
+                &prism_context::scheduler::SchedulerConfig {
+                    max_assignments_per_tick: max,
+                },
+            )
+            .await
+            .map_err(Into::into)
+        })
+    }
+
     pub fn check_guardrail(
         &self,
         thread_name: &str,

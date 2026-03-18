@@ -1,14 +1,12 @@
 use std::sync::Arc;
 
-use gpui::{Action, Context, Render};
+use gpui::{Context, Render};
 use prism_context::model::AgentState;
 use ui::{ButtonLike, Color, ContextMenu, Label, LabelSize, PopoverMenu, PopoverMenuHandle, prelude::*};
 use workspace::StatusItemView;
 
 use crate::activity_bus;
-use crate::dispatch::DispatchTask;
 use crate::hq_state::HqState;
-use crate::plan_dispatch::DispatchPlan;
 
 pub struct PrismStatusIndicator {
     popover_menu_handle: PopoverMenuHandle<ContextMenu>,
@@ -21,6 +19,8 @@ pub struct PrismStatusIndicator {
     high_risk_count: usize,
     /// Current mission phase label (e.g. "implement"), if an active plan exists.
     active_mission_phase: Option<String>,
+    /// Cumulative cost USD from active plan sessions.
+    cumulative_cost_usd: f64,
     /// Cached label — recomputed only when state changes
     label: String,
     /// Cached dot color — recomputed only when state changes
@@ -52,12 +52,14 @@ impl PrismStatusIndicator {
                 let new_actionable = hq.inbox_entries.iter().filter(|e| !e.read).count();
                 let new_high_risks = hq.high_risk_count;
                 let new_mission_phase = hq.active_plan().map(|p| p.current_phase.to_string());
+                let new_cost = hq.cumulative_cost_usd;
 
                 // Skip notify if nothing relevant changed.
                 let unchanged = hq.agents.len() == this.agent_summaries.len()
                     && new_actionable == this.actionable_count
                     && new_high_risks == this.high_risk_count
                     && new_mission_phase == this.active_mission_phase
+                    && (new_cost - this.cumulative_cost_usd).abs() < 0.001
                     && hq.agents
                         .iter()
                         .zip(this.agent_summaries.iter())
@@ -79,6 +81,7 @@ impl PrismStatusIndicator {
                 this.actionable_count = new_actionable;
                 this.high_risk_count = new_high_risks;
                 this.active_mission_phase = new_mission_phase;
+                this.cumulative_cost_usd = new_cost;
                 this.label = this.compute_label();
                 this.dot_color = this.compute_dot_color();
                 cx.notify();
@@ -121,6 +124,7 @@ impl PrismStatusIndicator {
             actionable_count: 0,
             high_risk_count: 0,
             active_mission_phase: None,
+            cumulative_cost_usd: 0.0,
             label: "P ● idle".to_string(),
             dot_color: Color::Success,
             live_tool: None,
@@ -219,6 +223,7 @@ impl Render for PrismStatusIndicator {
         let live_file = self.live_file.clone();
         let is_generating = self.is_generating;
         let waiting_for_approval = self.waiting_for_approval;
+        let cost = self.cumulative_cost_usd;
 
         gpui::div().child(
             PopoverMenu::new("prism-status-popover")
@@ -228,8 +233,15 @@ impl Render for PrismStatusIndicator {
                     let live_tool = live_tool.clone();
                     let live_file = live_file.clone();
                     Some(ContextMenu::build(window, cx, move |menu, _, _| {
+                        // Cost header if non-zero
+                        let mut menu = if cost > 0.0 {
+                            menu.header(format!("Session cost: ${cost:.2}"))
+                        } else {
+                            menu
+                        };
+
                         // Current activity section (shown only when generating)
-                        let mut menu = if is_generating || waiting_for_approval {
+                        menu = if is_generating || waiting_for_approval {
                             let activity_label = if waiting_for_approval {
                                 "Waiting for tool approval".to_string()
                             } else if let Some(tool) = &live_tool {
@@ -253,10 +265,16 @@ impl Render for PrismStatusIndicator {
                             menu = menu.custom_row(status_row("No active agents".to_string()));
                         } else {
                             for (name, state, thread) in agent_summaries.as_ref() {
+                                let state_dot = match state {
+                                    AgentState::Working => "●",
+                                    AgentState::AwaitingReview => "◉",
+                                    AgentState::Blocked => "⊗",
+                                    _ => "○",
+                                };
                                 let row_label = if let Some(t) = thread {
-                                    format!("{name}  {state}  [{t}]")
+                                    format!("{state_dot} {name}  [{t}]")
                                 } else {
-                                    format!("{name}  {state}")
+                                    format!("{state_dot} {name}  {state}")
                                 };
                                 menu = menu.custom_row(status_row(row_label));
                             }
@@ -269,9 +287,7 @@ impl Render for PrismStatusIndicator {
                             ));
                         }
 
-                        menu.separator()
-                            .action("Dispatch Task...", DispatchTask.boxed_clone())
-                            .action("Dispatch Plan...", DispatchPlan.boxed_clone())
+                        menu
                     }))
                 })
                 .trigger(
