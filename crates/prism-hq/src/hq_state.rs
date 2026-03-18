@@ -273,6 +273,17 @@ impl HqState {
                             }
                         }
 
+                        this.cumulative_cost_usd = inbox_entries
+                            .iter()
+                            .filter(|e| e.entry_type == InboxEntryType::Completed)
+                            .filter_map(|e| {
+                                crate::review_packet::ReviewPacket::from_inbox_body(
+                                    &e.title,
+                                    &e.body,
+                                )
+                                .session_cost_usd
+                            })
+                            .sum();
                         this.inbox_entries = inbox_entries;
                         this.high_risk_count = risks
                             .iter()

@@ -1738,6 +1738,13 @@ impl AgentPanel {
         let Some(supervisor_server_view) = self.as_active_server_view().cloned() else {
             return;
         };
+        // Mark the worker's active thread as read-only
+        if let Some(thread_view) = worker_server_view.read(cx).active_thread().cloned() {
+            thread_view.update(cx, |tv, cx| {
+                tv.read_only = true;
+                cx.notify();
+            });
+        }
         self.set_active_view(
             ActiveView::WorkerView {
                 worker_server_view,
