@@ -209,29 +209,19 @@ impl Render for AgentOfficeItem {
         let selected_id = self.selected_char_id;
         let hovered_id = self.hovered_char_id;
 
-        // Build per-character snapshots with id for highlight tracking.
-        let mut chars_with_ids: Vec<(usize, CharSnapshot)> = self
+        // Build per-character snapshots. The id is the first field of CharSnapshot,
+        // so it doubles as the highlight key — no separate wrapper Vec needed.
+        let mut char_snapshots: Vec<CharSnapshot> = self
             .state
             .characters
             .iter()
             .map(|ch| {
-                (
-                    ch.id,
-                    (
-                        ch.id,
-                        ch.palette,
-                        ch.tile_x,
-                        ch.tile_y,
-                        ch.direction,
-                        ch.sprite_col(),
-                        ch.bubble,
-                    ),
-                )
+                (ch.id, ch.palette, ch.tile_x, ch.tile_y, ch.direction, ch.sprite_col(), ch.bubble)
             })
             .collect();
         // Sort back-to-front by tile_y for z-ordering.
-        chars_with_ids
-            .sort_by(|a, b| a.1.3.partial_cmp(&b.1.3).unwrap_or(std::cmp::Ordering::Equal));
+        char_snapshots
+            .sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
 
         // Snapshot layout data for the render closure.
         let layout_data = self.state.layout_render_data();
@@ -255,18 +245,15 @@ impl Render for AgentOfficeItem {
                             move |bounds, (), window, _cx| {
                                 let Some(ref atlas) = atlas else { return };
 
-                                // Extract snapshot slice for render_frame.
-                                let snapshots: Vec<CharSnapshot> =
-                                    chars_with_ids.iter().map(|(_, s)| *s).collect();
                                 renderer::render_frame(
-                                    bounds, &snapshots, &layout_data, atlas, window,
+                                    bounds, &char_snapshots, &layout_data, atlas, window,
                                 );
 
                                 // Hover and selection highlights drawn on top.
                                 let scale = 2.0_f32;
                                 let fw = px(16.0 * scale);
                                 let fh = px(32.0 * scale);
-                                for &(id, (_, _, tile_x, tile_y, _, _, _)) in &chars_with_ids {
+                                for &(id, _, tile_x, tile_y, _, _, _) in &char_snapshots {
                                     let sx = bounds.origin.x + px(tile_x * 32.0) - fw / 2.0;
                                     let sy = bounds.origin.y + px(tile_y * 32.0) - fh / 2.0;
                                     let char_bounds = gpui::Bounds::new(

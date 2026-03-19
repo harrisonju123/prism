@@ -71,7 +71,7 @@ pub fn render_frame(
     }
 
     // ── 4. Wall-mounted decorations (row < 11 = above office floor) ──────────
-    for furn in &layout.furniture {
+    for furn in layout.furniture.iter() {
         if furn.row >= 11 {
             continue; // floor furniture handled in pass 5
         }
@@ -85,10 +85,11 @@ pub fn render_frame(
         Character(&'a CharSnapshot),
     }
 
-    let mut renderables: Vec<(f32, Renderable)> = Vec::new();
+    let mut renderables: Vec<(f32, Renderable)> =
+        Vec::with_capacity(layout.furniture.len() + characters.len());
 
     // Collect floor furniture (row >= 11).
-    for furn in &layout.furniture {
+    for furn in layout.furniture.iter() {
         if furn.row < 11 {
             continue;
         }

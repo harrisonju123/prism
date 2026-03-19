@@ -80,12 +80,7 @@ fn single_frame_mirrored_with_dims(bytes: &[u8]) -> Result<(Arc<RenderImage>, u3
 
 /// Load a single-tile PNG as a one-frame `Arc<RenderImage>` (BGRA-converted).
 fn single_frame(bytes: &[u8]) -> Result<Arc<RenderImage>> {
-    let img = image::load_from_memory(bytes)?.into_rgba8();
-    let mut bgra = img;
-    for pixel in bgra.pixels_mut() {
-        pixel.0.swap(0, 2);
-    }
-    Ok(Arc::new(RenderImage::new(vec![image::Frame::new(bgra)])))
+    single_frame_with_dims(bytes).map(|(img, _, _)| img)
 }
 
 /// Furniture sprite entry: image + pixel dimensions (w, h).

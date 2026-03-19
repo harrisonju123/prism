@@ -75,8 +75,8 @@ impl AgentBridge {
             .map(|a| a.name.clone())
             .collect();
 
-        // The local agent is "alive" whenever the ActivityBus is active (generating or waiting),
-        // even if it hasn't checked in via `prism context checkin`.
+        // The local agent is "alive" whenever the ActivityBus is active (generating or
+        // waiting), even if it hasn't checked in via `prism context checkin`.
         let local_bus_active = activity
             .map(|b| b.is_generating || b.waiting_for_approval)
             .unwrap_or(false);
@@ -97,56 +97,17 @@ impl AgentBridge {
             self.agent_to_char.remove(&name);
             self.prev_bubble.remove(&name);
             self.prev_state.remove(&name);
-            mutations.push(OfficeMutation::DespawnCharacter {
-                agent_name: name,
-            });
+            mutations.push(OfficeMutation::DespawnCharacter { agent_name: name });
         }
 
-        // Spawn and update the local agent from ActivityBus when not in HqState roster.
+        // When the local agent is bus-active but not in the HqState roster, handle it
+        // directly from ActivityBus rather than skipping it entirely.
         if let Some(local_name) = local_agent_name {
             let in_hq = agents.iter().any(|a| a.name == local_name);
             if !in_hq && local_bus_active {
-                if !self.agent_to_char.contains_key(local_name) {
-                    let id = self.next_char_id;
-                    self.next_char_id += 1;
-                    let palette = self.next_palette % 6;
-                    self.next_palette += 1;
-                    self.agent_to_char.insert(local_name.to_string(), id);
-                    mutations.push(OfficeMutation::SpawnCharacter {
-                        agent_name: local_name.to_string(),
-                        palette,
-                        char_id: id,
-                    });
-                }
-
+                self.emit_spawn_if_needed(local_name, &mut mutations);
                 let (char_state, status_text, bubble) = self.state_from_activity(activity);
-
-                if self.prev_state.get(local_name) != Some(&char_state) {
-                    self.prev_state.insert(local_name.to_string(), char_state);
-                    mutations.push(OfficeMutation::SetState {
-                        agent_name: local_name.to_string(),
-                        char_state,
-                        status_text,
-                    });
-                }
-
-                let prev = self.prev_bubble.get(local_name).copied().flatten();
-                match (prev, bubble) {
-                    (None, Some(kind)) => {
-                        self.prev_bubble.insert(local_name.to_string(), Some(kind));
-                        mutations.push(OfficeMutation::ShowBubble {
-                            agent_name: local_name.to_string(),
-                            kind,
-                        });
-                    }
-                    (Some(_), None) => {
-                        self.prev_bubble.insert(local_name.to_string(), None);
-                        mutations.push(OfficeMutation::ClearBubble {
-                            agent_name: local_name.to_string(),
-                        });
-                    }
-                    _ => {}
-                }
+                self.emit_state_and_bubble(local_name, char_state, status_text, bubble, &mut mutations);
             }
         }
 
@@ -156,19 +117,7 @@ impl AgentBridge {
                 continue;
             }
 
-            // Spawn if not yet tracked.
-            if !self.agent_to_char.contains_key(&agent.name) {
-                let id = self.next_char_id;
-                self.next_char_id += 1;
-                let palette = self.next_palette % 6;
-                self.next_palette += 1;
-                self.agent_to_char.insert(agent.name.clone(), id);
-                mutations.push(OfficeMutation::SpawnCharacter {
-                    agent_name: agent.name.clone(),
-                    palette,
-                    char_id: id,
-                });
-            }
+            self.emit_spawn_if_needed(&agent.name, &mut mutations);
 
             // Determine desired char state and status text.
             let (char_state, status_text, bubble) =
@@ -180,37 +129,63 @@ impl AgentBridge {
                     self.state_from_agent_status(&agent.state)
                 };
 
-            // Emit SetState if changed.
-            if self.prev_state.get(&agent.name) != Some(&char_state) {
-                self.prev_state.insert(agent.name.clone(), char_state);
-                mutations.push(OfficeMutation::SetState {
-                    agent_name: agent.name.clone(),
-                    char_state,
-                    status_text,
-                });
-            }
-
-            // Emit bubble mutation if changed.
-            let prev = self.prev_bubble.get(&agent.name).copied().flatten();
-            match (prev, bubble) {
-                (None, Some(kind)) => {
-                    self.prev_bubble.insert(agent.name.clone(), Some(kind));
-                    mutations.push(OfficeMutation::ShowBubble {
-                        agent_name: agent.name.clone(),
-                        kind,
-                    });
-                }
-                (Some(_), None) => {
-                    self.prev_bubble.insert(agent.name.clone(), None);
-                    mutations.push(OfficeMutation::ClearBubble {
-                        agent_name: agent.name.clone(),
-                    });
-                }
-                _ => {}
-            }
+            self.emit_state_and_bubble(&agent.name, char_state, status_text, bubble, &mut mutations);
         }
 
         mutations
+    }
+
+    /// Emit `SpawnCharacter` if this agent has no character yet.
+    fn emit_spawn_if_needed(&mut self, agent_name: &str, mutations: &mut Vec<OfficeMutation>) {
+        if !self.agent_to_char.contains_key(agent_name) {
+            let id = self.next_char_id;
+            self.next_char_id += 1;
+            let palette = self.next_palette % 6;
+            self.next_palette += 1;
+            self.agent_to_char.insert(agent_name.to_string(), id);
+            mutations.push(OfficeMutation::SpawnCharacter {
+                agent_name: agent_name.to_string(),
+                palette,
+                char_id: id,
+            });
+        }
+    }
+
+    /// Emit `SetState` (if changed) and `ShowBubble`/`ClearBubble` (if changed).
+    fn emit_state_and_bubble(
+        &mut self,
+        agent_name: &str,
+        char_state: CharState,
+        status_text: Option<String>,
+        bubble: Option<BubbleKind>,
+        mutations: &mut Vec<OfficeMutation>,
+    ) {
+        if self.prev_state.get(agent_name) != Some(&char_state) {
+            self.prev_state.insert(agent_name.to_string(), char_state);
+            mutations.push(OfficeMutation::SetState {
+                agent_name: agent_name.to_string(),
+                char_state,
+                status_text,
+            });
+        }
+
+        let prev = self.prev_bubble.get(agent_name).copied().flatten();
+        match (prev, bubble) {
+            (None, Some(kind)) => {
+                self.prev_bubble.insert(agent_name.to_string(), Some(kind));
+                mutations.push(OfficeMutation::ShowBubble {
+                    agent_name: agent_name.to_string(),
+                    kind,
+                });
+            }
+            (Some(_), None) => {
+                self.prev_bubble.insert(agent_name.to_string(), None);
+                mutations.push(OfficeMutation::ClearBubble {
+                    agent_name: agent_name.to_string(),
+                });
+            }
+            _ => {}
+        }
     }
 
     fn state_from_agent_status(
@@ -282,7 +257,6 @@ impl AgentBridge {
 /// Map a raw tool name + optional file to a human-readable status string.
 pub fn format_tool_status(tool: &str, file: Option<&str>) -> String {
     let short_file = file.map(|f| {
-        // Show only the last component of the path.
         std::path::Path::new(f)
             .file_name()
             .and_then(|n| n.to_str())
@@ -291,18 +265,10 @@ pub fn format_tool_status(tool: &str, file: Option<&str>) -> String {
 
     match tool {
         "read_file" | "grep" | "find_path" | "codebase_search" | "glob" => {
-            if let Some(f) = short_file {
-                format!("Reading {f}")
-            } else {
-                "Reading…".into()
-            }
+            if let Some(f) = short_file { format!("Reading {f}") } else { "Reading…".into() }
         }
         "edit_file" | "streaming_edit_file" | "write_file" | "create_file" => {
-            if let Some(f) = short_file {
-                format!("Editing {f}")
-            } else {
-                "Editing…".into()
-            }
+            if let Some(f) = short_file { format!("Editing {f}") } else { "Editing…".into() }
         }
         "terminal" | "bash" | "run_command" => "Running command…".into(),
         "spawn_agent" | "spawn_subagent" => "Spawning subagent…".into(),

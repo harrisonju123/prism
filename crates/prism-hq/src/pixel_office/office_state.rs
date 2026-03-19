@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
@@ -35,11 +36,16 @@ pub struct PcRenderState {
 }
 
 /// All layout-level data needed by `renderer::render_frame`.
+///
+/// `tiles` and `furniture` are `Arc`-wrapped because the layout is static for the
+/// entire session — cloning them into the 60 fps canvas closure is a cheap Arc refcount
+/// bump rather than a full Vec copy.
 pub struct LayoutRenderData {
     pub cols: usize,
     pub rows: usize,
-    pub tiles: Vec<u8>,
-    pub furniture: Vec<FurnitureRenderItem>,
+    pub tiles: Arc<Vec<u8>>,
+    pub furniture: Arc<Vec<FurnitureRenderItem>>,
+    /// Dynamic: changes when PCs turn on/off. Rebuilt cheaply (2–4 entries).
     pub pc_states: HashMap<String, PcRenderState>,
 }
 
@@ -48,11 +54,18 @@ pub struct LayoutRenderData {
 /// The mutable game state for the Pixel Office — characters, walkable tiles, etc.
 pub struct OfficeState {
     pub characters: Vec<Character>,
-    pub walkable_tiles: HashSet<(i32, i32)>,
     pub rng: SmallRng,
     pub hovered_char: Option<usize>,
     pub layout: OfficeLayout,
     pub pc_anim_states: HashMap<String, PcAnimState>,
+    /// Cached tiles Arc — avoids cloning Vec<u8> on every render frame.
+    cached_tiles: Arc<Vec<u8>>,
+    /// Cached furniture render items Arc — avoids rebuilding on every render frame.
+    cached_furniture_render: Arc<Vec<FurnitureRenderItem>>,
+    /// Tiles within the lounge zone — precomputed once, used for idle wander pooling.
+    lounge_wander_tiles: HashSet<(i32, i32)>,
+    /// (seat_tile, pc_uid) pairs for desk seats — precomputed once for tick_pc_anims.
+    desk_pc_links: Vec<((i32, i32), String)>,
     next_id: usize,
     next_palette: usize,
 }
@@ -61,77 +74,87 @@ impl OfficeState {
     /// Create a live office from the embedded layout JSON.
     pub fn from_layout() -> Self {
         let layout = OfficeLayout::load();
-        let walkable_tiles = layout.walkable_tiles.clone();
-        let rng = SmallRng::seed_from_u64(42);
+
+        let lounge_wander_tiles: HashSet<(i32, i32)> =
+            layout.zones.lounge.tiles_in(&layout.walkable_tiles).into_iter().collect();
+
+        let desk_pc_links: Vec<((i32, i32), String)> = layout
+            .stations
+            .desk_seats
+            .iter()
+            .filter_map(|s| s.furniture_uid.as_ref().map(|uid| (s.tile, uid.clone())))
+            .collect();
+
+        let cached_tiles = Arc::new(layout.tiles.clone());
+
+        let cached_furniture_render = Arc::new(
+            layout
+                .furniture
+                .iter()
+                .map(|f| FurnitureRenderItem {
+                    asset_id: if f.mirror {
+                        format!("{}:left", f.asset_id)
+                    } else {
+                        f.asset_id.clone()
+                    },
+                    mirror: f.mirror,
+                    col: f.col,
+                    row: f.row,
+                })
+                .collect(),
+        );
 
         Self {
             characters: Vec::new(),
-            walkable_tiles,
-            rng,
+            rng: SmallRng::seed_from_u64(42),
             hovered_char: None,
             layout,
             pc_anim_states: HashMap::new(),
+            cached_tiles,
+            cached_furniture_render,
+            lounge_wander_tiles,
+            desk_pc_links,
             next_id: 0,
             next_palette: 0,
         }
     }
 
     /// Build a `LayoutRenderData` snapshot suitable for the render closure.
+    ///
+    /// Static portions (tiles, furniture) are Arc clones — O(1). Only `pc_states`
+    /// is rebuilt from scratch each call (2–4 entries in the default layout).
     pub fn layout_render_data(&self) -> LayoutRenderData {
-        let furniture = self
-            .layout
-            .furniture
-            .iter()
-            .map(|f| FurnitureRenderItem {
-                asset_id: if f.mirror {
-                    format!("{}:left", f.asset_id)
-                } else {
-                    f.asset_id.clone()
-                },
-                mirror: f.mirror,
-                col: f.col,
-                row: f.row,
-            })
-            .collect();
-
         let pc_states = self
             .pc_anim_states
             .iter()
-            .map(|(uid, st)| {
-                (uid.clone(), PcRenderState { on: st.on, frame: st.frame })
-            })
+            .map(|(uid, st)| (uid.clone(), PcRenderState { on: st.on, frame: st.frame }))
             .collect();
 
         LayoutRenderData {
             cols: self.layout.cols,
             rows: self.layout.rows,
-            tiles: self.layout.tiles.clone(),
-            furniture,
+            tiles: Arc::clone(&self.cached_tiles),
+            furniture: Arc::clone(&self.cached_furniture_render),
             pc_states,
         }
     }
 
     /// Tick all characters forward by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
-        // Compute the lounge zone tile set once for idle wander pooling.
-        let lounge_tiles: HashSet<(i32, i32)> = self
-            .layout
-            .zones
-            .lounge
-            .tiles_in(&self.walkable_tiles)
-            .into_iter()
-            .collect();
-
         for ch in &mut self.characters {
-            ch.tick(dt, &self.walkable_tiles, &lounge_tiles, &mut self.rng);
+            ch.tick(
+                dt,
+                &self.layout.walkable_tiles,
+                &self.lounge_wander_tiles,
+                &mut self.rng,
+            );
         }
-
         self.tick_pc_anims(dt);
     }
 
     /// Update PC on/off animation based on which desk seats are occupied by typing characters.
     fn tick_pc_anims(&mut self, dt: f32) {
-        // Build a set of seat tiles where the character is in Type state.
+        // Build a set of seat tiles where the character is currently typing.
         let active_seats: HashSet<(i32, i32)> = self
             .characters
             .iter()
@@ -139,18 +162,9 @@ impl OfficeState {
             .filter_map(|ch| ch.seat.map(|(x, y, _)| (x, y)))
             .collect();
 
-        // Collect (tile, pc_uid) pairs to avoid borrowing layout inside the mutation loop.
-        let desk_info: Vec<((i32, i32), String)> = self
-            .layout
-            .stations
-            .desk_seats
-            .iter()
-            .filter_map(|s| s.furniture_uid.as_ref().map(|uid| (s.tile, uid.clone())))
-            .collect();
-
-        for (tile, pc_uid) in desk_info {
-            let is_active = active_seats.contains(&tile);
-            let entry = self.pc_anim_states.entry(pc_uid).or_default();
+        for (tile, pc_uid) in &self.desk_pc_links {
+            let is_active = active_seats.contains(tile);
+            let entry = self.pc_anim_states.entry(pc_uid.clone()).or_default();
             entry.on = is_active;
             if is_active {
                 entry.timer += dt;
@@ -204,8 +218,8 @@ impl OfficeState {
                 OfficeMutation::SpawnCharacter { agent_name, palette, char_id } => {
                     // Spawn inside the lounge zone.
                     use rand::seq::IteratorRandom as _;
-                    let lounge_tiles = self.layout.zones.lounge.tiles_in(&self.walkable_tiles);
-                    let spawn_tile = lounge_tiles
+                    let spawn_tile = self
+                        .lounge_wander_tiles
                         .iter()
                         .copied()
                         .choose(&mut self.rng)
@@ -278,8 +292,7 @@ impl OfficeState {
                             CharState::Wait => &self.layout.zones.meeting,
                             CharState::Idle | CharState::Walk => &self.layout.zones.lounge,
                         };
-                        // Collect first to end the zone borrow before mutably borrowing rng.
-                        let candidates = zone.tiles_in(&self.walkable_tiles);
+                        let candidates = zone.tiles_in(&self.layout.walkable_tiles);
                         use rand::seq::IteratorRandom as _;
                         candidates.into_iter().choose(&mut self.rng)
                     };
@@ -297,7 +310,7 @@ impl OfficeState {
                         }
 
                         if let Some(t) = target_tile {
-                            ch.walk_to(t, char_state, &self.walkable_tiles);
+                            ch.walk_to(t, char_state, &self.layout.walkable_tiles);
                         } else {
                             ch.state = char_state;
                         }
