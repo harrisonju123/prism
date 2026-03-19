@@ -1290,6 +1290,14 @@ impl AgentDiff {
             workspace_thread.thread = thread.downgrade();
             workspace_thread._thread_subscriptions = (action_log_subscription, thread_subscription);
             self.update_reviewing_editors(workspace, window, cx);
+            // Update activity bus for the new thread (title reset; generating starts false).
+            if let Some(bus) = activity_bus::global_inner(cx) {
+                let title = thread.read(cx).title().to_string();
+                bus.update(cx, |bus, cx| {
+                    bus.set_thread_title(Some(title), cx);
+                    bus.set_generating(false, cx);
+                });
+            }
             return;
         }
 
@@ -1405,26 +1413,32 @@ impl AgentDiff {
         match event {
             AcpThreadEvent::NewEntry => {
                 // Extract data from the entry before any mutable borrows.
-                let (tool_name_opt, has_diffs) = {
+                let (tool_name_opt, is_agent_entry, has_diffs) = {
                     let entries = thread.read(cx);
                     if let Some(entry) = entries.entries().last() {
-                        let tool_name_opt = if let acp_thread::AgentThreadEntry::ToolCall(tc) = entry {
-                            Some(tc.tool_name.as_ref().map(|n| n.to_string()).unwrap_or_default())
-                        } else {
-                            None
-                        };
+                        let (tool_name_opt, is_agent_entry) =
+                            match entry {
+                                acp_thread::AgentThreadEntry::ToolCall(tc) => {
+                                    let name = tc.tool_name.as_ref().map(|n| n.to_string()).unwrap_or_default();
+                                    (Some(name), true)
+                                }
+                                acp_thread::AgentThreadEntry::AssistantMessage(_) => (None, true),
+                                acp_thread::AgentThreadEntry::UserMessage(_) => (None, false),
+                            };
                         let has_diffs = entry.diffs().next().is_some();
-                        (tool_name_opt, has_diffs)
+                        (tool_name_opt, is_agent_entry, has_diffs)
                     } else {
-                        (None, false)
+                        (None, false, false)
                     }
                 };
-                // Update activity bus with the latest tool call.
-                if let Some(tool_name) = tool_name_opt {
+                // Update activity bus whenever the agent produces an entry.
+                if is_agent_entry {
                     if let Some(bus) = activity_bus::global_inner(cx) {
                         bus.update(cx, |bus, cx| {
                             bus.set_generating(true, cx);
-                            bus.update_tool(tool_name, None, cx);
+                            if let Some(tool_name) = tool_name_opt {
+                                bus.update_tool(tool_name, None, cx);
+                            }
                         });
                     }
                 }
