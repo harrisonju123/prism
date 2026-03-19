@@ -31,7 +31,7 @@ pub use plan_dispatch::{DispatchPlan, PlanDispatchModal};
 pub use running_agents::RunningAgents;
 pub use status_indicator::PrismStatusIndicator;
 pub use thread_view::{OpenThreadView, ThreadViewItem, open_thread_view};
-pub use pixel_office::{PixelOfficePanel, TogglePixelOffice};
+pub use pixel_office::{AgentOfficeItem, OpenAgentOffice, PixelOfficePanel, TogglePixelOffice, open_agent_office};
 
 use gpui::{App, Window};
 use notifications::status_toast::{StatusToast, ToastIcon};
@@ -108,6 +108,9 @@ pub fn init(cx: &mut App) {
             });
             workspace.register_action(|workspace, _: &TogglePixelOffice, window, cx| {
                 workspace.toggle_panel_focus::<PixelOfficePanel>(window, cx);
+            });
+            workspace.register_action(|workspace, _: &OpenAgentOffice, window, cx| {
+                open_agent_office(workspace, window, cx);
             });
 
             // Show a toast when an agent exits.

@@ -75,9 +75,10 @@ impl OfficeState {
 
     /// Tick all characters forward by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
-        let walkable = self.walkable_tiles.clone();
+        // Rust allows splitting borrows across separate struct fields: characters (mut),
+        // walkable_tiles (shared), and rng (mut) are each borrowed independently.
         for ch in &mut self.characters {
-            ch.tick(dt, &walkable, &mut self.rng);
+            ch.tick(dt, &self.walkable_tiles, &mut self.rng);
         }
     }
 
@@ -114,32 +115,19 @@ impl OfficeState {
     }
 
     /// Apply a batch of mutations from the `AgentBridge`.
-    pub fn apply_mutations(
-        &mut self,
-        mutations: Vec<OfficeMutation>,
-        agent_to_char_id: &std::collections::HashMap<String, usize>,
-    ) {
+    pub fn apply_mutations(&mut self, mutations: Vec<OfficeMutation>) {
         for mutation in mutations {
             match mutation {
-                OfficeMutation::SpawnCharacter { agent_name, palette } => {
-                    // Pick a spawn point — a random walkable tile.
-                    let tiles: Vec<_> = self.walkable_tiles.iter().copied().collect();
-                    if tiles.is_empty() {
-                        continue;
-                    }
-                    let idx = rand::Rng::random_range(&mut self.rng, 0..tiles.len());
-                    let (tx, ty) = tiles[idx];
-
-                    let id = if let Some(&cid) = agent_to_char_id.get(&agent_name) {
-                        cid
-                    } else {
+                OfficeMutation::SpawnCharacter { agent_name, palette, char_id } => {
+                    use rand::seq::IteratorRandom as _;
+                    let Some(&(tx, ty)) = self.walkable_tiles.iter().choose(&mut self.rng) else {
                         continue;
                     };
 
-                    // Remove any existing character with this id or name.
-                    self.characters.retain(|c| c.id != id && c.name != agent_name);
+                    // Remove any existing character with this id or name before re-spawning.
+                    self.characters.retain(|c| c.id != char_id && c.name != agent_name);
 
-                    let mut ch = Character::new(id, palette, agent_name, tx as f32, ty as f32);
+                    let mut ch = Character::new(char_id, palette, agent_name, tx as f32, ty as f32);
                     ch.state = CharState::Idle;
                     self.characters.push(ch);
                 }

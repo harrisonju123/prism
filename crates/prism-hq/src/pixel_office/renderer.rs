@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::sync::Arc;
 
 use gpui::{Bounds, Corners, Pixels, Window, fill, px, rgb, size};
@@ -104,7 +106,6 @@ fn render_bubble(
     ));
 }
 
-/// Return the index of the character under `mouse_pos` (tile-based hit test), if any.
 /// Return the index of the character under `mouse_pos` (tile-based hit test), if any.
 pub fn hit_test_character(
     mouse_pos: gpui::Point<Pixels>,

@@ -13,6 +13,7 @@ pub enum OfficeMutation {
     SpawnCharacter {
         agent_name: String,
         palette: usize,
+        char_id: usize,
     },
     DespawnCharacter {
         agent_name: String,
@@ -106,6 +107,7 @@ impl AgentBridge {
                 mutations.push(OfficeMutation::SpawnCharacter {
                     agent_name: agent.name.clone(),
                     palette,
+                    char_id: id,
                 });
             }
 

@@ -9,22 +9,20 @@ use ui::IconName;
 use workspace::dock::{DockPosition, Panel, PanelEvent};
 
 use super::agent_bridge::AgentBridge;
+use super::characters::{BubbleKind, Direction};
 use super::game_loop::GameLoop;
 use super::office_state::OfficeState;
 use super::sprites::SpriteAtlas;
 use crate::activity_bus;
 use crate::hq_state::HqState;
 
-/// Read the local agent name from `PRISM_AGENT_NAME` (or `UH_AGENT_NAME` fallback).
-fn local_agent_name() -> String {
-    std::env::var("PRISM_AGENT_NAME")
-        .or_else(|_| std::env::var("UH_AGENT_NAME"))
-        .unwrap_or_else(|_| "claude".to_string())
-}
-
 actions!(prism_hq, [TogglePixelOffice]);
 
 const PIXEL_OFFICE_PANEL_KEY: &str = "pixel_office";
+
+// Render snapshot — what the canvas closure needs per character.
+// (palette, tile_x, tile_y, direction, sprite_col, bubble)
+type CharSnapshot = (usize, f32, f32, Direction, usize, Option<BubbleKind>);
 
 pub struct PixelOfficePanel {
     focus_handle: FocusHandle,
@@ -40,6 +38,9 @@ pub struct PixelOfficePanel {
     /// Agent → character reconciler.
     bridge: AgentBridge,
 
+    /// Cached from env at startup; never changes during a session.
+    local_agent_name: String,
+
     /// Subscriptions to HqState and ActivityBus.
     _hq_sub: Option<gpui::Subscription>,
     _activity_sub: Option<gpui::Subscription>,
@@ -54,6 +55,11 @@ impl PixelOfficePanel {
         let focus_handle = cx.focus_handle();
         cx.on_focus(&focus_handle, window, |_, _, cx| cx.notify())
             .detach();
+
+        // Cache env var once — never changes during a session.
+        let local_agent_name = std::env::var("PRISM_AGENT_NAME")
+            .or_else(|_| std::env::var("UH_AGENT_NAME"))
+            .unwrap_or_else(|_| "claude".to_string());
 
         // Spawn background task to decode sprites without blocking the UI thread.
         let load_task = cx.spawn(async move |this: WeakEntity<PixelOfficePanel>, cx| {
@@ -72,8 +78,7 @@ impl PixelOfficePanel {
         });
 
         // Start the 60 Hz game loop.
-        let weak = cx.weak_entity();
-        GameLoop::start(weak, cx);
+        GameLoop::start(cx.weak_entity(), cx);
 
         // Subscribe to HqState to sync agent roster.
         let hq_sub = HqState::global(cx).map(|hq_entity| {
@@ -81,14 +86,12 @@ impl PixelOfficePanel {
                 let agents = hq.read(cx).agents.clone();
                 let activity_snap = activity_bus::global_inner(cx)
                     .map(|e| e.read(cx).clone());
-                let local_name = local_agent_name();
                 let mutations = panel.bridge.sync(
                     &agents,
                     activity_snap.as_ref(),
-                    Some(local_name.as_str()),
+                    Some(panel.local_agent_name.as_str()),
                 );
-                let agent_map = panel.bridge.agent_to_char.clone();
-                panel.state.apply_mutations(mutations, &agent_map);
+                panel.state.apply_mutations(mutations);
                 cx.notify();
             })
         });
@@ -100,14 +103,12 @@ impl PixelOfficePanel {
                 let agents = HqState::global(cx)
                     .map(|hq| hq.read(cx).agents.clone())
                     .unwrap_or_default();
-                let local_name = local_agent_name();
                 let mutations = panel.bridge.sync(
                     &agents,
                     Some(&bus_snap),
-                    Some(local_name.as_str()),
+                    Some(panel.local_agent_name.as_str()),
                 );
-                let agent_map = panel.bridge.agent_to_char.clone();
-                panel.state.apply_mutations(mutations, &agent_map);
+                panel.state.apply_mutations(mutations);
                 cx.notify();
             })
         });
@@ -119,6 +120,7 @@ impl PixelOfficePanel {
             atlas: None,
             state: OfficeState::demo(),
             bridge: AgentBridge::new(),
+            local_agent_name,
             _hq_sub: hq_sub,
             _activity_sub: activity_sub,
             _load_task: Some(load_task),
@@ -141,123 +143,86 @@ impl Focusable for PixelOfficePanel {
 impl Render for PixelOfficePanel {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let atlas = self.atlas.clone();
-        // Snapshot the data needed for the canvas closure (can't borrow self inside).
-        let characters: Vec<_> = self
+
+        // Build a minimal per-character snapshot. `sprite_col()` is computed here so
+        // the render closure doesn't need to re-implement the same match.
+        let mut characters: Vec<CharSnapshot> = self
             .state
             .characters
             .iter()
-            .map(|ch| {
-                (
-                    ch.palette,
-                    ch.tile_x,
-                    ch.tile_y,
-                    ch.direction,
-                    ch.state,
-                    ch.frame_index,
-                    ch.bubble,
-                )
-            })
+            .map(|ch| (ch.palette, ch.tile_x, ch.tile_y, ch.direction, ch.sprite_col(), ch.bubble))
             .collect();
+        // Sort back-to-front by tile_y for z-ordering.
+        characters.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Single clone of walkable tiles — moved directly into the closure.
         let walkable = self.state.walkable_tiles.clone();
 
         gpui::div().size_full().child(
             canvas(
                 |_bounds, _window, _cx| (),
-                {
-                    let atlas = atlas.clone();
-                    let characters = characters.clone();
-                    let walkable = walkable.clone();
-                    move |bounds, (), window, _cx| {
-                        // Dark navy background.
-                        window.paint_quad(fill(bounds, rgb(0x1a1a2e)));
+                move |bounds, (), window, _cx| {
+                    window.paint_quad(fill(bounds, rgb(0x1a1a2e)));
 
-                        let Some(ref atlas) = atlas else { return };
+                    let Some(ref atlas) = atlas else { return };
 
-                        // Paint floor tiles.
-                        if !atlas.floors.is_empty() {
-                            let floor_tile = &atlas.floors[1];
-                            for &(tx, ty) in &walkable {
-                                let sx = bounds.origin.x + px(tx as f32 * 32.0);
-                                let sy = bounds.origin.y + px(ty as f32 * 32.0);
-                                let _ = window.paint_image(
-                                    gpui::Bounds::new(
-                                        gpui::point(sx, sy),
-                                        gpui::size(px(32.0), px(32.0)),
-                                    ),
-                                    gpui::Corners::default(),
-                                    floor_tile.clone(),
-                                    0,
-                                    false,
-                                );
-                            }
-                        }
-
-                        // Sort characters back-to-front by tile_y (index 2 in tuple).
-                        let mut sorted = characters.clone();
-                        sorted.sort_by(|a, b| {
-                            a.2.partial_cmp(&b.2)
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                        });
-
-                        for &(palette, tile_x, tile_y, direction, state, frame_index, bubble) in
-                            &sorted
-                        {
-                            let pal = palette.min(atlas.characters.len().saturating_sub(1));
-                            let sheet = &atlas.characters[pal];
-
-                            let col = match state {
-                                super::characters::CharState::Idle
-                                | super::characters::CharState::Wait => {
-                                    super::sprites::char_frames::IDLE
-                                }
-                                super::characters::CharState::Walk => {
-                                    super::sprites::char_frames::WALK
-                                        [frame_index % super::sprites::char_frames::WALK.len()]
-                                }
-                                super::characters::CharState::Type => {
-                                    super::sprites::char_frames::TYPE_ANIM[frame_index
-                                        % super::sprites::char_frames::TYPE_ANIM.len()]
-                                }
-                            };
-                            let row = direction.sprite_row();
-
-                            if col >= sheet.cols || row >= sheet.rows {
-                                continue;
-                            }
-
-                            let frame = sheet.frame(col, row);
-                            let scale = 2.0_f32;
-                            let fw = px(sheet.frame_w as f32 * scale);
-                            let fh = px(sheet.frame_h as f32 * scale);
-                            let sx = bounds.origin.x + px(tile_x * 32.0) - fw / 2.0;
-                            let sy = bounds.origin.y + px(tile_y * 32.0) - fh / 2.0;
-
+                    // Paint floor tiles.
+                    if !atlas.floors.is_empty() {
+                        let floor_tile = &atlas.floors[1];
+                        for &(tx, ty) in &walkable {
+                            let sx = bounds.origin.x + px(tx as f32 * 32.0);
+                            let sy = bounds.origin.y + px(ty as f32 * 32.0);
                             let _ = window.paint_image(
-                                gpui::Bounds::new(gpui::point(sx, sy), gpui::size(fw, fh)),
+                                gpui::Bounds::new(
+                                    gpui::point(sx, sy),
+                                    gpui::size(px(32.0), px(32.0)),
+                                ),
                                 gpui::Corners::default(),
-                                frame.clone(),
+                                floor_tile.clone(),
                                 0,
                                 false,
                             );
+                        }
+                    }
 
-                            // Bubble indicator.
-                            if let Some(kind) = bubble {
-                                let bx = sx + fw / 2.0 - px(8.0);
-                                let by = sy - px(14.0);
-                                let color = match kind {
-                                    super::characters::BubbleKind::Permission => {
-                                        gpui::rgb(0xffd700)
-                                    }
-                                    super::characters::BubbleKind::Waiting => gpui::rgb(0x00bfff),
-                                };
-                                window.paint_quad(fill(
-                                    gpui::Bounds::new(
-                                        gpui::point(bx, by),
-                                        gpui::size(px(16.0), px(13.0)),
-                                    ),
-                                    color,
-                                ));
-                            }
+                    for &(palette, tile_x, tile_y, direction, col, bubble) in &characters {
+                        let pal = palette.min(atlas.characters.len().saturating_sub(1));
+                        let sheet = &atlas.characters[pal];
+                        let row = direction.sprite_row();
+
+                        if col >= sheet.cols || row >= sheet.rows {
+                            continue;
+                        }
+
+                        let frame = sheet.frame(col, row);
+                        let scale = 2.0_f32;
+                        let fw = px(sheet.frame_w as f32 * scale);
+                        let fh = px(sheet.frame_h as f32 * scale);
+                        let sx = bounds.origin.x + px(tile_x * 32.0) - fw / 2.0;
+                        let sy = bounds.origin.y + px(tile_y * 32.0) - fh / 2.0;
+
+                        let _ = window.paint_image(
+                            gpui::Bounds::new(gpui::point(sx, sy), gpui::size(fw, fh)),
+                            gpui::Corners::default(),
+                            frame.clone(),
+                            0,
+                            false,
+                        );
+
+                        if let Some(kind) = bubble {
+                            let bx = sx + fw / 2.0 - px(8.0);
+                            let by = sy - px(14.0);
+                            let color = match kind {
+                                BubbleKind::Permission => gpui::rgb(0xffd700),
+                                BubbleKind::Waiting => gpui::rgb(0x00bfff),
+                            };
+                            window.paint_quad(fill(
+                                gpui::Bounds::new(
+                                    gpui::point(bx, by),
+                                    gpui::size(px(16.0), px(13.0)),
+                                ),
+                                color,
+                            ));
                         }
                     }
                 },

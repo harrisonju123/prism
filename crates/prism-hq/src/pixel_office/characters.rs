@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use rand::Rng;
+use rand::seq::IteratorRandom as _;
 
 use super::pathfinding::find_path;
 use super::sprites::{char_frames, char_rows};
@@ -198,10 +199,8 @@ impl Character {
                 self.wander_timer =
                     rng.random_range(WANDER_PAUSE_MIN..WANDER_PAUSE_MAX);
 
-                // Pick a random walkable tile to stroll to.
-                let tiles: Vec<_> = walkable.iter().copied().collect();
-                if !tiles.is_empty() {
-                    let target = tiles[rng.random_range(0..tiles.len())];
+                // IteratorRandom::choose picks a random element without collecting to Vec.
+                if let Some(&target) = walkable.iter().choose(rng) {
                     let from = (self.tile_x.round() as i32, self.tile_y.round() as i32);
                     let path = find_path(from, target, walkable);
                     if !path.is_empty() {
