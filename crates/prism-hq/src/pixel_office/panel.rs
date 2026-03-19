@@ -110,7 +110,7 @@ impl PixelOfficePanel {
 
         Self {
             focus_handle,
-            position: DockPosition::Right,
+            position: DockPosition::Left,
             width: None,
             atlas: None,
             state: OfficeState::from_layout(),
