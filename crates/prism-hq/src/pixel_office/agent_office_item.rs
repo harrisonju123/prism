@@ -6,25 +6,21 @@ use std::time::Instant;
 use gpui::{
     App, AppContext, Bounds, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement,
     IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Render,
-    SharedString, StatefulInteractiveElement, Styled, Task, WeakEntity, Window, actions, canvas,
-    fill, px, rgb,
+    SharedString, Styled, Task, WeakEntity, Window, actions, canvas,
+    fill, px, rgba,
 };
 use ui::{Icon, IconName};
 use workspace::Workspace;
 use workspace::item::{Item, ItemEvent};
 
 use super::agent_bridge::AgentBridge;
-use super::characters::{BubbleKind, Direction};
 use super::office_state::OfficeState;
-use super::renderer;
+use super::renderer::{self, CharSnapshot};
 use super::sprites::SpriteAtlas;
 use crate::activity_bus;
 use crate::hq_state::HqState;
 
 actions!(prism_hq, [OpenAgentOffice]);
-
-// Render snapshot — same as panel.rs
-type CharSnapshot = (usize, f32, f32, Direction, usize, Option<BubbleKind>);
 
 pub struct AgentOfficeItem {
     focus_handle: FocusHandle,
@@ -32,7 +28,8 @@ pub struct AgentOfficeItem {
     state: OfficeState,
     bridge: AgentBridge,
     local_agent_name: String,
-    selected_char_name: Option<String>,
+    /// id of the selected character (consistent type with hovered_char_id).
+    selected_char_id: Option<usize>,
     hovered_char_id: Option<usize>,
     canvas_bounds: Rc<Cell<Bounds<Pixels>>>,
     _hq_sub: Option<gpui::Subscription>,
@@ -67,7 +64,7 @@ impl AgentOfficeItem {
             .ok();
         });
 
-        // Inline game loop (typed to AgentOfficeItem, avoids changing GameLoop).
+        // Inline game loop (typed to AgentOfficeItem, stored to cancel on drop).
         let game_loop = {
             let weak = cx.weak_entity();
             cx.spawn(async move |_this, cx| {
@@ -124,17 +121,15 @@ impl AgentOfficeItem {
             })
         });
 
-        let canvas_bounds = Rc::new(Cell::new(Bounds::default()));
-
         Self {
             focus_handle,
             atlas: None,
-            state: OfficeState::demo(),
+            state: OfficeState::from_layout(),
             bridge: AgentBridge::new(),
             local_agent_name,
-            selected_char_name: None,
+            selected_char_id: None,
             hovered_char_id: None,
-            canvas_bounds,
+            canvas_bounds: Rc::new(Cell::new(Bounds::default())),
             _hq_sub: hq_sub,
             _activity_sub: activity_sub,
             _load_task: Some(load_task),
@@ -166,40 +161,37 @@ impl AgentOfficeItem {
         let Some(char_id) =
             renderer::hit_test_character(event.position, &self.state, bounds.origin)
         else {
-            self.selected_char_name = None;
+            self.selected_char_id = None;
             cx.notify();
             return;
         };
+
+        self.selected_char_id = Some(char_id);
+        cx.notify();
 
         let Some(ch) = self.state.characters.iter().find(|c| c.id == char_id) else {
             return;
         };
         let agent_name = ch.name.clone();
-        self.selected_char_name = Some(agent_name.clone());
-        cx.notify();
 
         // Look up agent's current thread from HqState.
-        let thread_name = HqState::global(cx)
-            .and_then(|hq| {
-                hq.read(cx)
-                    .agents
-                    .iter()
-                    .find(|a| a.name == agent_name)
-                    .and_then(|a| a.current_thread.clone())
-            });
+        let thread_name = HqState::global(cx).and_then(|hq| {
+            hq.read(cx)
+                .agents
+                .iter()
+                .find(|a| a.name == agent_name)
+                .and_then(|a| a.current_thread.clone())
+        });
 
-        let Some(thread_name) = thread_name else {
-            // No thread — just mark selection, no chat to open.
-            return;
-        };
+        if let Some(ref thread) = thread_name {
+            log::info!("agent_office: selected agent '{agent_name}' on thread '{thread}'");
+        } else {
+            log::info!("agent_office: selected agent '{agent_name}' (no active thread)");
+        }
 
-        // Async: resolve thread name → UUID, then dispatch OpenAgentChatSession.
-        cx.spawn(async move |_this, _cx| {
-            // Thread name is what we have; without a ContextHandle we cannot resolve
-            // the UUID here. Log for now — full resolution requires ContextService access.
-            log::info!("agent_office: selected agent '{agent_name}' on thread '{thread_name}'");
-        })
-        .detach();
+        // TODO: dispatch OpenAgentChatSession once ContextService thread-name→UUID resolution
+        // is wired up. Currently we log the selection and focus is marked via selected_char_id.
+        let _ = thread_name;
     }
 }
 
@@ -214,26 +206,35 @@ impl Focusable for AgentOfficeItem {
 impl Render for AgentOfficeItem {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let atlas = self.atlas.clone();
-        let selected_name = self.selected_char_name.clone();
+        let selected_id = self.selected_char_id;
         let hovered_id = self.hovered_char_id;
 
-        let mut characters: Vec<CharSnapshot> = self
+        // Build per-character snapshots with id for highlight tracking.
+        let mut chars_with_ids: Vec<(usize, CharSnapshot)> = self
             .state
             .characters
             .iter()
-            .map(|ch| (ch.palette, ch.tile_x, ch.tile_y, ch.direction, ch.sprite_col(), ch.bubble))
+            .map(|ch| {
+                (
+                    ch.id,
+                    (
+                        ch.id,
+                        ch.palette,
+                        ch.tile_x,
+                        ch.tile_y,
+                        ch.direction,
+                        ch.sprite_col(),
+                        ch.bubble,
+                    ),
+                )
+            })
             .collect();
-        characters.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+        // Sort back-to-front by tile_y for z-ordering.
+        chars_with_ids
+            .sort_by(|a, b| a.1.3.partial_cmp(&b.1.3).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Capture data needed for hit-test highlight overlays.
-        let char_positions: Vec<(usize, String, f32, f32)> = self
-            .state
-            .characters
-            .iter()
-            .map(|ch| (ch.id, ch.name.clone(), ch.tile_x, ch.tile_y))
-            .collect();
-
-        let walkable = self.state.walkable_tiles.clone();
+        // Snapshot layout data for the render closure.
+        let layout_data = self.state.layout_render_data();
         let canvas_bounds_cell = self.canvas_bounds.clone();
 
         gpui::div()
@@ -252,98 +253,30 @@ impl Render for AgentOfficeItem {
                                 canvas_bounds_cell.set(bounds);
                             },
                             move |bounds, (), window, _cx| {
-                                window.paint_quad(fill(bounds, rgb(0x1a1a2e)));
-
                                 let Some(ref atlas) = atlas else { return };
 
-                                // Floor tiles.
-                                if !atlas.floors.is_empty() {
-                                    let floor_tile = &atlas.floors[1];
-                                    for &(tx, ty) in &walkable {
-                                        let sx = bounds.origin.x + px(tx as f32 * 32.0);
-                                        let sy = bounds.origin.y + px(ty as f32 * 32.0);
-                                        let _ = window.paint_image(
-                                            gpui::Bounds::new(
-                                                gpui::point(sx, sy),
-                                                gpui::size(px(32.0), px(32.0)),
-                                            ),
-                                            gpui::Corners::default(),
-                                            floor_tile.clone(),
-                                            0,
-                                            false,
-                                        );
-                                    }
-                                }
+                                // Extract snapshot slice for render_frame.
+                                let snapshots: Vec<CharSnapshot> =
+                                    chars_with_ids.iter().map(|(_, s)| *s).collect();
+                                renderer::render_frame(
+                                    bounds, &snapshots, &layout_data, atlas, window,
+                                );
 
-                                // Characters.
-                                for &(palette, tile_x, tile_y, direction, col, bubble) in
-                                    &characters
-                                {
-                                    let pal =
-                                        palette.min(atlas.characters.len().saturating_sub(1));
-                                    let sheet = &atlas.characters[pal];
-                                    let row = direction.sprite_row();
-                                    if col >= sheet.cols || row >= sheet.rows {
-                                        continue;
-                                    }
-                                    let frame = sheet.frame(col, row);
-                                    let scale = 2.0_f32;
-                                    let fw = px(sheet.frame_w as f32 * scale);
-                                    let fh = px(sheet.frame_h as f32 * scale);
-                                    let sx = bounds.origin.x + px(tile_x * 32.0) - fw / 2.0;
-                                    let sy = bounds.origin.y + px(tile_y * 32.0) - fh / 2.0;
-                                    let _ = window.paint_image(
-                                        gpui::Bounds::new(
-                                            gpui::point(sx, sy),
-                                            gpui::size(fw, fh),
-                                        ),
-                                        gpui::Corners::default(),
-                                        frame.clone(),
-                                        0,
-                                        false,
-                                    );
-                                    if let Some(kind) = bubble {
-                                        let bx = sx + fw / 2.0 - px(8.0);
-                                        let by = sy - px(14.0);
-                                        let color = match kind {
-                                            BubbleKind::Permission => gpui::rgb(0xffd700),
-                                            BubbleKind::Waiting => gpui::rgb(0x00bfff),
-                                        };
-                                        window.paint_quad(fill(
-                                            gpui::Bounds::new(
-                                                gpui::point(bx, by),
-                                                gpui::size(px(16.0), px(13.0)),
-                                            ),
-                                            color,
-                                        ));
-                                    }
-                                }
-
-                                // Hover and selection highlights.
+                                // Hover and selection highlights drawn on top.
                                 let scale = 2.0_f32;
                                 let fw = px(16.0 * scale);
                                 let fh = px(32.0 * scale);
-                                for &(id, ref name, tile_x, tile_y) in &char_positions {
+                                for &(id, (_, _, tile_x, tile_y, _, _, _)) in &chars_with_ids {
                                     let sx = bounds.origin.x + px(tile_x * 32.0) - fw / 2.0;
                                     let sy = bounds.origin.y + px(tile_y * 32.0) - fh / 2.0;
                                     let char_bounds = gpui::Bounds::new(
                                         gpui::point(sx, sy),
                                         gpui::size(fw, fh),
                                     );
-
-                                    let is_selected = selected_name.as_deref() == Some(name.as_str());
-                                    let is_hovered = hovered_id == Some(id);
-
-                                    if is_selected {
-                                        window.paint_quad(fill(
-                                            char_bounds,
-                                            gpui::rgba(0xffffff33),
-                                        ));
-                                    } else if is_hovered {
-                                        window.paint_quad(fill(
-                                            char_bounds,
-                                            gpui::rgba(0xffffff1a),
-                                        ));
+                                    if selected_id == Some(id) {
+                                        window.paint_quad(fill(char_bounds, rgba(0xffffff33)));
+                                    } else if hovered_id == Some(id) {
+                                        window.paint_quad(fill(char_bounds, rgba(0xffffff1a)));
                                     }
                                 }
                             },
@@ -380,7 +313,6 @@ pub fn open_agent_office(
     window: &mut Window,
     cx: &mut gpui::Context<Workspace>,
 ) {
-    // Reuse existing tab if one is already open.
     let existing = workspace
         .active_pane()
         .read(cx)

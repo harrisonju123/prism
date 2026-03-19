@@ -1,10 +1,49 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
 use super::agent_bridge::OfficeMutation;
-use super::characters::{BubbleKind, CharState, Character, Direction};
+use super::characters::{CharState, Character, Direction};
+use super::layout::{OfficeLayout, StationRegistry, Zone};
+
+// ── PC animation state ─────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, Default)]
+pub struct PcAnimState {
+    pub on: bool,
+    pub frame: usize,
+    pub timer: f32,
+}
+
+// ── render snapshot types (used by renderer.rs) ────────────────────────────────
+
+/// Lightweight per-furniture data for rendering.
+#[derive(Clone)]
+pub struct FurnitureRenderItem {
+    pub asset_id: String,
+    pub mirror: bool,
+    pub col: i32,
+    pub row: i32,
+}
+
+/// PC animation state needed by the renderer.
+#[derive(Clone)]
+pub struct PcRenderState {
+    pub on: bool,
+    pub frame: usize,
+}
+
+/// All layout-level data needed by `renderer::render_frame`.
+pub struct LayoutRenderData {
+    pub cols: usize,
+    pub rows: usize,
+    pub tiles: Vec<u8>,
+    pub furniture: Vec<FurnitureRenderItem>,
+    pub pc_states: HashMap<String, PcRenderState>,
+}
+
+// ── office state ──────────────────────────────────────────────────────────────
 
 /// The mutable game state for the Pixel Office — characters, walkable tiles, etc.
 pub struct OfficeState {
@@ -12,73 +51,117 @@ pub struct OfficeState {
     pub walkable_tiles: HashSet<(i32, i32)>,
     pub rng: SmallRng,
     pub hovered_char: Option<usize>,
+    pub layout: OfficeLayout,
+    pub pc_anim_states: HashMap<String, PcAnimState>,
     next_id: usize,
     next_palette: usize,
 }
 
 impl OfficeState {
-    /// Create a default demo office with a 10×8 walkable floor grid and 3 demo characters.
-    pub fn demo() -> Self {
-        let mut walkable = HashSet::new();
-        for x in 1..=10 {
-            for y in 1..=8 {
-                walkable.insert((x, y));
-            }
-        }
-
+    /// Create a live office from the embedded layout JSON.
+    pub fn from_layout() -> Self {
+        let layout = OfficeLayout::load();
+        let walkable_tiles = layout.walkable_tiles.clone();
         let rng = SmallRng::seed_from_u64(42);
 
-        let mut state = Self {
+        Self {
             characters: Vec::new(),
-            walkable_tiles: walkable,
+            walkable_tiles,
             rng,
             hovered_char: None,
+            layout,
+            pc_anim_states: HashMap::new(),
             next_id: 0,
             next_palette: 0,
-        };
-
-        // Spawn 3 demo characters in different initial states.
-        state.spawn_demo_character("claude", 3.0, 3.0, CharState::Type);
-        state.spawn_demo_character("gemini", 7.0, 5.0, CharState::Idle);
-        state.spawn_demo_character("gpt-4o", 5.0, 2.0, CharState::Wait);
-
-        state
+        }
     }
 
-    fn spawn_demo_character(
-        &mut self,
-        name: &str,
-        x: f32,
-        y: f32,
-        initial_state: CharState,
-    ) {
-        let id = self.next_id;
-        self.next_id += 1;
-        let palette = self.next_palette % 6;
-        self.next_palette += 1;
+    /// Build a `LayoutRenderData` snapshot suitable for the render closure.
+    pub fn layout_render_data(&self) -> LayoutRenderData {
+        let furniture = self
+            .layout
+            .furniture
+            .iter()
+            .map(|f| FurnitureRenderItem {
+                asset_id: if f.mirror {
+                    format!("{}:left", f.asset_id)
+                } else {
+                    f.asset_id.clone()
+                },
+                mirror: f.mirror,
+                col: f.col,
+                row: f.row,
+            })
+            .collect();
 
-        let mut ch = Character::new(id, palette, name, x, y);
-        ch.state = initial_state;
+        let pc_states = self
+            .pc_anim_states
+            .iter()
+            .map(|(uid, st)| {
+                (uid.clone(), PcRenderState { on: st.on, frame: st.frame })
+            })
+            .collect();
 
-        // Assign a simple hardcoded seat near spawn.
-        let seat_x = x.round() as i32;
-        let seat_y = y.round() as i32;
-        ch.seat = Some((seat_x, seat_y, Direction::Down));
-
-        // Give the waiting character a bubble.
-        if initial_state == CharState::Wait {
-            ch.show_bubble(BubbleKind::Waiting);
+        LayoutRenderData {
+            cols: self.layout.cols,
+            rows: self.layout.rows,
+            tiles: self.layout.tiles.clone(),
+            furniture,
+            pc_states,
         }
-
-        self.characters.push(ch);
     }
 
     /// Tick all characters forward by `dt` seconds.
     pub fn tick(&mut self, dt: f32) {
-        // Rust allows splitting borrows across separate struct fields: characters (mut),
-        // walkable_tiles (shared), and rng (mut) are each borrowed independently.
+        // Compute the lounge zone tile set once for idle wander pooling.
+        let lounge_tiles: HashSet<(i32, i32)> = self
+            .layout
+            .zones
+            .lounge
+            .tiles_in(&self.walkable_tiles)
+            .into_iter()
+            .collect();
+
         for ch in &mut self.characters {
-            ch.tick(dt, &self.walkable_tiles, &mut self.rng);
+            ch.tick(dt, &self.walkable_tiles, &lounge_tiles, &mut self.rng);
+        }
+
+        self.tick_pc_anims(dt);
+    }
+
+    /// Update PC on/off animation based on which desk seats are occupied by typing characters.
+    fn tick_pc_anims(&mut self, dt: f32) {
+        // Build a set of seat tiles where the character is in Type state.
+        let active_seats: HashSet<(i32, i32)> = self
+            .characters
+            .iter()
+            .filter(|ch| ch.state == CharState::Type)
+            .filter_map(|ch| ch.seat.map(|(x, y, _)| (x, y)))
+            .collect();
+
+        // Collect (tile, pc_uid) pairs to avoid borrowing layout inside the mutation loop.
+        let desk_info: Vec<((i32, i32), String)> = self
+            .layout
+            .stations
+            .desk_seats
+            .iter()
+            .filter_map(|s| s.furniture_uid.as_ref().map(|uid| (s.tile, uid.clone())))
+            .collect();
+
+        for (tile, pc_uid) in desk_info {
+            let is_active = active_seats.contains(&tile);
+            let entry = self.pc_anim_states.entry(pc_uid).or_default();
+            entry.on = is_active;
+            if is_active {
+                entry.timer += dt;
+                if entry.timer >= 0.3 {
+                    entry.timer -= 0.3;
+                    entry.frame = (entry.frame + 1) % 3;
+                }
+            } else {
+                entry.frame = 0;
+                entry.timer = 0.0;
+            }
         }
     }
 
@@ -119,36 +202,116 @@ impl OfficeState {
         for mutation in mutations {
             match mutation {
                 OfficeMutation::SpawnCharacter { agent_name, palette, char_id } => {
+                    // Spawn inside the lounge zone.
                     use rand::seq::IteratorRandom as _;
-                    let Some(&(tx, ty)) = self.walkable_tiles.iter().choose(&mut self.rng) else {
-                        continue;
-                    };
+                    let lounge_tiles = self.layout.zones.lounge.tiles_in(&self.walkable_tiles);
+                    let spawn_tile = lounge_tiles
+                        .iter()
+                        .copied()
+                        .choose(&mut self.rng)
+                        .unwrap_or((14, 15));
 
                     // Remove any existing character with this id or name before re-spawning.
-                    self.characters.retain(|c| c.id != char_id && c.name != agent_name);
+                    self.characters
+                        .retain(|c| c.id != char_id && c.name != agent_name);
 
-                    let mut ch = Character::new(char_id, palette, agent_name, tx as f32, ty as f32);
+                    let mut ch = Character::new(
+                        char_id,
+                        palette,
+                        agent_name,
+                        spawn_tile.0 as f32,
+                        spawn_tile.1 as f32,
+                    );
                     ch.state = CharState::Idle;
                     self.characters.push(ch);
                 }
+
                 OfficeMutation::DespawnCharacter { agent_name } => {
+                    self.layout.stations.release_all(&agent_name);
                     self.characters.retain(|c| c.name != agent_name);
                 }
+
                 OfficeMutation::SetState { agent_name, char_state, status_text } => {
-                    if let Some(ch) = self.character_by_name_mut(&agent_name) {
-                        ch.state = char_state;
+                    // 1. Release all existing stations for this agent.
+                    self.layout.stations.release_all(&agent_name);
+
+                    // 2. Try to claim a station in the target zone.
+                    let claimed: Option<((i32, i32), Direction)> = match char_state {
+                        CharState::Read => {
+                            StationRegistry::claim(
+                                &mut self.layout.stations.library_spots,
+                                &agent_name,
+                            )
+                            .map(|t| (t, Direction::Up))
+                        }
+                        CharState::Type => {
+                            StationRegistry::claim(
+                                &mut self.layout.stations.desk_seats,
+                                &agent_name,
+                            )
+                            .map(|t| (t, Direction::Up))
+                        }
+                        CharState::Wait => {
+                            StationRegistry::claim(
+                                &mut self.layout.stations.meeting_spots,
+                                &agent_name,
+                            )
+                            .map(|t| (t, Direction::Right))
+                        }
+                        CharState::Idle => {
+                            StationRegistry::claim(
+                                &mut self.layout.stations.lounge_spots,
+                                &agent_name,
+                            )
+                            .map(|t| (t, Direction::Down))
+                        }
+                        CharState::Walk => None,
+                    };
+
+                    // 3. Determine target tile (claimed station or random zone tile).
+                    let target_tile: Option<(i32, i32)> = if let Some((tile, _)) = claimed {
+                        Some(tile)
+                    } else {
+                        let zone: &Zone = match char_state {
+                            CharState::Read => &self.layout.zones.library,
+                            CharState::Type => &self.layout.zones.computer,
+                            CharState::Wait => &self.layout.zones.meeting,
+                            CharState::Idle | CharState::Walk => &self.layout.zones.lounge,
+                        };
+                        // Collect first to end the zone borrow before mutably borrowing rng.
+                        let candidates = zone.tiles_in(&self.walkable_tiles);
+                        use rand::seq::IteratorRandom as _;
+                        candidates.into_iter().choose(&mut self.rng)
+                    };
+
+                    // 4. Update the character.
+                    if let Some(ch) =
+                        self.characters.iter_mut().find(|c| c.name == agent_name)
+                    {
                         ch.status_text = status_text;
                         ch.frame_index = 0;
                         ch.anim_timer = 0.0;
+
+                        if let Some((tile, dir)) = claimed {
+                            ch.seat = Some((tile.0, tile.1, dir));
+                        }
+
+                        if let Some(t) = target_tile {
+                            ch.walk_to(t, char_state, &self.walkable_tiles);
+                        } else {
+                            ch.state = char_state;
+                        }
                     }
                 }
+
                 OfficeMutation::ShowBubble { agent_name, kind } => {
-                    if let Some(ch) = self.character_by_name_mut(&agent_name) {
+                    if let Some(ch) = self.characters.iter_mut().find(|c| c.name == agent_name) {
                         ch.show_bubble(kind);
                     }
                 }
+
                 OfficeMutation::ClearBubble { agent_name } => {
-                    if let Some(ch) = self.character_by_name_mut(&agent_name) {
+                    if let Some(ch) = self.characters.iter_mut().find(|c| c.name == agent_name) {
                         ch.bubble = None;
                     }
                 }

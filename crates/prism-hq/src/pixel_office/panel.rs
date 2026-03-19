@@ -2,16 +2,15 @@ use std::sync::Arc;
 
 use gpui::{
     App, Context, EventEmitter, FocusHandle, Focusable, IntoElement,
-    ParentElement, Pixels, Render, Styled, Task, WeakEntity, Window, actions, canvas, fill, px,
-    rgb,
+    ParentElement, Pixels, Render, Styled, Task, WeakEntity, Window, actions, canvas, px,
 };
 use ui::IconName;
 use workspace::dock::{DockPosition, Panel, PanelEvent};
 
 use super::agent_bridge::AgentBridge;
-use super::characters::{BubbleKind, Direction};
 use super::game_loop::GameLoop;
 use super::office_state::OfficeState;
+use super::renderer::{self, CharSnapshot};
 use super::sprites::SpriteAtlas;
 use crate::activity_bus;
 use crate::hq_state::HqState;
@@ -19,10 +18,6 @@ use crate::hq_state::HqState;
 actions!(prism_hq, [TogglePixelOffice]);
 
 const PIXEL_OFFICE_PANEL_KEY: &str = "pixel_office";
-
-// Render snapshot — what the canvas closure needs per character.
-// (palette, tile_x, tile_y, direction, sprite_col, bubble)
-type CharSnapshot = (usize, f32, f32, Direction, usize, Option<BubbleKind>);
 
 pub struct PixelOfficePanel {
     focus_handle: FocusHandle,
@@ -118,7 +113,7 @@ impl PixelOfficePanel {
             position: DockPosition::Right,
             width: None,
             atlas: None,
-            state: OfficeState::demo(),
+            state: OfficeState::from_layout(),
             bridge: AgentBridge::new(),
             local_agent_name,
             _hq_sub: hq_sub,
@@ -144,87 +139,29 @@ impl Render for PixelOfficePanel {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         let atlas = self.atlas.clone();
 
-        // Build a minimal per-character snapshot. `sprite_col()` is computed here so
-        // the render closure doesn't need to re-implement the same match.
+        // Build per-character snapshot — sprite_col() computed here so the render
+        // closure does not need to re-implement the same match.
         let mut characters: Vec<CharSnapshot> = self
             .state
             .characters
             .iter()
-            .map(|ch| (ch.palette, ch.tile_x, ch.tile_y, ch.direction, ch.sprite_col(), ch.bubble))
+            .map(|ch| {
+                (ch.id, ch.palette, ch.tile_x, ch.tile_y, ch.direction, ch.sprite_col(), ch.bubble)
+            })
             .collect();
         // Sort back-to-front by tile_y for z-ordering.
-        characters.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+        characters
+            .sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Single clone of walkable tiles — moved directly into the closure.
-        let walkable = self.state.walkable_tiles.clone();
+        // Snapshot the layout data for the render closure.
+        let layout_data = self.state.layout_render_data();
 
         gpui::div().size_full().child(
             canvas(
                 |_bounds, _window, _cx| (),
                 move |bounds, (), window, _cx| {
-                    window.paint_quad(fill(bounds, rgb(0x1a1a2e)));
-
                     let Some(ref atlas) = atlas else { return };
-
-                    // Paint floor tiles.
-                    if !atlas.floors.is_empty() {
-                        let floor_tile = &atlas.floors[1];
-                        for &(tx, ty) in &walkable {
-                            let sx = bounds.origin.x + px(tx as f32 * 32.0);
-                            let sy = bounds.origin.y + px(ty as f32 * 32.0);
-                            let _ = window.paint_image(
-                                gpui::Bounds::new(
-                                    gpui::point(sx, sy),
-                                    gpui::size(px(32.0), px(32.0)),
-                                ),
-                                gpui::Corners::default(),
-                                floor_tile.clone(),
-                                0,
-                                false,
-                            );
-                        }
-                    }
-
-                    for &(palette, tile_x, tile_y, direction, col, bubble) in &characters {
-                        let pal = palette.min(atlas.characters.len().saturating_sub(1));
-                        let sheet = &atlas.characters[pal];
-                        let row = direction.sprite_row();
-
-                        if col >= sheet.cols || row >= sheet.rows {
-                            continue;
-                        }
-
-                        let frame = sheet.frame(col, row);
-                        let scale = 2.0_f32;
-                        let fw = px(sheet.frame_w as f32 * scale);
-                        let fh = px(sheet.frame_h as f32 * scale);
-                        let sx = bounds.origin.x + px(tile_x * 32.0) - fw / 2.0;
-                        let sy = bounds.origin.y + px(tile_y * 32.0) - fh / 2.0;
-
-                        let _ = window.paint_image(
-                            gpui::Bounds::new(gpui::point(sx, sy), gpui::size(fw, fh)),
-                            gpui::Corners::default(),
-                            frame.clone(),
-                            0,
-                            false,
-                        );
-
-                        if let Some(kind) = bubble {
-                            let bx = sx + fw / 2.0 - px(8.0);
-                            let by = sy - px(14.0);
-                            let color = match kind {
-                                BubbleKind::Permission => gpui::rgb(0xffd700),
-                                BubbleKind::Waiting => gpui::rgb(0x00bfff),
-                            };
-                            window.paint_quad(fill(
-                                gpui::Bounds::new(
-                                    gpui::point(bx, by),
-                                    gpui::size(px(16.0), px(13.0)),
-                                ),
-                                color,
-                            ));
-                        }
-                    }
+                    renderer::render_frame(bounds, &characters, &layout_data, atlas, window);
                 },
             )
             .size_full(),

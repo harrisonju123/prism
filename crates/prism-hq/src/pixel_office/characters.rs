@@ -11,6 +11,7 @@ use super::sprites::{char_frames, char_rows};
 pub const WALK_SPEED: f32 = 3.0; // tiles per second
 pub const WALK_FRAME_DUR: f32 = 0.15; // seconds per walk frame
 pub const TYPE_FRAME_DUR: f32 = 0.30; // seconds per type frame
+pub const READ_FRAME_DUR: f32 = 0.40; // seconds per read frame
 pub const IDLE_FRAME_DUR: f32 = 0.50; // seconds per idle frame (single frame)
 pub const WANDER_PAUSE_MIN: f32 = 2.0;
 pub const WANDER_PAUSE_MAX: f32 = 20.0;
@@ -23,6 +24,7 @@ pub const SNAP_THRESHOLD: f32 = 0.05; // tile units
 pub enum CharState {
     Idle,
     Walk,
+    Read,
     Type,
     Wait,
 }
@@ -124,11 +126,21 @@ impl Character {
             CharState::Idle | CharState::Wait => char_frames::IDLE,
             CharState::Walk => char_frames::WALK[self.frame_index % char_frames::WALK.len()],
             CharState::Type => char_frames::TYPE_ANIM[self.frame_index % char_frames::TYPE_ANIM.len()],
+            CharState::Read => char_frames::READ[self.frame_index % char_frames::READ.len()],
         }
     }
 
     /// Update animation and movement by `dt` seconds.
-    pub fn tick(&mut self, dt: f32, walkable: &HashSet<(i32, i32)>, rng: &mut impl Rng) {
+    ///
+    /// `walkable` is the full set used for pathfinding.
+    /// `wander_pool` is the subset of tiles to pick wander destinations from (e.g. the lounge zone).
+    pub fn tick(
+        &mut self,
+        dt: f32,
+        walkable: &HashSet<(i32, i32)>,
+        wander_pool: &HashSet<(i32, i32)>,
+        rng: &mut impl Rng,
+    ) {
         // ── bubble timer ──────────────────────────────────────────────────────
         if self.bubble.is_some() {
             self.bubble_timer -= dt;
@@ -141,6 +153,7 @@ impl Character {
         let frame_dur = match self.state {
             CharState::Walk => WALK_FRAME_DUR,
             CharState::Type => TYPE_FRAME_DUR,
+            CharState::Read => READ_FRAME_DUR,
             _ => IDLE_FRAME_DUR,
         };
         self.anim_timer += dt;
@@ -149,6 +162,7 @@ impl Character {
             let cycle_len = match self.state {
                 CharState::Walk => char_frames::WALK.len(),
                 CharState::Type => char_frames::TYPE_ANIM.len(),
+                CharState::Read => char_frames::READ.len(),
                 _ => 1,
             };
             self.frame_index = (self.frame_index + 1) % cycle_len;
@@ -199,8 +213,10 @@ impl Character {
                 self.wander_timer =
                     rng.random_range(WANDER_PAUSE_MIN..WANDER_PAUSE_MAX);
 
-                // IteratorRandom::choose picks a random element without collecting to Vec.
-                if let Some(&target) = walkable.iter().choose(rng) {
+                // Pick from wander_pool (zone-restricted) for the destination,
+                // but use the full walkable set for actual pathfinding.
+                let pool = if wander_pool.is_empty() { walkable } else { wander_pool };
+                if let Some(&target) = pool.iter().choose(rng) {
                     let from = (self.tile_x.round() as i32, self.tile_y.round() as i32);
                     let path = find_path(from, target, walkable);
                     if !path.is_empty() {

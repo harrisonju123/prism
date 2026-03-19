@@ -201,7 +201,19 @@ impl AgentBridge {
             } else {
                 Some("Working…".into())
             };
-            return (CharState::Type, status_text, None);
+            let char_state = match bus.current_tool.as_deref() {
+                Some(
+                    "read_file"
+                    | "grep"
+                    | "find_path"
+                    | "codebase_search"
+                    | "glob"
+                    | "web_search"
+                    | "web_fetch",
+                ) => CharState::Read,
+                _ => CharState::Type,
+            };
+            return (char_state, status_text, None);
         }
 
         (CharState::Idle, None, None)

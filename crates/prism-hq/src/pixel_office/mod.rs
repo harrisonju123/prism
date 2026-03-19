@@ -2,6 +2,7 @@ pub mod agent_bridge;
 pub mod agent_office_item;
 pub mod characters;
 pub mod game_loop;
+pub mod layout;
 pub mod office_state;
 pub mod panel;
 pub mod pathfinding;
