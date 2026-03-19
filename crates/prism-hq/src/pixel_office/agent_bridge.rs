@@ -69,11 +69,22 @@ impl AgentBridge {
         let mut mutations = Vec::new();
 
         // Determine which agents are alive (session open, not dead).
-        let live_names: std::collections::HashSet<String> = agents
+        let mut live_names: std::collections::HashSet<String> = agents
             .iter()
             .filter(|a| a.session_open && a.state != AgentState::Dead)
             .map(|a| a.name.clone())
             .collect();
+
+        // The local agent is "alive" whenever the ActivityBus is active (generating or waiting),
+        // even if it hasn't checked in via `prism context checkin`.
+        let local_bus_active = activity
+            .map(|b| b.is_generating || b.waiting_for_approval)
+            .unwrap_or(false);
+        if let Some(name) = local_agent_name {
+            if local_bus_active {
+                live_names.insert(name.to_string());
+            }
+        }
 
         // Despawn characters whose agents are gone.
         let to_despawn: Vec<String> = self
@@ -89,6 +100,54 @@ impl AgentBridge {
             mutations.push(OfficeMutation::DespawnCharacter {
                 agent_name: name,
             });
+        }
+
+        // Spawn and update the local agent from ActivityBus when not in HqState roster.
+        if let Some(local_name) = local_agent_name {
+            let in_hq = agents.iter().any(|a| a.name == local_name);
+            if !in_hq && local_bus_active {
+                if !self.agent_to_char.contains_key(local_name) {
+                    let id = self.next_char_id;
+                    self.next_char_id += 1;
+                    let palette = self.next_palette % 6;
+                    self.next_palette += 1;
+                    self.agent_to_char.insert(local_name.to_string(), id);
+                    mutations.push(OfficeMutation::SpawnCharacter {
+                        agent_name: local_name.to_string(),
+                        palette,
+                        char_id: id,
+                    });
+                }
+
+                let (char_state, status_text, bubble) = self.state_from_activity(activity);
+
+                if self.prev_state.get(local_name) != Some(&char_state) {
+                    self.prev_state.insert(local_name.to_string(), char_state);
+                    mutations.push(OfficeMutation::SetState {
+                        agent_name: local_name.to_string(),
+                        char_state,
+                        status_text,
+                    });
+                }
+
+                let prev = self.prev_bubble.get(local_name).copied().flatten();
+                match (prev, bubble) {
+                    (None, Some(kind)) => {
+                        self.prev_bubble.insert(local_name.to_string(), Some(kind));
+                        mutations.push(OfficeMutation::ShowBubble {
+                            agent_name: local_name.to_string(),
+                            kind,
+                        });
+                    }
+                    (Some(_), None) => {
+                        self.prev_bubble.insert(local_name.to_string(), None);
+                        mutations.push(OfficeMutation::ClearBubble {
+                            agent_name: local_name.to_string(),
+                        });
+                    }
+                    _ => {}
+                }
+            }
         }
 
         // Spawn new agents, update states for existing ones.
