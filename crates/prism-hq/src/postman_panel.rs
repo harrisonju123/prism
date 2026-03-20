@@ -3,17 +3,19 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail};
 use futures::AsyncReadExt as _;
+use fs::Fs;
 use gpui::{
-    App, AppContext as _, Context, EventEmitter, FocusHandle, Focusable, Render, Task, WeakEntity,
-    Window, actions, px,
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, Render, Task,
+    WeakEntity, Window, actions, px,
 };
 use http_client::{AsyncBody, HttpClientWithUrl, Method};
 use project::project_settings::ProjectSettings;
-use settings::Settings as _;
+use settings::{Settings as _, update_settings_file};
 use ui::{
     Button, ButtonStyle, Color, Divider, DividerColor, Icon, IconName, Label, LabelSize, Tooltip,
     h_flex, prelude::*, v_flex,
 };
+use ui_input::InputField;
 use workspace::dock::{DockPosition, Panel, PanelEvent};
 
 actions!(prism_hq, [TogglePostmanPanel]);
@@ -164,6 +166,7 @@ pub struct PostmanPanel {
     is_loading: bool,
     error: Option<String>,
     refresh_task: Option<Task<()>>,
+    api_key_input: Option<Entity<InputField>>,
 }
 
 impl EventEmitter<PanelEvent> for PostmanPanel {}
@@ -192,6 +195,7 @@ impl PostmanPanel {
             is_loading: false,
             error: None,
             refresh_task: None,
+            api_key_input: None,
         };
         panel.refresh(cx);
         panel
@@ -211,7 +215,7 @@ impl PostmanPanel {
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let Some(client) = self.api_client(cx) else {
-            self.error = Some("Postman not configured. Add `\"postman\": { \"api_key\": \"...\", \"enabled\": true }` to .zed/settings.json".to_string());
+            // Not configured — the render method shows the setup form.
             cx.notify();
             return;
         };
@@ -316,6 +320,27 @@ impl PostmanPanel {
             .ok();
         })
         .detach();
+    }
+
+    fn save_api_key(&mut self, cx: &mut Context<Self>) {
+        let Some(input) = &self.api_key_input else {
+            return;
+        };
+        let api_key = input.read(cx).text(cx).trim().to_string();
+        if api_key.is_empty() {
+            return;
+        }
+
+        let fs = <dyn Fs>::global(cx);
+        update_settings_file(fs, cx, move |settings, _| {
+            let postman = settings.project.postman.get_or_insert_default();
+            postman.api_key = Some(api_key);
+            postman.enabled = Some(true);
+        });
+
+        self.api_key_input = None;
+        self.error = None;
+        self.refresh(cx);
     }
 }
 
@@ -428,7 +453,7 @@ impl Focusable for PostmanPanel {
 }
 
 impl Render for PostmanPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let is_loading = self.is_loading;
 
         let mut content = v_flex().flex_1().overflow_hidden().p_2().gap_2();
@@ -441,7 +466,32 @@ impl Render for PostmanPanel {
             );
         }
 
-        if let Some(err) = &self.error {
+        if self.api_client(cx).is_none() && self.collections.is_empty() {
+            // Show inline setup form instead of an error message.
+            if self.api_key_input.is_none() {
+                self.api_key_input = Some(cx.new(|cx| InputField::new(window, cx, "PMAK-xxxxxxxx…")));
+            }
+            content = content
+                .child(
+                    Label::new("Enter your Postman API key")
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                )
+                .child(
+                    Label::new("Get one at postman.co/settings/me/api-keys")
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                )
+                .child(self.api_key_input.as_ref().unwrap().clone())
+                .child(
+                    Button::new("save-api-key", "Save & Connect")
+                        .style(ButtonStyle::Filled)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.save_api_key(cx);
+                        })),
+                );
+        } else if let Some(err) = &self.error {
+            // Real errors (network, auth failures) still show as red text.
             content = content.child(
                 Label::new(format!("Error: {err}"))
                     .size(LabelSize::Small)
@@ -483,7 +533,7 @@ impl Render for PostmanPanel {
                     }));
                 content = content.child(row);
             }
-        } else if !is_loading && self.error.is_none() {
+        } else if !is_loading && self.error.is_none() && self.api_client(cx).is_some() {
             content = content.child(
                 Label::new("No collections")
                     .size(LabelSize::Small)
