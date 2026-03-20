@@ -76,6 +76,7 @@ text.workspace = true
 thiserror.workspace = true
 ui.workspace = true
 url.workspace = true
+urlencoding.workspace = true
 util.workspace = true
 uuid.workspace = true
 watch.workspace = true

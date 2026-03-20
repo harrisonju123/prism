@@ -9,6 +9,8 @@ use crate::{
     TaskCreateTool, TaskGetTool, TaskListTool, TaskStore, TaskUpdateTool, Template, Templates,
     TerminalTool, ThreadArchiveTool, ThreadCreateTool, ThreadListTool, ToolPermissionDecision,
     UpdateMissionTool, UpdateRiskTool, SubmitQuestionsTool, WebSearchTool,
+    PostmanClient, PostmanGetCollectionTool, PostmanGetEnvironmentTool,
+    PostmanListCollectionsTool, PostmanListEnvironmentsTool, PostmanRunRequestTool,
     decide_permission_from_settings,
 };
 use crate::compression::ContextCompressor;
@@ -53,6 +55,7 @@ use gpui_tokio::Tokio;
 use prism_context::skills::SkillRegistry;
 use prism_context::store::MemoryFilters;
 use project::Project;
+use project::project_settings::ProjectSettings;
 use prompt_store::ProjectContext;
 use schemars::{JsonSchema, Schema};
 use serde::de::DeserializeOwned;
@@ -1711,6 +1714,22 @@ impl Thread {
             self.add_tool(UpdateMissionTool::new(ctx.clone()));
             self.add_tool(SubmitQuestionsTool::new(ctx.clone()));
             self.context_handle = Some(ctx);
+        }
+
+        // Postman tools — only registered when configured in project settings.
+        {
+            let postman = ProjectSettings::get_global(cx).postman.clone();
+            if postman.enabled {
+                if let Some(api_key) = postman.api_key {
+                    let http_client = self.project.read(cx).client().http_client();
+                    let client = Arc::new(PostmanClient::new(http_client, api_key));
+                    self.add_tool(PostmanListCollectionsTool::new(client.clone()));
+                    self.add_tool(PostmanGetCollectionTool::new(client.clone()));
+                    self.add_tool(PostmanListEnvironmentsTool::new(client.clone()));
+                    self.add_tool(PostmanGetEnvironmentTool::new(client.clone()));
+                    self.add_tool(PostmanRunRequestTool::new(client));
+                }
+            }
         }
 
         // Discover and register skills from the project worktree

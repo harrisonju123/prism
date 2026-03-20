@@ -510,6 +510,7 @@ impl VsCodeSettings {
             slash_commands: None,
             git_hosting_providers: None,
             disable_ai: None,
+            postman: None,
         }
     }
 

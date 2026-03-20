@@ -84,6 +84,18 @@ pub struct ProjectSettingsContent {
     ///
     /// Default: false
     pub disable_ai: Option<SaturatingBool>,
+
+    /// Configuration for Postman API integration.
+    pub postman: Option<PostmanSettingsContent>,
+}
+
+#[with_fallible_options]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema, MergeFrom)]
+pub struct PostmanSettingsContent {
+    /// Whether the Postman integration is enabled.
+    pub enabled: Option<bool>,
+    /// Postman API key (from https://postman.co/settings/me/api-keys).
+    pub api_key: Option<String>,
 }
 
 #[with_fallible_options]

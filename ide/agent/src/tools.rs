@@ -47,6 +47,7 @@ mod terminal_tool;
 mod thread_archive_tool;
 mod thread_create_tool;
 mod thread_list_tool;
+mod postman;
 mod tool_edit_parser;
 mod tool_permissions;
 mod web_search_tool;
@@ -105,6 +106,7 @@ pub use tool_permissions::*;
 pub use update_mission_tool::*;
 pub use update_risk_tool::*;
 pub use web_search_tool::*;
+pub use postman::*;
 
 macro_rules! tools {
     ($($tool:ty),* $(,)?) => {

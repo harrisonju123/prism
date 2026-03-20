@@ -926,6 +926,15 @@ fn initialize_panels(
             })
             .log_err();
 
+        // Postman panel — browse collections and run requests.
+        workspace_handle
+            .update_in(cx, |workspace, window, cx| {
+                let http_client = workspace.project().read(cx).client().http_client();
+                let panel = cx.new(|cx| prism_hq::PostmanPanel::new(http_client, window, cx));
+                workspace.add_panel(panel, window, cx);
+            })
+            .log_err();
+
         futures::join!(
             add_panel_when_ready(project_panel, workspace_handle.clone(), cx.clone()),
             add_panel_when_ready(outline_panel, workspace_handle.clone(), cx.clone()),

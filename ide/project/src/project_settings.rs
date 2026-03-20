@@ -79,6 +79,15 @@ pub struct ProjectSettings {
 
     /// Configuration for session-related features
     pub session: SessionSettings,
+
+    /// Configuration for Postman API integration.
+    pub postman: PostmanSettings,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PostmanSettings {
+    pub enabled: bool,
+    pub api_key: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -729,6 +738,13 @@ impl Settings for ProjectSettings {
             session: SessionSettings {
                 restore_unsaved_buffers: content.session.unwrap().restore_unsaved_buffers.unwrap(),
                 trust_all_worktrees: content.session.unwrap().trust_all_worktrees.unwrap(),
+            },
+            postman: {
+                let p = project.postman.as_ref();
+                PostmanSettings {
+                    enabled: p.and_then(|p| p.enabled).unwrap_or(false),
+                    api_key: p.and_then(|p| p.api_key.clone()),
+                }
             },
         }
     }

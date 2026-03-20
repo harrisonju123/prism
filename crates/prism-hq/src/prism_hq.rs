@@ -1,5 +1,6 @@
 mod agent_spawner;
 pub mod pixel_office;
+pub mod postman_panel;
 mod agent_view;
 pub mod activity_bus;
 pub mod approval_gate;
@@ -32,6 +33,7 @@ pub use running_agents::RunningAgents;
 pub use status_indicator::PrismStatusIndicator;
 pub use thread_view::{OpenThreadView, ThreadViewItem, open_thread_view};
 pub use pixel_office::{AgentOfficeItem, OpenAgentOffice, PixelOfficePanel, TogglePixelOffice, open_agent_office};
+pub use postman_panel::{PostmanPanel, TogglePostmanPanel};
 
 use gpui::{App, Window};
 use notifications::status_toast::{StatusToast, ToastIcon};
@@ -108,6 +110,9 @@ pub fn init(cx: &mut App) {
             });
             workspace.register_action(|workspace, _: &TogglePixelOffice, window, cx| {
                 workspace.toggle_panel_focus::<PixelOfficePanel>(window, cx);
+            });
+            workspace.register_action(|workspace, _: &TogglePostmanPanel, window, cx| {
+                workspace.toggle_panel_focus::<PostmanPanel>(window, cx);
             });
             workspace.register_action(|workspace, _: &OpenAgentOffice, window, cx| {
                 open_agent_office(workspace, window, cx);
