@@ -39,6 +39,7 @@ tokio.workspace = true
 ui.workspace = true
 ui_input.workspace = true
 util.workspace = true
+urlencoding.workspace = true
 uuid = { workspace = true }
 workspace.workspace = true
 image.workspace = true
