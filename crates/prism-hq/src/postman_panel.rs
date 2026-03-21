@@ -1,22 +1,22 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result, bail};
 use futures::AsyncReadExt as _;
 use fs::Fs;
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, Render, Task,
-    WeakEntity, Window, actions, px,
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, Render,
+    Subscription, Task, WeakEntity, Window, actions, px,
 };
 use http_client::{AsyncBody, HttpClientWithUrl, Method};
 use project::project_settings::ProjectSettings;
 use settings::{Settings as _, update_settings_file};
 use ui::{
-    Button, ButtonStyle, Color, ContextMenu, ContextMenuEntry, Divider, DividerColor, Icon,
-    IconName, Label, LabelSize, PopoverMenu, PopoverMenuHandle, Tooltip,
-    h_flex, prelude::*, v_flex,
+    Button, ButtonStyle, Chip, Color, ContextMenu, ContextMenuEntry, Divider, DividerColor, Icon,
+    IconButton, IconName, Label, LabelSize, ListItem, PopoverMenu, PopoverMenuHandle, Tab, TabBar,
+    Tooltip, h_flex, prelude::*, v_flex,
 };
-use ui_input::InputField;
+use ui_input::{ErasedEditorEvent, InputField};
 use workspace::dock::{DockPosition, Panel, PanelEvent};
 
 actions!(prism_hq, [TogglePostmanPanel]);
@@ -258,7 +258,9 @@ fn parse_env_vars(env_json: &serde_json::Value) -> HashMap<String, String> {
         .filter(|v| v["enabled"].as_bool().unwrap_or(true))
         .filter_map(|v| {
             let k = v["key"].as_str()?;
-            let val = v["value"].as_str()?;
+            // Use unwrap_or so vars with an explicit empty value ("") are preserved —
+            // ?-unwrapping would silently drop them since as_str() returns None for null.
+            let val = v["value"].as_str().unwrap_or("");
             Some((k.to_string(), val.to_string()))
         })
         .collect()
@@ -287,10 +289,31 @@ struct RequestItem {
     /// Arc-wrapped so cloning a RequestItem (or the entire CollectionDetail) is cheap,
     /// and the background-task move in run_selected_request doesn't deep-copy the JSON.
     request_def: Arc<serde_json::Value>,
+    /// Pre-computed lowercase versions used in search filtering, avoiding per-keystroke allocs.
+    name_lower: String,
+    path_lower: String,
+}
+
+/// A node in the collection tree — either a folder (with nested children) or a leaf request.
+#[derive(Debug, Clone)]
+enum CollectionNode {
+    Folder {
+        name: String,
+        /// Full slash-delimited path within the collection (e.g. "Auth/Tokens").
+        /// Used as the `expanded_folders` key so same-named folders at the same depth
+        /// under different parents don't share state.
+        path: String,
+        children: Vec<CollectionNode>,
+    },
+    /// Index into `CollectionDetail.requests` for the flat list used by request detail.
+    Request(usize),
 }
 
 #[derive(Debug, Clone)]
 struct CollectionDetail {
+    /// Tree structure preserving the folder hierarchy from Postman.
+    nodes: Vec<CollectionNode>,
+    /// Flat list for O(1) index lookup from `PanelView::RequestDetail`.
     requests: Vec<RequestItem>,
 }
 
@@ -304,10 +327,23 @@ struct ExecutionResult {
     body: gpui::SharedString,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 enum PanelView {
     CollectionsList,
     RequestDetail { request_idx: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum RequestTab {
+    Params,
+    Headers,
+    Body,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ResponseTab {
+    Body,
+    Headers,
 }
 
 // ── Panel ─────────────────────────────────────────────────────────────────
@@ -328,17 +364,21 @@ pub struct PostmanPanel {
     error: Option<String>,
     refresh_task: Option<Task<()>>,
     api_key_input: Entity<InputField>,
+    search_input: Entity<InputField>,
+    /// Folder paths that are currently expanded in the tree view.
+    expanded_folders: HashSet<String>,
 
     view: PanelView,
+    active_request_tab: RequestTab,
+    active_response_tab: ResponseTab,
     selected_environment: Option<String>,
     env_vars: Arc<HashMap<String, String>>,
-    show_request_headers: bool,
-    show_request_body: bool,
-    show_response_headers: bool,
     env_selector_handle: PopoverMenuHandle<ContextMenu>,
     env_load_task: Option<Task<()>>,
     collection_load_task: Option<Task<()>>,
     request_task: Option<Task<()>>,
+    // Keep alive so the search bar triggers re-renders on every keystroke.
+    _search_subscription: Subscription,
 }
 
 impl EventEmitter<PanelEvent> for PostmanPanel {}
@@ -354,6 +394,20 @@ impl PostmanPanel {
             .detach();
 
         let api_key_input = cx.new(|cx| InputField::new(window, cx, "PMAK-xxxxxxxx…"));
+        let search_input = cx.new(|cx| InputField::new(window, cx, "Search collections & requests…"));
+        // Subscribe to the underlying editor directly so only actual text edits (BufferEdited)
+        // trigger a re-render — not cursor moves or selection changes.
+        let search_editor = search_input.read(cx).editor().clone();
+        let panel_weak = cx.weak_entity();
+        let search_sub = search_editor.subscribe(
+            Box::new(move |event, _window, cx| {
+                if event == ErasedEditorEvent::BufferEdited {
+                    panel_weak.update(cx, |_, cx| cx.notify()).ok();
+                }
+            }),
+            window,
+            cx,
+        );
 
         let mut panel = Self {
             focus_handle,
@@ -370,16 +424,18 @@ impl PostmanPanel {
             error: None,
             refresh_task: None,
             api_key_input,
+            search_input,
+            expanded_folders: HashSet::new(),
             view: PanelView::CollectionsList,
+            active_request_tab: RequestTab::Body,
+            active_response_tab: ResponseTab::Body,
             selected_environment: None,
             env_vars: Arc::new(HashMap::new()),
-            show_request_headers: false,
-            show_request_body: true,
-            show_response_headers: false,
             env_selector_handle: PopoverMenuHandle::default(),
             env_load_task: None,
             collection_load_task: None,
             request_task: None,
+            _search_subscription: search_sub,
         };
         panel.refresh(cx);
         panel
@@ -451,6 +507,7 @@ impl PostmanPanel {
         // Always update UI state first — user must see immediate feedback.
         self.selected_collection = Some(collection_id.clone());
         self.collection_detail = None;
+        self.expanded_folders.clear();
         self.view = PanelView::CollectionsList;
         self.last_response = None;
         self.error = None;
@@ -466,6 +523,7 @@ impl PostmanPanel {
         self.is_loading_detail = true;
         cx.notify();
 
+        let collection_id_for_guard = collection_id.clone();
         self.collection_load_task = Some(cx.spawn(async move |this: WeakEntity<PostmanPanel>, cx| {
             let result: Result<CollectionDetail> = cx
                 .background_spawn(async move {
@@ -481,9 +539,11 @@ impl PostmanPanel {
                 .await;
 
             this.update(cx, |this, cx| {
-                // Guard against a deselect that raced this fetch — if the user
-                // navigated away, selected_collection is None and we discard the result.
-                if this.selected_collection.is_none() {
+                // Guard against a race: user deselected or clicked a different collection
+                // while this fetch was in flight. Discard the stale result either way.
+                if this.selected_collection.as_deref() != Some(&collection_id_for_guard) {
+                    this.is_loading_detail = false;
+                    cx.notify();
                     return;
                 }
                 this.is_loading_detail = false;
@@ -543,31 +603,34 @@ impl PostmanPanel {
         }));
     }
 
-    fn reset_request_view_toggles(&mut self) {
-        self.show_request_headers = false;
-        self.show_request_body = true;
-        self.show_response_headers = false;
+    fn reset_request_tabs(&mut self) {
+        self.active_request_tab = RequestTab::Body;
+        self.active_response_tab = ResponseTab::Body;
     }
 
     fn open_request_detail(&mut self, idx: usize, cx: &mut Context<Self>) {
         self.view = PanelView::RequestDetail { request_idx: idx };
         self.last_response = None;
-        self.reset_request_view_toggles();
+        self.reset_request_tabs();
         cx.notify();
     }
 
     fn back_to_list(&mut self, cx: &mut Context<Self>) {
         self.view = PanelView::CollectionsList;
-        self.reset_request_view_toggles();
+        self.reset_request_tabs();
+        // Intentionally keep last_response — re-opening the same request shows the
+        // previous result immediately (open_request_detail clears it for a fresh request).
         cx.notify();
     }
 
     fn deselect_collection(&mut self, cx: &mut Context<Self>) {
         self.selected_collection = None;
         self.collection_detail = None;
+        self.expanded_folders.clear();
         self.is_loading_detail = false;
         self.collection_load_task = None;
         self.error = None;
+        self.view = PanelView::CollectionsList;
         cx.notify();
     }
 
@@ -607,10 +670,20 @@ impl PostmanPanel {
                     Ok(r) => this.last_response = Some(r),
                     Err(e) => this.error = Some(e.to_string()),
                 }
+                this.request_task = None;
                 cx.notify();
             })
             .ok();
         }));
+    }
+
+    fn selected_collection_name(&self) -> gpui::SharedString {
+        self.selected_collection
+            .as_deref()
+            .and_then(|id| self.collections.iter().find(|c| c.id == id))
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "Collection".into())
+            .into()
     }
 
     fn save_api_key(&mut self, cx: &mut Context<Self>) {
@@ -696,14 +769,35 @@ fn parse_collection_detail(json: &serde_json::Value) -> CollectionDetail {
         .as_array()
         .or_else(|| json["item"].as_array());
 
-    if let Some(items) = items {
-        collect_requests(items, "", &mut requests);
-    }
+    let nodes = if let Some(items) = items {
+        build_collection_nodes(items, "", &mut requests)
+    } else {
+        Vec::new()
+    };
 
-    CollectionDetail { requests }
+    CollectionDetail { nodes, requests }
 }
 
-fn collect_requests(items: &[serde_json::Value], prefix: &str, out: &mut Vec<RequestItem>) {
+fn build_collection_nodes(
+    items: &[serde_json::Value],
+    prefix: &str,
+    flat: &mut Vec<RequestItem>,
+) -> Vec<CollectionNode> {
+    build_collection_nodes_inner(items, prefix, flat, 0)
+}
+
+fn build_collection_nodes_inner(
+    items: &[serde_json::Value],
+    prefix: &str,
+    flat: &mut Vec<RequestItem>,
+    depth: usize,
+) -> Vec<CollectionNode> {
+    // Postman doesn't support arbitrarily deep nesting in practice, but guard
+    // against malformed exports forming cycles or pathologically deep trees.
+    if depth > 20 {
+        return Vec::new();
+    }
+    let mut nodes = Vec::new();
     for item in items {
         let name = item["name"].as_str().unwrap_or("").to_string();
         let full_path = if prefix.is_empty() {
@@ -717,16 +811,102 @@ fn collect_requests(items: &[serde_json::Value], prefix: &str, out: &mut Vec<Req
                 .as_str()
                 .unwrap_or("GET")
                 .to_uppercase();
-            out.push(RequestItem {
-                name,
+            let idx = flat.len();
+            flat.push(RequestItem {
+                name_lower: name.to_lowercase(),
+                path_lower: full_path.to_lowercase(),
+                name: name.clone(),
                 method,
                 path: full_path,
                 request_def: Arc::new(item["request"].clone()),
             });
+            nodes.push(CollectionNode::Request(idx));
         } else if let Some(children) = item["item"].as_array() {
-            collect_requests(children, &full_path, out);
+            let child_nodes = build_collection_nodes_inner(children, &full_path, flat, depth + 1);
+            nodes.push(CollectionNode::Folder {
+                name,
+                path: full_path,
+                children: child_nodes,
+            });
         }
     }
+    nodes
+}
+
+/// Recursively render tree nodes into a flat element list.
+/// Takes individual fields rather than `&PostmanPanel` to avoid borrow conflicts
+/// with the caller's existing borrows on `collection_detail`.
+fn render_collection_nodes(
+    nodes: &[CollectionNode],
+    requests: &[RequestItem],
+    expanded_folders: &HashSet<String>,
+    depth: usize,
+    elements: &mut Vec<gpui::AnyElement>,
+    cx: &mut Context<PostmanPanel>,
+) {
+    for node in nodes {
+        match node {
+            CollectionNode::Folder { name, path, children } => {
+                // Key by full path so same-named folders under different parents stay independent.
+                let expanded = expanded_folders.contains(path);
+                let fk = path.clone();
+                let item = ListItem::new(format!("folder-{path}"))
+                    .indent_level(depth)
+                    .toggle(Some(expanded))
+                    .start_slot(
+                        Icon::new(if expanded {
+                            IconName::FolderOpen
+                        } else {
+                            IconName::Folder
+                        })
+                        .size(ui::IconSize::Small)
+                        .color(Color::Muted),
+                    )
+                    .child(Label::new(name.clone()).size(LabelSize::Small))
+                    .on_toggle(cx.listener(move |this, _, _, cx| {
+                        if this.expanded_folders.contains(&fk) {
+                            this.expanded_folders.remove(&fk);
+                        } else {
+                            this.expanded_folders.insert(fk.clone());
+                        }
+                        cx.notify();
+                    }));
+                elements.push(item.into_any_element());
+                if expanded {
+                    render_collection_nodes(
+                        children,
+                        requests,
+                        expanded_folders,
+                        depth + 1,
+                        elements,
+                        cx,
+                    );
+                }
+            }
+            CollectionNode::Request(idx) => {
+                let idx = *idx;
+                if let Some(req) = requests.get(idx) {
+                    let method_clr = method_color(&req.method);
+                    let item = ListItem::new(format!("req-{idx}"))
+                        .indent_level(depth)
+                        .start_slot(Chip::new(req.method.clone()).label_color(method_clr))
+                        .child(Label::new(req.name.clone()).size(LabelSize::Small).truncate())
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open_request_detail(idx, cx);
+                        }));
+                    elements.push(item.into_any_element());
+                }
+            }
+        }
+    }
+}
+
+/// Render a key-value row (used for headers and params).
+fn kv_row(key: &str, value: &str) -> impl IntoElement {
+    h_flex()
+        .gap_2()
+        .child(Label::new(key.to_string()).size(LabelSize::Small).color(Color::Muted))
+        .child(Label::new(value.to_string()).size(LabelSize::Small))
 }
 
 impl Focusable for PostmanPanel {
@@ -809,7 +989,7 @@ impl Render for PostmanPanel {
                     .size(LabelSize::Small)
                     .color(Color::Muted),
             )
-            .child(gpui::div().flex_1())
+            .child(div().flex_1())
             .child(env_selector)
             .child(
                 Button::new("refresh-postman", "↻")
@@ -819,6 +999,19 @@ impl Render for PostmanPanel {
                         this.refresh(cx);
                     })),
             );
+
+        // ── Search bar (only when configured and at collection level) ────
+        let show_search = is_configured
+            && !is_refreshing
+            && matches!(self.view, PanelView::CollectionsList);
+        let search_bar = show_search.then(|| {
+            h_flex()
+                .px_2()
+                .py_1()
+                .border_b_1()
+                .border_color(cx.theme().colors().border)
+                .child(self.search_input.clone())
+        });
 
         // ── Main content area ────────────────────────────────────────────
         let mut content =
@@ -879,6 +1072,7 @@ impl Render for PostmanPanel {
             .size_full()
             .overflow_hidden()
             .child(header)
+            .children(search_bar)
             .child(content)
     }
 }
@@ -891,40 +1085,32 @@ impl PostmanPanel {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let is_loading_detail = self.is_loading_detail;
+        let query = self.search_input.read(cx).text(cx).trim().to_lowercase();
 
         if self.collection_detail.is_some() || is_loading_detail {
-            // Diagnostic: confirms re-renders fire after the async fetch completes.
-            if let Some(detail) = &self.collection_detail {
-                log::debug!(
-                    "render: collection_detail present with {} requests",
-                    detail.requests.len()
-                );
-            }
+            // ── Breadcrumb: Collections > CollectionName ──────────────────
+            let col_name = self.selected_collection_name();
 
-            // "← CollectionName" back-nav header
-            let col_name = self
-                .selected_collection
-                .as_deref()
-                .and_then(|id| self.collections.iter().find(|c| c.id == id))
-                .map(|c| c.name.chars().take(32).collect::<String>())
-                .unwrap_or_else(|| "Collections".into());
-            let back_label = format!("← {col_name}");
             content = content.child(
                 h_flex()
-                    .id("col-back-nav")
+                    .id("breadcrumb-nav")
                     .gap_1()
-                    .cursor_pointer()
-                    .px_1()
-                    .rounded_md()
-                    .hover(|style| style.bg(cx.theme().colors().element_hover))
+                    .items_center()
                     .child(
-                        Label::new(back_label)
-                            .size(LabelSize::Small)
-                            .color(Color::Accent),
+                        IconButton::new("back-to-collections", IconName::ArrowLeft)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.deselect_collection(cx);
+                            }))
+                            .tooltip(Tooltip::text("Back to Collections")),
                     )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.deselect_collection(cx);
-                    })),
+                    .child(Label::new("Collections").size(LabelSize::Small).color(Color::Muted))
+                    .child(Label::new("›").size(LabelSize::Small).color(Color::Muted))
+                    .child(
+                        Label::new(col_name)
+                            .size(LabelSize::Small)
+                            .color(Color::Muted)
+                            .truncate(),
+                    ),
             );
 
             if is_loading_detail && self.collection_detail.is_none() {
@@ -937,11 +1123,6 @@ impl PostmanPanel {
 
             if let Some(detail) = &self.collection_detail {
                 content = content.child(Divider::horizontal().color(DividerColor::Border));
-                content = content.child(
-                    Label::new("Requests")
-                        .size(LabelSize::Small)
-                        .color(Color::Muted),
-                );
 
                 if detail.requests.is_empty() {
                     content = content.child(
@@ -949,34 +1130,47 @@ impl PostmanPanel {
                             .size(LabelSize::Small)
                             .color(Color::Muted),
                     );
-                }
-
-                for (idx, req) in detail.requests.iter().enumerate() {
-                    let method_clr = method_color(&req.method);
-                    let row = h_flex()
-                        .id(gpui::SharedString::from(format!("req_{idx}")))
-                        .gap_1()
-                        .cursor_pointer()
-                        .px_1()
-                        .rounded_md()
-                        .hover(|style| style.bg(cx.theme().colors().element_hover))
-                        .child(
-                            Label::new(req.method.chars().take(6).collect::<String>())
+                } else if !query.is_empty() {
+                    // Search active: flat filtered list, no tree structure
+                    let mut any = false;
+                    for (idx, req) in detail.requests.iter().enumerate() {
+                        if req.name_lower.contains(&query) || req.path_lower.contains(&query) {
+                            any = true;
+                            let method_clr = method_color(&req.method);
+                            let row = ListItem::new(format!("req-search-{idx}"))
+                            .start_slot(Chip::new(req.method.clone()).label_color(method_clr))
+                            .child(
+                                Label::new(req.name.clone())
+                                    .size(LabelSize::Small)
+                                    .truncate(),
+                            )
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.open_request_detail(idx, cx);
+                            }));
+                            content = content.child(row);
+                        }
+                    }
+                    if !any {
+                        content = content.child(
+                            Label::new("No matching requests")
                                 .size(LabelSize::Small)
-                                .color(method_clr),
-                        )
-                        .child(
-                            Label::new(req.name.chars().take(35).collect::<String>())
-                                .size(LabelSize::Small),
-                        )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.open_request_detail(idx, cx);
-                        }));
-                    content = content.child(row);
+                                .color(Color::Muted),
+                        );
+                    }
+                } else {
+                    // No search: render the folder tree
+                    let nodes = &detail.nodes;
+                    let requests = &detail.requests;
+                    let expanded_folders = &self.expanded_folders;
+                    let mut elements: Vec<gpui::AnyElement> = Vec::new();
+                    render_collection_nodes(nodes, requests, expanded_folders, 0, &mut elements, cx);
+                    for elem in elements {
+                        content = content.child(elem);
+                    }
                 }
             }
         } else {
-            // No collection selected — show full list.
+            // No collection selected — show top-level collection list with optional filter.
             if !self.collections.is_empty() {
                 content = content.child(
                     Label::new("Collections")
@@ -985,9 +1179,12 @@ impl PostmanPanel {
                 );
 
                 for col in &self.collections {
+                    if !query.is_empty() && !col.name.to_lowercase().contains(&query) {
+                        continue;
+                    }
                     let col_id = col.id.clone();
                     let row = h_flex()
-                        .id(gpui::SharedString::from(format!("col_{col_id}")))
+                        .id(format!("col_{col_id}"))
                         .gap_1()
                         .cursor_pointer()
                         .px_1()
@@ -998,13 +1195,9 @@ impl PostmanPanel {
                                 .size(ui::IconSize::Small)
                                 .color(Color::Muted),
                         )
-                        .child(
-                            Label::new(col.name.chars().take(40).collect::<String>())
-                                .size(LabelSize::Small),
-                        )
+                        .child(Label::new(col.name.clone()).size(LabelSize::Small).truncate())
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.load_collection(col_id.clone(), cx);
-                            cx.notify();
                         }));
                     content = content.child(row);
                 }
@@ -1038,122 +1231,214 @@ impl PostmanPanel {
             .map(|u| substitute_vars(&u, &self.env_vars))
             .unwrap_or_default();
 
-        // Back row
+        // ── Breadcrumb: Collections > CollectionName > RequestName ────────
+        let col_name = self.selected_collection_name();
+
         content = content.child(
             h_flex()
+                .id("breadcrumb-detail")
                 .gap_1()
+                .items_center()
                 .child(
-                    Button::new("back-to-list", "← Back")
+                    IconButton::new("back-to-collection", IconName::ArrowLeft)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.back_to_list(cx);
+                        }))
+                        .tooltip(Tooltip::text("Back to Collection")),
+                )
+                .child(
+                    Button::new("bc-collections-detail", "Collections")
+                        .style(ButtonStyle::Transparent)
+                        .tooltip(Tooltip::text("Back to all collections"))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.deselect_collection(cx);
+                        })),
+                )
+                .child(Label::new("›").size(LabelSize::Small).color(Color::Muted))
+                .child(
+                    Button::new("bc-collection-detail", col_name)
                         .style(ButtonStyle::Transparent)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.back_to_list(cx);
                         })),
                 )
+                .child(Label::new("›").size(LabelSize::Small).color(Color::Muted))
                 .child(
-                    Label::new(req.path.chars().take(50).collect::<String>())
+                    Label::new(req.name.clone())
                         .size(LabelSize::Small)
-                        .color(Color::Muted),
+                        .color(Color::Muted)
+                        .truncate(),
                 ),
         );
 
-        // Method + URL
+        // ── URL bar ───────────────────────────────────────────────────────
         content = content.child(
             h_flex()
-                .gap_1()
-                .child(
-                    Label::new(req.method.clone())
-                        .size(LabelSize::Small)
-                        .color(method_clr),
-                )
-                .child(Label::new(resolved_url).size(LabelSize::Small)),
+                .px_2()
+                .py_1()
+                .gap_2()
+                .bg(cx.theme().colors().editor_background)
+                .rounded_md()
+                .border_1()
+                .border_color(cx.theme().colors().border)
+                .child(Chip::new(req.method.clone()).label_color(method_clr))
+                .child(Label::new(resolved_url).size(LabelSize::Small).truncate()),
         );
 
-        // Request headers (collapsible)
-        let headers_arr = req.request_def["header"].as_array();
-        if headers_arr.map_or(false, |a| !a.is_empty()) {
-            let show = self.show_request_headers;
-            content = content.child(
-                h_flex()
-                    .id("toggle-req-headers")
-                    .gap_1()
-                    .cursor_pointer()
-                    .child(
-                        Label::new(if show { "▾ Headers" } else { "▸ Headers" })
-                            .size(LabelSize::Small)
-                            .color(Color::Muted),
-                    )
+        // ── Request tabs ─────────────────────────────────────────────────
+        let active_req_tab = self.active_request_tab;
+        let tab_bar = TabBar::new("request-tabs")
+            .child(
+                Tab::new("req-tab-params")
+                    .toggle_state(active_req_tab == RequestTab::Params)
+                    .child(Label::new("Params").size(LabelSize::Small))
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.show_request_headers = !this.show_request_headers;
-                        cx.notify();
+                        if this.active_request_tab != RequestTab::Params {
+                            this.active_request_tab = RequestTab::Params;
+                            cx.notify();
+                        }
+                    })),
+            )
+            .child(
+                Tab::new("req-tab-headers")
+                    .toggle_state(active_req_tab == RequestTab::Headers)
+                    .child(Label::new("Headers").size(LabelSize::Small))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if this.active_request_tab != RequestTab::Headers {
+                            this.active_request_tab = RequestTab::Headers;
+                            cx.notify();
+                        }
+                    })),
+            )
+            .child(
+                Tab::new("req-tab-body")
+                    .toggle_state(active_req_tab == RequestTab::Body)
+                    .child(Label::new("Body").size(LabelSize::Small))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if this.active_request_tab != RequestTab::Body {
+                            this.active_request_tab = RequestTab::Body;
+                            cx.notify();
+                        }
                     })),
             );
-            if show {
-                for h in headers_arr.into_iter().flatten() {
-                    let key = h["key"].as_str().unwrap_or("");
-                    let val = h["value"].as_str().unwrap_or("");
-                    if key.is_empty() {
-                        continue;
-                    }
-                    let val_resolved = substitute_vars(val, &self.env_vars);
+        content = content.child(tab_bar);
+
+        // ── Active request tab content ────────────────────────────────────
+        match self.active_request_tab {
+            RequestTab::Params => {
+                // Prefer the structured query array — it's present in all modern Postman exports.
+                // Only fall back to parsing the raw URL string for legacy requests that omit it.
+                let from_json: Vec<(String, String)> = req.request_def["url"]["query"]
+                    .as_array()
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter(|p| p["disabled"].as_bool() != Some(true))
+                    .filter_map(|p| {
+                        let k = p["key"].as_str()?.to_string();
+                        let v = p["value"].as_str().unwrap_or("").to_string();
+                        Some((k, v))
+                    })
+                    .collect();
+
+                let all_params = if !from_json.is_empty() {
+                    from_json
+                } else {
+                    let url_raw = extract_url(&req.request_def).unwrap_or_default();
+                    url_raw
+                        .find('?')
+                        .map(|pos| &url_raw[pos + 1..])
+                        .unwrap_or("")
+                        .split('&')
+                        .filter(|p| !p.is_empty())
+                        .filter_map(|p| {
+                            let mut parts = p.splitn(2, '=');
+                            let k = parts.next()?.to_string();
+                            let v = parts.next().unwrap_or("").to_string();
+                            Some((k, v))
+                        })
+                        .collect()
+                };
+
+                if all_params.is_empty() {
                     content = content.child(
-                        Label::new(format!("{key}: {val_resolved}"))
+                        Label::new("No query parameters")
                             .size(LabelSize::Small)
                             .color(Color::Muted),
+                    );
+                } else {
+                    for (k, v) in &all_params {
+                        let v_resolved = substitute_vars(v, &self.env_vars);
+                        content = content.child(kv_row(k, &v_resolved));
+                    }
+                }
+            }
+            RequestTab::Headers => {
+                let headers_arr = req.request_def["header"].as_array();
+                match headers_arr {
+                    Some(headers) if !headers.is_empty() => {
+                        for h in headers {
+                            let key = h["key"].as_str().unwrap_or("");
+                            let val = h["value"].as_str().unwrap_or("");
+                            if key.is_empty() {
+                                continue;
+                            }
+                            let val_resolved = substitute_vars(val, &self.env_vars);
+                            content = content.child(kv_row(key, &val_resolved));
+                        }
+                    }
+                    _ => {
+                        content = content.child(
+                            Label::new("No headers")
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        );
+                    }
+                }
+            }
+            RequestTab::Body => {
+                let body_raw = req.request_def["body"]["raw"].as_str().unwrap_or("");
+                if body_raw.is_empty() {
+                    content = content.child(
+                        Label::new("No request body")
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    );
+                } else {
+                    let body_resolved = substitute_vars(body_raw, &self.env_vars);
+                    content = content.child(
+                        div()
+                            .p_2()
+                            .bg(cx.theme().colors().editor_background)
+                            .rounded_md()
+                            .child(Label::new(body_resolved).size(LabelSize::Small)),
                     );
                 }
             }
         }
 
-        // Request body (collapsible)
-        let body_raw = req.request_def["body"]["raw"].as_str().unwrap_or("");
-        if !body_raw.is_empty() {
-            let show = self.show_request_body;
-            content = content.child(
-                h_flex()
-                    .id("toggle-req-body")
-                    .gap_1()
-                    .cursor_pointer()
-                    .child(
-                        Label::new(if show { "▾ Body" } else { "▸ Body" })
-                            .size(LabelSize::Small)
-                            .color(Color::Muted),
-                    )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.show_request_body = !this.show_request_body;
-                        cx.notify();
-                    })),
-            );
-            if show {
-                let body_resolved = substitute_vars(body_raw, &self.env_vars);
-                content = content.child(
-                    Label::new(body_resolved)
-                        .size(LabelSize::Small)
-                        .color(Color::Default),
-                );
-            }
-        }
-
-        // Send button
+        // ── Send button ───────────────────────────────────────────────────
+        let is_sending = self.request_task.is_some();
+        let send_label = if is_sending { "Sending…" } else { "▶ Send" };
         content = content.child(
-            Button::new("send-request", "▶ Send")
+            Button::new("send-request", send_label)
                 .style(ButtonStyle::Filled)
+                .disabled(is_sending)
                 .on_click(cx.listener(|this, _, _, cx| {
                     this.run_selected_request(cx);
                 })),
         );
 
-        // Response area
+        // ── Response area ─────────────────────────────────────────────────
         if let Some(result) = &self.last_response {
             content = content.child(Divider::horizontal().color(DividerColor::Border));
 
-            // Status + duration
+            // Status + duration row
             content = content.child(
                 h_flex()
                     .gap_2()
                     .child(
-                        Label::new(result.status.to_string())
-                            .size(LabelSize::Small)
-                            .color(status_color(result.status)),
+                        Chip::new(result.status.to_string()).label_color(status_color(result.status)),
                     )
                     .child(
                         Label::new(format!("{}ms", result.duration_ms))
@@ -1162,46 +1447,61 @@ impl PostmanPanel {
                     ),
             );
 
-            // Response headers (collapsible)
-            if !result.headers.is_empty() {
-                let show = self.show_response_headers;
-                content = content.child(
-                    h_flex()
-                        .id("toggle-resp-headers")
-                        .gap_1()
-                        .cursor_pointer()
-                        .child(
-                            Label::new(if show {
-                                "▾ Response Headers"
-                            } else {
-                                "▸ Response Headers"
-                            })
-                            .size(LabelSize::Small)
-                            .color(Color::Muted),
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.show_response_headers = !this.show_response_headers;
-                            cx.notify();
-                        })),
-                );
-                if show {
-                    for (k, v) in &result.headers {
+            // Response tab bar
+            let active_resp_tab = self.active_response_tab;
+            content = content.child(
+                TabBar::new("response-tabs")
+                    .child(
+                        Tab::new("resp-tab-body")
+                            .toggle_state(active_resp_tab == ResponseTab::Body)
+                            .child(Label::new("Body").size(LabelSize::Small))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if this.active_response_tab != ResponseTab::Body {
+                                    this.active_response_tab = ResponseTab::Body;
+                                    cx.notify();
+                                }
+                            })),
+                    )
+                    .child(
+                        Tab::new("resp-tab-headers")
+                            .toggle_state(active_resp_tab == ResponseTab::Headers)
+                            .child(Label::new("Headers").size(LabelSize::Small))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if this.active_response_tab != ResponseTab::Headers {
+                                    this.active_response_tab = ResponseTab::Headers;
+                                    cx.notify();
+                                }
+                            })),
+                    ),
+            );
+
+            // Active response tab content
+            match self.active_response_tab {
+                ResponseTab::Body => {
+                    content = content.child(
+                        div()
+                            .id("resp-body")
+                            .p_2()
+                            .bg(cx.theme().colors().editor_background)
+                            .rounded_md()
+                            .overflow_x_scroll()
+                            .child(Label::new(result.body.clone()).size(LabelSize::Small)),
+                    );
+                }
+                ResponseTab::Headers => {
+                    if result.headers.is_empty() {
                         content = content.child(
-                            Label::new(format!("{k}: {v}"))
+                            Label::new("No response headers")
                                 .size(LabelSize::Small)
                                 .color(Color::Muted),
                         );
+                    } else {
+                        for (k, v) in &result.headers {
+                            content = content.child(kv_row(k, v));
+                        }
                     }
                 }
             }
-
-            // Full response body, no truncation
-            content = content.child(
-                Label::new("Response Body")
-                    .size(LabelSize::Small)
-                    .color(Color::Muted),
-            );
-            content = content.child(Label::new(result.body.clone()).size(LabelSize::Small));
         }
 
         content
