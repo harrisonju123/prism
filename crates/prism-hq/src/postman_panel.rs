@@ -176,7 +176,13 @@ fn extract_url(request_def: &serde_json::Value) -> Option<String> {
     let query: Option<String> = url["query"].as_array().and_then(|params| {
         let qs = params
             .iter()
-            .filter_map(|p| Some(format!("{}={}", p["key"].as_str()?, p["value"].as_str()?)))
+            .filter_map(|p| {
+                Some(format!(
+                    "{}={}",
+                    urlencoding::encode(p["key"].as_str()?),
+                    urlencoding::encode(p["value"].as_str()?)
+                ))
+            })
             .collect::<Vec<_>>()
             .join("&");
         if qs.is_empty() { None } else { Some(qs) }
@@ -317,7 +323,8 @@ pub struct PostmanPanel {
     selected_collection: Option<String>,
     collection_detail: Option<CollectionDetail>,
     last_response: Option<ExecutionResult>,
-    is_loading: bool,
+    is_refreshing: bool,
+    is_loading_detail: bool,
     error: Option<String>,
     refresh_task: Option<Task<()>>,
     api_key_input: Entity<InputField>,
@@ -358,7 +365,8 @@ impl PostmanPanel {
             selected_collection: None,
             collection_detail: None,
             last_response: None,
-            is_loading: false,
+            is_refreshing: false,
+            is_loading_detail: false,
             error: None,
             refresh_task: None,
             api_key_input,
@@ -380,7 +388,11 @@ impl PostmanPanel {
     fn api_client(&self, cx: &App) -> Option<Arc<PostmanHttpClient>> {
         let settings = &ProjectSettings::get_global(cx).postman;
         if !settings.enabled {
+            log::debug!("api_client: postman integration disabled");
             return None;
+        }
+        if settings.api_key.is_none() {
+            log::debug!("api_client: no API key configured");
         }
         let api_key = settings.api_key.clone()?;
         Some(Arc::new(PostmanHttpClient::new(
@@ -400,8 +412,9 @@ impl PostmanPanel {
             return;
         };
 
-        self.is_loading = true;
+        self.is_refreshing = true;
         self.error = None;
+        self.collection_detail = None;
         cx.notify();
 
         self.refresh_task = Some(cx.spawn(async move |this: WeakEntity<PostmanPanel>, cx| {
@@ -418,7 +431,7 @@ impl PostmanPanel {
                 .await;
 
             this.update(cx, |this, cx| {
-                this.is_loading = false;
+                this.is_refreshing = false;
                 match result {
                     Ok((collections, environments)) => {
                         this.collections = collections;
@@ -435,27 +448,57 @@ impl PostmanPanel {
     }
 
     fn load_collection(&mut self, collection_id: String, cx: &mut Context<Self>) {
-        let Some(client) = self.api_client(cx) else {
-            return;
-        };
+        // Always update UI state first — user must see immediate feedback.
         self.selected_collection = Some(collection_id.clone());
         self.collection_detail = None;
         self.view = PanelView::CollectionsList;
         self.last_response = None;
+        self.error = None;
+
+        let Some(client) = self.api_client(cx) else {
+            log::warn!("load_collection: no API client (key missing or disabled)");
+            self.error = Some("Postman API key not configured".into());
+            cx.notify();
+            return;
+        };
+
+        log::info!("load_collection: fetching {}", collection_id);
+        self.is_loading_detail = true;
         cx.notify();
 
         self.collection_load_task = Some(cx.spawn(async move |this: WeakEntity<PostmanPanel>, cx| {
             let result: Result<CollectionDetail> = cx
                 .background_spawn(async move {
-                    let json = client.get_json(&format!("/collections/{collection_id}")).await?;
+                    let path = format!("/collections/{collection_id}");
+                    log::info!("load_collection: GET https://api.postman.com{path}");
+                    let json = client.get_json(&path).await?;
+                    log::info!(
+                        "load_collection: response top-level keys: {:?}",
+                        json.as_object().map(|o| o.keys().collect::<Vec<_>>())
+                    );
                     anyhow::Ok(parse_collection_detail(&json))
                 })
                 .await;
 
             this.update(cx, |this, cx| {
+                // Guard against a deselect that raced this fetch — if the user
+                // navigated away, selected_collection is None and we discard the result.
+                if this.selected_collection.is_none() {
+                    return;
+                }
+                this.is_loading_detail = false;
                 match result {
-                    Ok(detail) => this.collection_detail = Some(detail),
-                    Err(e) => this.error = Some(e.to_string()),
+                    Ok(detail) => {
+                        log::info!(
+                            "load_collection: fetched {} requests",
+                            detail.requests.len()
+                        );
+                        this.collection_detail = Some(detail);
+                    }
+                    Err(e) => {
+                        log::error!("load_collection: fetch failed: {e}");
+                        this.error = Some(e.to_string());
+                    }
                 }
                 cx.notify();
             })
@@ -464,12 +507,20 @@ impl PostmanPanel {
     }
 
     fn load_environment(&mut self, env_id: String, cx: &mut Context<Self>) {
-        let Some(client) = self.api_client(cx) else {
-            return;
-        };
+        // Update selection immediately so the UI reflects the choice.
         // Keep old env_vars live until the fetch completes so the URL preview
         // doesn't briefly show unresolved {{placeholders}} during the async gap.
         self.selected_environment = Some(env_id.clone());
+        self.error = None;
+
+        let Some(client) = self.api_client(cx) else {
+            log::debug!("load_environment: no API client available (key missing or disabled)");
+            self.error = Some("Postman API key not configured".into());
+            self.env_load_task = None;
+            cx.notify();
+            return;
+        };
+
         cx.notify();
 
         // Drop any in-flight fetch so a previous selection can't overwrite the new one.
@@ -511,8 +562,21 @@ impl PostmanPanel {
         cx.notify();
     }
 
+    fn deselect_collection(&mut self, cx: &mut Context<Self>) {
+        self.selected_collection = None;
+        self.collection_detail = None;
+        self.is_loading_detail = false;
+        self.collection_load_task = None;
+        self.error = None;
+        cx.notify();
+    }
+
     fn run_selected_request(&mut self, cx: &mut Context<Self>) {
         let Some(client) = self.api_client(cx) else {
+            log::debug!("run_selected_request: no API client available (key missing or disabled)");
+            self.last_response = None;
+            self.error = Some("Postman API key not configured".into());
+            cx.notify();
             return;
         };
         let Some(detail) = &self.collection_detail else {
@@ -673,7 +737,7 @@ impl Focusable for PostmanPanel {
 
 impl Render for PostmanPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_loading = self.is_loading;
+        let is_refreshing = self.is_refreshing;
         let is_configured = self.postman_configured(cx);
 
         // ── Environment selector ─────────────────────────────────────────
@@ -760,7 +824,7 @@ impl Render for PostmanPanel {
         let mut content =
             v_flex().id("postman-content").flex_1().overflow_y_scroll().p_2().gap_2();
 
-        if is_loading {
+        if is_refreshing {
             content = content.child(
                 Label::new("Loading…")
                     .size(LabelSize::Small)
@@ -786,7 +850,10 @@ impl Render for PostmanPanel {
                             this.save_api_key(cx);
                         })),
                 );
-        } else if let Some(err) = &self.error {
+        }
+
+        // Error always visible, regardless of loading state
+        if let Some(err) = &self.error {
             content = content.child(
                 Label::new(format!("Error: {err}"))
                     .size(LabelSize::Small)
@@ -794,13 +861,15 @@ impl Render for PostmanPanel {
             );
         }
 
-        match &self.view {
-            PanelView::CollectionsList => {
-                content = self.render_collections_list(content, is_configured, cx);
-            }
-            PanelView::RequestDetail { request_idx } => {
-                let idx = *request_idx;
-                content = self.render_request_detail(content, idx, cx);
+        if !is_refreshing {
+            match &self.view {
+                PanelView::CollectionsList => {
+                    content = self.render_collections_list(content, is_configured, cx);
+                }
+                PanelView::RequestDetail { request_idx } => {
+                    let idx = *request_idx;
+                    content = self.render_request_detail(content, idx, cx);
+                }
             }
         }
 
@@ -821,78 +890,130 @@ impl PostmanPanel {
         is_configured: bool,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
-        let is_loading = self.is_loading;
-        if !self.collections.is_empty() {
-            content = content.child(
-                Label::new("Collections")
-                    .size(LabelSize::Small)
-                    .color(Color::Muted),
-            );
+        let is_loading_detail = self.is_loading_detail;
 
-            for col in &self.collections {
-                let col_id = col.id.clone();
-                let is_selected =
-                    self.selected_collection.as_deref() == Some(col_id.as_str());
-                let row = h_flex()
-                    .id(gpui::SharedString::from(format!("col_{col_id}")))
-                    .gap_1()
-                    .cursor_pointer()
-                    .px_1()
-                    .rounded_md()
-                    .when(is_selected, |this| {
-                        this.bg(cx.theme().colors().element_selected)
-                    })
-                    .child(
-                        Icon::new(IconName::Folder)
-                            .size(ui::IconSize::Small)
-                            .color(Color::Muted),
-                    )
-                    .child(
-                        Label::new(col.name.chars().take(40).collect::<String>())
-                            .size(LabelSize::Small),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.load_collection(col_id.clone(), cx);
-                    }));
-                content = content.child(row);
+        if self.collection_detail.is_some() || is_loading_detail {
+            // Diagnostic: confirms re-renders fire after the async fetch completes.
+            if let Some(detail) = &self.collection_detail {
+                log::debug!(
+                    "render: collection_detail present with {} requests",
+                    detail.requests.len()
+                );
             }
-        } else if !is_loading && self.error.is_none() && is_configured {
-            content = content.child(
-                Label::new("No collections")
-                    .size(LabelSize::Small)
-                    .color(Color::Muted),
-            );
-        }
 
-        if let Some(detail) = &self.collection_detail {
-            content = content.child(Divider::horizontal().color(DividerColor::Border));
+            // "← CollectionName" back-nav header
+            let col_name = self
+                .selected_collection
+                .as_deref()
+                .and_then(|id| self.collections.iter().find(|c| c.id == id))
+                .map(|c| c.name.chars().take(32).collect::<String>())
+                .unwrap_or_else(|| "Collections".into());
+            let back_label = format!("← {col_name}");
             content = content.child(
-                Label::new("Requests")
-                    .size(LabelSize::Small)
-                    .color(Color::Muted),
-            );
-
-            for (idx, req) in detail.requests.iter().enumerate() {
-                let method_clr = method_color(&req.method);
-                let row = h_flex()
-                    .id(gpui::SharedString::from(format!("req_{idx}")))
+                h_flex()
+                    .id("col-back-nav")
                     .gap_1()
                     .cursor_pointer()
                     .px_1()
                     .rounded_md()
+                    .hover(|style| style.bg(cx.theme().colors().element_hover))
                     .child(
-                        Label::new(req.method.chars().take(6).collect::<String>())
+                        Label::new(back_label)
                             .size(LabelSize::Small)
-                            .color(method_clr),
+                            .color(Color::Accent),
                     )
-                    .child(
-                        Label::new(req.name.chars().take(35).collect::<String>())
-                            .size(LabelSize::Small),
-                    )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_request_detail(idx, cx);
-                    }));
-                content = content.child(row);
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.deselect_collection(cx);
+                    })),
+            );
+
+            if is_loading_detail && self.collection_detail.is_none() {
+                content = content.child(
+                    Label::new("Loading requests…")
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                );
+            }
+
+            if let Some(detail) = &self.collection_detail {
+                content = content.child(Divider::horizontal().color(DividerColor::Border));
+                content = content.child(
+                    Label::new("Requests")
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                );
+
+                if detail.requests.is_empty() {
+                    content = content.child(
+                        Label::new("No requests in this collection")
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    );
+                }
+
+                for (idx, req) in detail.requests.iter().enumerate() {
+                    let method_clr = method_color(&req.method);
+                    let row = h_flex()
+                        .id(gpui::SharedString::from(format!("req_{idx}")))
+                        .gap_1()
+                        .cursor_pointer()
+                        .px_1()
+                        .rounded_md()
+                        .hover(|style| style.bg(cx.theme().colors().element_hover))
+                        .child(
+                            Label::new(req.method.chars().take(6).collect::<String>())
+                                .size(LabelSize::Small)
+                                .color(method_clr),
+                        )
+                        .child(
+                            Label::new(req.name.chars().take(35).collect::<String>())
+                                .size(LabelSize::Small),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.open_request_detail(idx, cx);
+                        }));
+                    content = content.child(row);
+                }
+            }
+        } else {
+            // No collection selected — show full list.
+            if !self.collections.is_empty() {
+                content = content.child(
+                    Label::new("Collections")
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                );
+
+                for col in &self.collections {
+                    let col_id = col.id.clone();
+                    let row = h_flex()
+                        .id(gpui::SharedString::from(format!("col_{col_id}")))
+                        .gap_1()
+                        .cursor_pointer()
+                        .px_1()
+                        .rounded_md()
+                        .hover(|style| style.bg(cx.theme().colors().element_hover))
+                        .child(
+                            Icon::new(IconName::Folder)
+                                .size(ui::IconSize::Small)
+                                .color(Color::Muted),
+                        )
+                        .child(
+                            Label::new(col.name.chars().take(40).collect::<String>())
+                                .size(LabelSize::Small),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.load_collection(col_id.clone(), cx);
+                            cx.notify();
+                        }));
+                    content = content.child(row);
+                }
+            } else if self.error.is_none() && is_configured {
+                content = content.child(
+                    Label::new("No collections")
+                        .size(LabelSize::Small)
+                        .color(Color::Muted),
+                );
             }
         }
 
