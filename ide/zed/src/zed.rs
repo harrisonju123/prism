@@ -930,7 +930,8 @@ fn initialize_panels(
         workspace_handle
             .update_in(cx, |workspace, window, cx| {
                 let http_client = workspace.project().read(cx).client().http_client();
-                let panel = cx.new(|cx| prism_hq::PostmanPanel::new(http_client, window, cx));
+                let ws_weak = cx.weak_entity();
+                let panel = cx.new(|cx| prism_hq::PostmanPanel::new(http_client, Some(ws_weak), window, cx));
                 workspace.add_panel(panel, window, cx);
             })
             .log_err();

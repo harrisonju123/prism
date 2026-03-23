@@ -1,6 +1,7 @@
 mod agent_spawner;
 pub mod pixel_office;
 pub mod postman_panel;
+mod postman_request_item;
 mod agent_view;
 pub mod activity_bus;
 pub mod approval_gate;
@@ -34,6 +35,7 @@ pub use status_indicator::PrismStatusIndicator;
 pub use thread_view::{OpenThreadView, ThreadViewItem, open_thread_view};
 pub use pixel_office::{AgentOfficeItem, OpenAgentOffice, PixelOfficePanel, TogglePixelOffice, open_agent_office};
 pub use postman_panel::{PostmanPanel, TogglePostmanPanel};
+pub use postman_request_item::PostmanRequestItem;
 
 use gpui::{App, Window};
 use notifications::status_toast::{StatusToast, ToastIcon};
