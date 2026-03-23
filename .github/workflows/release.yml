@@ -39,7 +39,6 @@ jobs:
         with:
           key: prism-release-macos-${{ matrix.arch }}
           cache-all-crates: "true"
-          save-if: ${{ github.ref_type == 'tag' }}
 
       - name: Cache npm global packages
         uses: actions/cache@v4

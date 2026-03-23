@@ -1,0 +1,45 @@
+name: Warm Build Cache
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  CXXFLAGS: "-std=c++17"
+
+jobs:
+  warm-macos:
+    name: Warm macOS cache (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            runner: macos-15
+          - arch: x86_64
+            runner: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.arch }}-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: prism-release-macos-${{ matrix.arch }}
+          cache-all-crates: "true"
+
+      - name: Build release binaries (cache warm)
+        env:
+          ALLOW_MISSING_LICENSES: "1"
+        run: |
+          export PRISM_RELEASE_CHANNEL=stable
+          export PRISM_BUNDLE=true
+          cargo build --release --package zed --package cli --target ${{ matrix.arch }}-apple-darwin
+          cargo build --release --package remote_server --target ${{ matrix.arch }}-apple-darwin
