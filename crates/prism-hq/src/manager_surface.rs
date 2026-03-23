@@ -277,6 +277,8 @@ impl Render for ManagerSurface {
         let ide_live_file = self.ide_live_file.clone();
         let has_artifacts = !self.artifacts.is_empty();
 
+        let ws_weak = self.workspace.clone();
+
         let cards: Vec<_> = self
             .agent_cards
             .iter()
@@ -306,14 +308,22 @@ impl Render for ManagerSurface {
                     .border_1()
                     .border_color(cx.theme().colors().border)
                     .cursor_pointer()
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        if let Some(ws) = this.workspace.upgrade() {
-                            let n = open_name.clone();
-                            ws.update(cx, |workspace, cx| {
-                                open_agent_view(workspace, n, window, cx);
-                            });
+                    .on_click({
+                        // Use a plain closure (not cx.listener) so ManagerSurface is not
+                        // mutably borrowed when the handler runs. If we used cx.listener here,
+                        // workspace.add_item_to_center → Pane::add_item_inner → buffer_kind
+                        // would try to read() ManagerSurface while it's already mutably held,
+                        // causing a double_lease_panic.
+                        let ws = ws_weak.clone();
+                        let n = open_name.clone();
+                        move |_, window, cx| {
+                            if let Some(ws) = ws.upgrade() {
+                                ws.update(cx, |workspace, cx| {
+                                    open_agent_view(workspace, n.clone(), window, cx);
+                                });
+                            }
                         }
-                    }))
+                    })
                     .child(
                         h_flex()
                             .gap_1()
@@ -414,15 +424,19 @@ impl Render for ManagerSurface {
                             )
                             .style(ButtonStyle::Subtle)
                             .label_size(LabelSize::Small)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                if let Some(src) = source_for_unblock.clone() {
-                                    if let Some(ws) = this.workspace.upgrade() {
-                                        ws.update(cx, |workspace, cx| {
-                                            open_agent_view(workspace, src, window, cx);
-                                        });
+                            .on_click({
+                                let ws = ws_weak.clone();
+                                let src = source_for_unblock.clone();
+                                move |_, window, cx| {
+                                    if let Some(src) = src.clone() {
+                                        if let Some(ws) = ws.upgrade() {
+                                            ws.update(cx, |workspace, cx| {
+                                                open_agent_view(workspace, src, window, cx);
+                                            });
+                                        }
                                     }
                                 }
-                            })),
+                            }),
                         )
                     })
             })

@@ -57,7 +57,7 @@ pub fn init(cx: &mut App) {
 
     // Initialize ContextService for each new workspace.
     cx.observe_new(|workspace: &mut Workspace, _, cx| {
-        if cx.try_global::<ContextService>().is_none() {
+        if cx.try_global::<ContextService>().and_then(|svc| svc.handle()).is_none() {
             let root = workspace
                 .project()
                 .read(cx)
@@ -73,7 +73,7 @@ pub fn init(cx: &mut App) {
                 let project = workspace.project().clone();
                 cx.subscribe(&project, |workspace, _project, event, cx| {
                     if let ProjectEvent::WorktreeAdded(_) = event {
-                        if cx.try_global::<ContextService>().is_none() {
+                        if cx.try_global::<ContextService>().and_then(|svc| svc.handle()).is_none() {
                             let root = workspace
                                 .project()
                                 .read(cx)

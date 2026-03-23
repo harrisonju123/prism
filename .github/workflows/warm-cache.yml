@@ -26,8 +26,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.93"
           targets: ${{ matrix.arch }}-apple-darwin
 
       - uses: Swatinem/rust-cache@v2

@@ -6290,8 +6290,22 @@ impl Workspace {
                 if let Ok(Some(task)) = this.update_in(cx, |workspace, window, cx| {
                     item.serialize(workspace, false, window, cx)
                 }) {
-                    cx.background_spawn(async move { task.await.log_err() })
-                        .detach();
+                    cx.background_spawn(async move {
+                        match task.await {
+                            Ok(v) => Some(v),
+                            Err(e) => {
+                                // SQLite FK constraint (code 787) is expected when the workspace
+                                // is deleted while item serializations are still queued.
+                                if format!("{e}").contains("code 787") {
+                                    log::debug!("Item serialization skipped (workspace removed): {e}");
+                                } else {
+                                    log::error!("{e:?}");
+                                }
+                                None
+                            }
+                        }
+                    })
+                    .detach();
                 }
             }
 

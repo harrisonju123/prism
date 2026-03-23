@@ -119,7 +119,7 @@ impl TaskDispatchModal {
         };
 
         self.dispatch_task = Some(cx.spawn(async move |this, cx| {
-            let (handle, repo_root) = this
+            let (mut handle, repo_root) = this
                 .update(cx, |this, cx| {
                     let handle = cx
                         .try_global::<ContextService>()
@@ -132,9 +132,37 @@ impl TaskDispatchModal {
                             .next()
                             .map(|wt| wt.read(cx).abs_path().to_path_buf())
                     });
+                    // If the handle is missing (global never set or store open failed),
+                    // attempt on-demand init so dispatch works even when startup init lost the race.
+                    if handle.is_none() {
+                        if let Some(ref root) = repo_root {
+                            let _ = ContextService::init(root, cx);
+                        }
+                    }
+                    let handle = cx
+                        .try_global::<ContextService>()
+                        .and_then(|svc| svc.handle());
                     (handle, repo_root)
                 })
                 .unwrap_or((None, None));
+
+            // Store open is async — poll briefly for up to ~2s before giving up.
+            if handle.is_none() {
+                for _ in 0..20 {
+                    cx.background_spawn(async {
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await
+                    })
+                    .await;
+                    handle = this
+                        .update(cx, |_, cx| {
+                            cx.try_global::<ContextService>().and_then(|svc| svc.handle())
+                        })
+                        .unwrap_or(None);
+                    if handle.is_some() {
+                        break;
+                    }
+                }
+            }
 
             let thread_name_bg = thread_name.clone();
             let task_input_bg = task_input.clone();

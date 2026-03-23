@@ -723,6 +723,16 @@ impl AgentPanel {
                             "last active thread {} not found in database, skipping restoration",
                             thread_info.session_id
                         );
+                        // Clear the stale reference so this warning doesn't recur on next startup.
+                        if let (Some(workspace_id), Some(mut panel)) =
+                            (workspace_id, serialized_panel.clone())
+                        {
+                            panel.last_active_thread = None;
+                            cx.background_spawn(async move {
+                                save_serialized_panel(workspace_id, panel).await.log_err();
+                            })
+                            .detach();
+                        }
                         None
                     }
                 } else {

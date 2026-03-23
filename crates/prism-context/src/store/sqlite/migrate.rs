@@ -131,19 +131,23 @@ const MIGRATIONS: &[&str] = &[
      );
      CREATE INDEX IF NOT EXISTS idx_file_claims_workspace ON file_claims(workspace_id, agent_name);",
     // Migration 10: conversation_id on messages — groups initial task + follow-up Q&A
-    // Uses CREATE TABLE IF NOT EXISTS to handle databases bootstrapped at v9+ where
-    // the messages table was missing from the baseline schema at the time of creation.
+    // Step 1: create messages if it doesn't exist (databases bootstrapped at v9+ via the
+    // baseline schema never got migration 6's CREATE TABLE).
+    // Step 2: add conversation_id (for databases that had messages from migration 6 but
+    // not yet the column).
+    // This migration only ever runs once per DB (version gate prevents re-runs), so
+    // the ALTER TABLE will never be applied to a table that already has the column.
     "CREATE TABLE IF NOT EXISTS messages (
-         id              TEXT PRIMARY KEY,
-         workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-         from_agent      TEXT NOT NULL,
-         to_agent        TEXT NOT NULL,
-         content         TEXT NOT NULL,
-         read            INTEGER NOT NULL DEFAULT 0,
-         created_at      TEXT NOT NULL,
-         conversation_id TEXT
+         id           TEXT PRIMARY KEY,
+         workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+         from_agent   TEXT NOT NULL,
+         to_agent     TEXT NOT NULL,
+         content      TEXT NOT NULL,
+         read         INTEGER NOT NULL DEFAULT 0,
+         created_at   TEXT NOT NULL
      );
-     CREATE INDEX IF NOT EXISTS idx_messages_to_agent ON messages(workspace_id, to_agent, read);",
+     CREATE INDEX IF NOT EXISTS idx_messages_to_agent ON messages(workspace_id, to_agent, read);
+     ALTER TABLE messages ADD COLUMN conversation_id TEXT;",
     // Migration 11: resolution fields on inbox_entries — supports blocking request_review pattern
     "ALTER TABLE inbox_entries ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0;
      ALTER TABLE inbox_entries ADD COLUMN resolution TEXT;",

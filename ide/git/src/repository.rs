@@ -1023,13 +1023,15 @@ impl RealGitRepository {
     }
 
     fn git_binary(&self) -> Result<GitBinary> {
+        let git_dir = self.repository.lock().path().to_path_buf();
         Ok(GitBinary::new(
             self.any_git_binary_path.clone(),
             self.working_directory()
                 .with_context(|| "Can't run git commands without a working directory")?,
             self.executor.clone(),
             self.is_trusted(),
-        ))
+        )
+        .with_git_dir(git_dir))
     }
 
     async fn any_git_binary_help_output(&self) -> SharedString {
@@ -2980,6 +2982,9 @@ async fn exclude_files(git: &GitBinary) -> Result<GitExcludeOverride> {
 pub(crate) struct GitBinary {
     git_binary_path: PathBuf,
     working_directory: PathBuf,
+    // When `.git` is a file (worktree), this points to the resolved git dir
+    // so methods that write into `.git/` don't hit ENOTDIR.
+    git_dir: Option<PathBuf>,
     executor: BackgroundExecutor,
     index_file_path: Option<PathBuf>,
     envs: HashMap<String, String>,
@@ -2996,11 +3001,23 @@ impl GitBinary {
         Self {
             git_binary_path,
             working_directory,
+            git_dir: None,
             executor,
             index_file_path: None,
             envs: HashMap::default(),
             is_trusted,
         }
+    }
+
+    fn with_git_dir(mut self, git_dir: PathBuf) -> Self {
+        self.git_dir = Some(git_dir);
+        self
+    }
+
+    fn git_dir(&self) -> PathBuf {
+        self.git_dir
+            .clone()
+            .unwrap_or_else(|| self.working_directory.join(".git"))
     }
 
     async fn list_untracked_files(&self) -> Result<Vec<PathBuf>> {
@@ -3042,7 +3059,7 @@ impl GitBinary {
         // Copy the default index file so that Git doesn't have to rebuild the
         // whole index from scratch. This might fail if this is an empty repository.
         smol::fs::copy(
-            self.working_directory.join(".git").join("index"),
+            self.git_dir().join("index"),
             &index_file_path,
         )
         .await
@@ -3060,19 +3077,13 @@ impl GitBinary {
     }
 
     pub async fn with_exclude_overrides(&self) -> Result<GitExcludeOverride> {
-        let path = self
-            .working_directory
-            .join(".git")
-            .join("info")
-            .join("exclude");
+        let path = self.git_dir().join("info").join("exclude");
 
         GitExcludeOverride::new(path).await
     }
 
     fn path_for_index_id(&self, id: Uuid) -> PathBuf {
-        self.working_directory
-            .join(".git")
-            .join(format!("index-{}.tmp", id))
+        self.git_dir().join(format!("index-{}.tmp", id))
     }
 
     pub async fn run<S>(&self, args: impl IntoIterator<Item = S>) -> Result<String>
