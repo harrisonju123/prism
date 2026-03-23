@@ -12,9 +12,9 @@ use http_client::{AsyncBody, HttpClientWithUrl, Method};
 use project::project_settings::ProjectSettings;
 use settings::{Settings as _, update_settings_file};
 use ui::{
-    Button, ButtonStyle, Chip, Color, ContextMenu, ContextMenuEntry, Divider, DividerColor, Icon,
-    IconButton, IconName, Label, LabelSize, ListItem, PopoverMenu, PopoverMenuHandle, Tab, TabBar,
-    Tooltip, h_flex, prelude::*, v_flex,
+    Button, ButtonStyle, Callout, Chip, Color, ContextMenu, ContextMenuEntry, Divider, DividerColor,
+    Icon, IconButton, IconName, Label, LabelSize, ListItem, PopoverMenu, PopoverMenuHandle,
+    Severity, SpinnerLabel, Tooltip, h_flex, prelude::*, v_flex,
 };
 use ui_input::{ErasedEditorEvent, InputField};
 use workspace::Workspace;
@@ -144,15 +144,6 @@ impl PostmanHttpClient {
         })
     }
 
-    pub(crate) async fn execute_request(
-        &self,
-        request_def: &serde_json::Value,
-        env_vars: &HashMap<String, String>,
-    ) -> Result<ExecutionResult> {
-        let url_raw = extract_url(request_def).context("could not determine request URL")?;
-        let url = substitute_vars(&url_raw, env_vars);
-        self.execute_request_with_url(&url, request_def, env_vars).await
-    }
 }
 
 // ── Pure helpers (ported from ide/agent/src/tools/postman.rs) ─────────────
@@ -221,6 +212,31 @@ pub(crate) fn substitute_vars(s: &str, vars: &HashMap<String, String>) -> String
         result = result.replace(&format!("{{{{{k}}}}}"), v);
     }
     result
+}
+
+/// Return the names of any `{{variable}}` placeholders remaining after substitution —
+/// i.e. variables referenced in `s` that are not present in `vars`.
+pub(crate) fn find_unresolved_vars(s: &str, vars: &HashMap<String, String>) -> Vec<String> {
+    if !s.contains("{{") {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut rest = s;
+    while let Some(start) = rest.find("{{") {
+        rest = &rest[start + 2..];
+        if let Some(end) = rest.find("}}") {
+            let name = rest[..end].trim();
+            if !name.is_empty() && !vars.contains_key(name) {
+                out.push(name.to_string());
+            }
+            rest = &rest[end + 2..];
+        } else {
+            break;
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 fn build_body(request_def: &serde_json::Value, vars: &HashMap<String, String>) -> AsyncBody {
@@ -375,7 +391,7 @@ pub struct PostmanPanel {
     expanded_folders: HashSet<String>,
 
     selected_environment: Option<String>,
-    env_vars: Arc<HashMap<String, String>>,
+    env_vars: Entity<HashMap<String, String>>,
     env_selector_handle: PopoverMenuHandle<ContextMenu>,
     env_load_task: Option<Task<()>>,
     collection_load_task: Option<Task<()>>,
@@ -397,7 +413,7 @@ impl PostmanPanel {
             .detach();
 
         let api_key_input = cx.new(|cx| InputField::new(window, cx, "PMAK-xxxxxxxx…"));
-        let search_input = cx.new(|cx| InputField::new(window, cx, "Search collections & requests…"));
+        let search_input = cx.new(|cx| InputField::new(window, cx, "Search…"));
         // Subscribe to the underlying editor directly so only actual text edits (BufferEdited)
         // trigger a re-render — not cursor moves or selection changes.
         let search_editor = search_input.read(cx).editor().clone();
@@ -430,7 +446,7 @@ impl PostmanPanel {
             search_input,
             expanded_folders: HashSet::new(),
             selected_environment: None,
-            env_vars: Arc::new(HashMap::new()),
+            env_vars: cx.new(|_| HashMap::new()),
             env_selector_handle: PopoverMenuHandle::default(),
             env_load_task: None,
             collection_load_task: None,
@@ -591,7 +607,12 @@ impl PostmanPanel {
 
             this.update(cx, |this, cx| {
                 match result {
-                    Ok(vars) => this.env_vars = Arc::new(vars),
+                    Ok(vars) => {
+                        this.env_vars.update(cx, |ev, cx| {
+                            *ev = vars;
+                            cx.notify();
+                        });
+                    }
                     Err(e) => this.error = Some(e.to_string()),
                 }
                 cx.notify();
@@ -610,13 +631,18 @@ impl PostmanPanel {
         let Some(ws) = self.workspace.as_ref().and_then(|w| w.upgrade()) else {
             return;
         };
+        let Some(col_id) = self.selected_collection.clone() else {
+            // selected_collection is always set before collection_detail is populated,
+            // so this path is unreachable in practice.
+            return;
+        };
         let col_name = self.selected_collection_name().to_string();
         let http_client = self.http_client.clone();
         let env_vars = self.env_vars.clone();
         let language_registry = ws.read(cx).app_state().languages.clone();
         ws.update(cx, |workspace, cx| {
             crate::postman_request_item::open_postman_request(
-                workspace, req, col_name, http_client, env_vars, language_registry, window, cx,
+                workspace, req, col_id, col_name, http_client, env_vars, language_registry, window, cx,
             );
         });
     }
@@ -841,10 +867,16 @@ fn render_collection_nodes(
                 let idx = *idx;
                 if let Some(req) = requests.get(idx) {
                     let method_clr = method_color(&req.method);
+                    let url_preview = extract_url(&req.request_def).unwrap_or_default();
                     let item = ListItem::new(format!("req-{idx}"))
                         .indent_level(depth)
-                        .start_slot(Chip::new(req.method.clone()).label_color(method_clr))
+                        .start_slot(
+                            Chip::new(req.method.clone())
+                                .label_color(method_clr)
+                                .tooltip(Tooltip::text(format!("{} request", req.method))),
+                        )
                         .child(Label::new(req.name.clone()).size(LabelSize::Small).truncate())
+                        .tooltip(Tooltip::text(url_preview))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.open_request_detail(idx, window, cx);
                         }));
@@ -897,7 +929,10 @@ impl Render for PostmanPanel {
                         ContextMenuEntry::new("No Environment").handler(move |_window, cx| {
                             pw.update(cx, |this, cx| {
                                 this.selected_environment = None;
-                                this.env_vars = Arc::new(HashMap::new());
+                                this.env_vars.update(cx, |ev, cx| {
+                                    ev.clear();
+                                    cx.notify();
+                                });
                                 cx.notify();
                             })
                             .ok();
@@ -971,9 +1006,14 @@ impl Render for PostmanPanel {
 
         if is_refreshing {
             content = content.child(
-                Label::new("Loading…")
-                    .size(LabelSize::Small)
-                    .color(Color::Muted),
+                h_flex()
+                    .gap_1()
+                    .child(SpinnerLabel::new())
+                    .child(
+                        Label::new("Connecting to Postman…")
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    ),
             );
         } else if !is_configured && self.collections.is_empty() {
             content = content
@@ -1059,9 +1099,14 @@ impl PostmanPanel {
 
             if is_loading_detail && self.collection_detail.is_none() {
                 content = content.child(
-                    Label::new("Loading requests…")
-                        .size(LabelSize::Small)
-                        .color(Color::Muted),
+                    h_flex()
+                        .gap_1()
+                        .child(SpinnerLabel::new())
+                        .child(
+                            Label::new("Loading requests…")
+                                .size(LabelSize::Small)
+                                .color(Color::Muted),
+                        ),
                 );
             }
 
@@ -1070,9 +1115,11 @@ impl PostmanPanel {
 
                 if detail.requests.is_empty() {
                     content = content.child(
-                        Label::new("No requests in this collection")
-                            .size(LabelSize::Small)
-                            .color(Color::Muted),
+                        Callout::new()
+                            .severity(Severity::Info)
+                            .icon(IconName::Folder)
+                            .title("Empty collection")
+                            .description("No requests found. This collection may not have been exported with request items."),
                     );
                 } else if !query.is_empty() {
                     // Search active: flat filtered list, no tree structure
@@ -1127,6 +1174,7 @@ impl PostmanPanel {
                         continue;
                     }
                     let col_id = col.id.clone();
+                    let col_name_tip = col.name.clone();
                     let row = h_flex()
                         .id(format!("col_{col_id}"))
                         .gap_1()
@@ -1134,6 +1182,7 @@ impl PostmanPanel {
                         .px_1()
                         .rounded_md()
                         .hover(|style| style.bg(cx.theme().colors().element_hover))
+                        .tooltip(Tooltip::text(format!("Browse requests in \"{}\"", col_name_tip)))
                         .child(
                             Icon::new(IconName::Folder)
                                 .size(ui::IconSize::Small)
@@ -1147,9 +1196,11 @@ impl PostmanPanel {
                 }
             } else if self.error.is_none() && is_configured {
                 content = content.child(
-                    Label::new("No collections")
-                        .size(LabelSize::Small)
-                        .color(Color::Muted),
+                    Callout::new()
+                        .severity(Severity::Info)
+                        .icon(IconName::Folder)
+                        .title("No collections found")
+                        .description("Hit ↻ to refresh or check your API key in settings."),
                 );
             }
         }

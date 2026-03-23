@@ -12,6 +12,7 @@ use workspace::StatusItemView;
 use crate::activity_bus;
 use crate::context_service::ContextService;
 use crate::hq_state::HqState;
+use crate::manager_surface::OpenManagerSurface;
 
 pub struct PrismStatusIndicator {
     popover_menu_handle: PopoverMenuHandle<ContextMenu>,
@@ -386,6 +387,14 @@ impl Render for PrismStatusIndicator {
                                 );
                             }
                         }
+
+                        // Quick navigation to Manager Surface
+                        menu = menu.separator().item(
+                            ContextMenuEntry::new("Open Manager Surface")
+                                .handler(|window, cx| {
+                                    window.dispatch_action(Box::new(OpenManagerSurface), cx);
+                                }),
+                        );
 
                         menu
                     }))

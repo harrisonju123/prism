@@ -283,6 +283,19 @@ CREATE INDEX IF NOT EXISTS idx_risks_workspace ON risks(workspace_id, status);
 CREATE INDEX IF NOT EXISTS idx_risks_thread ON risks(thread_id) WHERE thread_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_risks_agent ON risks(workspace_id, source_agent, status) WHERE source_agent IS NOT NULL;
 
+-- Agent messages (inter-agent communication)
+CREATE TABLE IF NOT EXISTS messages (
+    id              TEXT PRIMARY KEY,
+    workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    from_agent      TEXT NOT NULL,
+    to_agent        TEXT NOT NULL,
+    content         TEXT NOT NULL,
+    read            INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL,
+    conversation_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_messages_to_agent ON messages(workspace_id, to_agent, read);
+
 -- Snapshots
 CREATE TABLE IF NOT EXISTS snapshots (
     id            TEXT PRIMARY KEY,

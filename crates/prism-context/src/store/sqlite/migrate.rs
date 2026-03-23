@@ -131,7 +131,19 @@ const MIGRATIONS: &[&str] = &[
      );
      CREATE INDEX IF NOT EXISTS idx_file_claims_workspace ON file_claims(workspace_id, agent_name);",
     // Migration 10: conversation_id on messages — groups initial task + follow-up Q&A
-    "ALTER TABLE messages ADD COLUMN conversation_id TEXT;",
+    // Uses CREATE TABLE IF NOT EXISTS to handle databases bootstrapped at v9+ where
+    // the messages table was missing from the baseline schema at the time of creation.
+    "CREATE TABLE IF NOT EXISTS messages (
+         id              TEXT PRIMARY KEY,
+         workspace_id    TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+         from_agent      TEXT NOT NULL,
+         to_agent        TEXT NOT NULL,
+         content         TEXT NOT NULL,
+         read            INTEGER NOT NULL DEFAULT 0,
+         created_at      TEXT NOT NULL,
+         conversation_id TEXT
+     );
+     CREATE INDEX IF NOT EXISTS idx_messages_to_agent ON messages(workspace_id, to_agent, read);",
     // Migration 11: resolution fields on inbox_entries — supports blocking request_review pattern
     "ALTER TABLE inbox_entries ADD COLUMN resolved INTEGER NOT NULL DEFAULT 0;
      ALTER TABLE inbox_entries ADD COLUMN resolution TEXT;",
@@ -270,7 +282,7 @@ pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<()> {
         for (i, sql) in MIGRATIONS.iter().enumerate().skip(current as usize) {
             let v = (i + 1) as i64;
             info!(migration = v, "applying migration");
-            sqlx::query(sql)
+            sqlx::raw_sql(sql)
                 .execute(pool)
                 .await
                 .map_err(|e| Error::Internal(format!("migration {v}: {e}")))?;

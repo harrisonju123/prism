@@ -16,6 +16,17 @@ use crate::{
     decide_permission_from_settings,
 };
 
+// ── Shared types ──────────────────────────────────────────────────────────
+
+struct RequestResult {
+    url: String,
+    status: u16,
+    duration_ms: u128,
+    headers: Vec<(String, String)>,
+    /// Pretty-printed response body, truncated to 4KB.
+    body: String,
+}
+
 // ── PostmanClient ──────────────────────────────────────────────────────────
 
 pub struct PostmanClient {
@@ -87,13 +98,47 @@ impl PostmanClient {
         request_def: &serde_json::Value,
         env_vars: &HashMap<String, String>,
     ) -> Result<String> {
+        let result = self
+            .execute_request_detailed(request_def, env_vars, None)
+            .await?;
+        let headers_map: serde_json::Map<String, serde_json::Value> = result
+            .headers
+            .into_iter()
+            .map(|(k, v)| (k, serde_json::Value::String(v)))
+            .collect();
+        Ok(format!(
+            "Status: {status}\nDuration: {duration_ms}ms\nHeaders: {headers_json}\n\nBody:\n{body}",
+            status = result.status,
+            duration_ms = result.duration_ms,
+            headers_json = serde_json::to_string(&headers_map).unwrap_or_default(),
+            body = result.body,
+        ))
+    }
+
+    /// Like `execute_request` but returns structured data. When `base_url_override`
+    /// is set, the scheme+host+port of the resolved URL is replaced with that value
+    /// before sending — used by `postman_test_endpoint` to redirect traffic to the
+    /// local dev server without mutating the Postman collection.
+    async fn execute_request_detailed(
+        &self,
+        request_def: &serde_json::Value,
+        env_vars: &HashMap<String, String>,
+        base_url_override: Option<&str>,
+    ) -> Result<RequestResult> {
         let method_str = request_def["method"]
             .as_str()
             .unwrap_or("GET")
             .to_uppercase();
 
         let url_raw = extract_url(request_def).context("could not determine request URL")?;
-        let url = substitute_vars(&url_raw, env_vars);
+        let url_substituted = substitute_vars(&url_raw, env_vars);
+
+        // Replace origin when overriding — keeps path/query/fragment intact.
+        let url = if let Some(base) = base_url_override {
+            replace_origin(&url_substituted, base)
+        } else {
+            url_substituted
+        };
 
         let method = method_str
             .parse::<Method>()
@@ -101,7 +146,6 @@ impl PostmanClient {
 
         let mut builder = http_client::Request::builder().method(method).uri(&url);
 
-        // Headers
         if let Some(headers) = request_def["header"].as_array() {
             for h in headers {
                 let key = h["key"].as_str().unwrap_or("");
@@ -112,7 +156,6 @@ impl PostmanClient {
             }
         }
 
-        // Body
         let body = build_body(request_def, env_vars);
         let request = builder.body(body)?;
 
@@ -122,34 +165,36 @@ impl PostmanClient {
             .send(request)
             .await
             .with_context(|| format!("request to {url} failed"))?;
-        let elapsed_ms = start.elapsed().as_millis();
+        let duration_ms = start.elapsed().as_millis();
 
         let status = response.status().as_u16();
-        let mut resp_body = Vec::new();
-        response
-            .body_mut()
-            .read_to_end(&mut resp_body)
-            .await
-            .context("error reading response body")?;
-        let body_text = String::from_utf8_lossy(&resp_body).into_owned();
-
-        // Collect response headers
-        let resp_headers: HashMap<String, String> = response
+        let headers: Vec<(String, String)> = response
             .headers()
             .iter()
             .filter_map(|(k, v)| Some((k.to_string(), v.to_str().ok()?.to_string())))
             .collect();
 
-        // Pretty-print JSON body if possible
-        let body_display = serde_json::from_str::<serde_json::Value>(&body_text)
+        let mut resp_body_bytes = Vec::new();
+        response
+            .body_mut()
+            .read_to_end(&mut resp_body_bytes)
+            .await
+            .context("error reading response body")?;
+        let body_text = String::from_utf8_lossy(&resp_body_bytes).into_owned();
+
+        let mut body = serde_json::from_str::<serde_json::Value>(&body_text)
             .ok()
             .and_then(|v| serde_json::to_string_pretty(&v).ok())
             .unwrap_or(body_text);
+        body.truncate(4096);
 
-        Ok(format!(
-            "Status: {status}\nDuration: {elapsed_ms}ms\nHeaders: {headers_json}\n\nBody:\n{body_display}",
-            headers_json = serde_json::to_string(&resp_headers).unwrap_or_default(),
-        ))
+        Ok(RequestResult {
+            url,
+            status,
+            duration_ms,
+            headers,
+            body,
+        })
     }
 }
 
@@ -658,6 +703,290 @@ fn parse_env_vars(env_json: &serde_json::Value) -> HashMap<String, String> {
             Some((k.to_string(), val.to_string()))
         })
         .collect()
+}
+
+/// Returns the byte index of the first `/` that starts the path (after `://` + host).
+/// Returns `url.len()` if no path is found (bare host with no trailing slash).
+fn url_path_start(url: &str) -> usize {
+    url.find("://")
+        .and_then(|i| url[i + 3..].find('/').map(|j| i + 3 + j))
+        .unwrap_or(url.len())
+}
+
+/// Replace the scheme+host+port of `url` with `base`, preserving path/query/fragment.
+///
+/// e.g. replace_origin("https://api.example.com/v1/users?a=1", "http://localhost:8080")
+///      → "http://localhost:8080/v1/users?a=1"
+fn replace_origin(url: &str, base: &str) -> String {
+    let base = base.trim_end_matches('/');
+    format!("{base}{}", &url[url_path_start(url)..])
+}
+
+struct MatchedRequest<'a> {
+    name: String,
+    folder_path: String,
+    request_def: &'a serde_json::Value,
+}
+
+/// Walk the collection item tree looking for requests whose method and URL path
+/// match the given criteria. Method match is case-insensitive; path match checks
+/// whether the request URL path contains `path_pattern` (lowercased).
+fn find_requests_by_endpoint<'a>(
+    collection: &'a serde_json::Value,
+    method: &str,
+    path_pattern: &str,
+) -> Vec<MatchedRequest<'a>> {
+    let mut results = Vec::new();
+    let items = match collection["collection"]["item"]
+        .as_array()
+        .or_else(|| collection["item"].as_array())
+    {
+        Some(a) => a,
+        None => return results,
+    };
+    // Normalize once here; walk_items passes them through unchanged on recursion.
+    let method_upper = method.to_uppercase();
+    let pattern_lower = path_pattern.to_lowercase();
+    walk_items(items, &method_upper, &pattern_lower, "", &mut results);
+    results
+}
+
+fn walk_items<'a>(
+    items: &'a [serde_json::Value],
+    method_upper: &str,
+    pattern_lower: &str,
+    folder: &str,
+    out: &mut Vec<MatchedRequest<'a>>,
+) {
+    for item in items {
+        if let Some(sub_items) = item["item"].as_array() {
+            // Folder — recurse
+            let name = item["name"].as_str().unwrap_or("");
+            let child_folder = if folder.is_empty() {
+                name.to_string()
+            } else {
+                format!("{folder}/{name}")
+            };
+            walk_items(sub_items, method_upper, pattern_lower, &child_folder, out);
+        } else if item["request"].is_object() {
+            let req_val = &item["request"];
+            let req_method = req_val["method"].as_str().unwrap_or("").to_uppercase();
+            if req_method != method_upper {
+                continue;
+            }
+
+            let url_raw = match extract_url(req_val) {
+                Some(u) => u,
+                None => continue,
+            };
+
+            let path_only = &url_raw[url_path_start(&url_raw)..];
+            if path_only.to_lowercase().contains(pattern_lower) {
+                let name = item["name"].as_str().unwrap_or("").to_string();
+                let folder_path = if folder.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{folder}/{name}")
+                };
+                out.push(MatchedRequest {
+                    name,
+                    folder_path,
+                    request_def: req_val,
+                });
+            }
+        }
+    }
+}
+
+// ── Tool: postman_test_endpoint ───────────────────────────────────────────
+
+/// Test a local API endpoint by finding and executing a matching Postman
+/// request. Searches all collections for a request with the given HTTP
+/// method and URL path, redirects it to the local dev server, and
+/// returns the response.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PostmanTestEndpointInput {
+    /// HTTP method to match (GET, POST, PUT, DELETE, PATCH).
+    method: String,
+    /// URL path or keyword to match against request URLs (e.g. "/v1/users", "users").
+    path: String,
+    /// Base URL of the local server. Defaults to "http://localhost:8080".
+    base_url: Option<String>,
+    /// Postman environment name for variable substitution. Auto-selects if omitted.
+    environment: Option<String>,
+}
+
+pub struct PostmanTestEndpointTool {
+    client: Arc<PostmanClient>,
+}
+
+impl PostmanTestEndpointTool {
+    pub fn new(client: Arc<PostmanClient>) -> Self {
+        Self { client }
+    }
+}
+
+impl AgentTool for PostmanTestEndpointTool {
+    type Input = PostmanTestEndpointInput;
+    type Output = String;
+
+    const NAME: &'static str = "postman_test_endpoint";
+
+    fn kind() -> acp::ToolKind {
+        acp::ToolKind::Fetch
+    }
+
+    fn initial_title(
+        &self,
+        input: Result<Self::Input, serde_json::Value>,
+        _cx: &mut App,
+    ) -> SharedString {
+        match input {
+            Ok(i) => format!("Test endpoint: {} {}", i.method.to_uppercase(), i.path).into(),
+            Err(_) => "Test endpoint".into(),
+        }
+    }
+
+    fn run(
+        self: Arc<Self>,
+        input: ToolInput<Self::Input>,
+        event_stream: ToolCallEventStream,
+        cx: &mut App,
+    ) -> Task<Result<Self::Output, Self::Output>> {
+        let client = self.client.clone();
+        cx.spawn(async move |cx| {
+            let input = input
+                .recv()
+                .await
+                .map_err(|e| format!("Failed to receive input: {e}"))?;
+
+            let label = format!(
+                "Test endpoint: {} {}",
+                input.method.to_uppercase(),
+                input.path
+            );
+            let context = crate::ToolPermissionContext::new(Self::NAME, vec![label.clone()]);
+            let authorize = cx.update(|cx| event_stream.authorize(label, context, cx));
+            authorize.await.map_err(|e| e.to_string())?;
+
+            let run_task = cx.background_spawn(async move {
+                // Resolve environment variables
+                let mut env_vars = match client.list_environments().await {
+                    Ok(envs) => {
+                        let env_id = envs["environments"]
+                            .as_array()
+                            .and_then(|list| {
+                                if let Some(name) = &input.environment {
+                                    list.iter().find(|e| {
+                                        e["name"].as_str().unwrap_or("") == name.as_str()
+                                    })
+                                } else {
+                                    list.first()
+                                }
+                            })
+                            .and_then(|e| e["uid"].as_str().or_else(|| e["id"].as_str()))
+                            .map(|s| s.to_string());
+
+                        if let Some(id) = env_id {
+                            client
+                                .get_environment(&id)
+                                .await
+                                .map(|j| parse_env_vars(&j))
+                                .unwrap_or_default()
+                        } else {
+                            HashMap::new()
+                        }
+                    }
+                    Err(_) => HashMap::new(),
+                };
+
+                // Inject base URL under the common Postman variable names so that
+                // collections using any of these conventions are redirected correctly.
+                let base = input
+                    .base_url
+                    .as_deref()
+                    .unwrap_or("http://localhost:8080")
+                    .to_string();
+                for key in &["base_url", "baseUrl", "BASE_URL", "host", "baseurl"] {
+                    env_vars.insert(key.to_string(), base.clone());
+                }
+
+                // Search collections for a matching request (stop at first hit)
+                let collections_json = client.list_collections().await?;
+
+                // (name, folder_path, collection_name, request_def)
+                type MatchTuple = (String, String, String, serde_json::Value);
+                let mut found: Option<MatchTuple> = None;
+
+                if let Some(entries) = collections_json["collections"].as_array() {
+                    for entry in entries {
+                        let Some(col_id) = entry["uid"].as_str().or_else(|| entry["id"].as_str())
+                        else {
+                            continue;
+                        };
+                        let col_name = entry["name"].as_str().unwrap_or("").to_string();
+                        let collection_json = client.get_collection(col_id).await?;
+                        let hits = find_requests_by_endpoint(
+                            &collection_json,
+                            &input.method,
+                            &input.path,
+                        );
+                        if let Some(hit) = hits.into_iter().next() {
+                            found = Some((
+                                hit.name,
+                                hit.folder_path,
+                                col_name,
+                                hit.request_def.clone(),
+                            ));
+                            break;
+                        }
+                    }
+                }
+
+                let (matched_name, matched_folder, matched_collection_name, request_def) =
+                    found.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "No Postman request matching {} {}",
+                            input.method.to_uppercase(),
+                            input.path
+                        )
+                    })?;
+
+                let result = client
+                    .execute_request_detailed(&request_def, &env_vars, Some(&base))
+                    .await?;
+
+                let status_label = if result.status < 400 { "success" } else { "error" };
+                let body_kb = result.body.len() as f64 / 1024.0;
+                let headers_display: String = result
+                    .headers
+                    .iter()
+                    .map(|(k, v)| format!("  {k}: {v}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+
+                Ok(format!(
+                    "Matched: {method} \"{name}\" from collection \"{col}\" ({folder})\nURL: {url}\nStatus: {status} ({status_label})\nDuration: {duration_ms}ms\nHeaders:\n{headers}\nBody ({body_kb:.1}KB):\n{body}",
+                    method = input.method.to_uppercase(),
+                    name = matched_name,
+                    col = matched_collection_name,
+                    folder = matched_folder,
+                    url = result.url,
+                    status = result.status,
+                    duration_ms = result.duration_ms,
+                    headers = headers_display,
+                    body = result.body,
+                ))
+            });
+
+            futures::select! {
+                result = run_task.fuse() => result.map_err(|e: anyhow::Error| e.to_string()),
+                _ = event_stream.cancelled_by_user().fuse() => {
+                    Err("Request cancelled by user".to_string())
+                }
+            }
+        })
+    }
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 mod agent_spawner;
+mod manager_surface;
 pub mod pixel_office;
 pub mod postman_panel;
 mod postman_request_item;
@@ -26,6 +27,7 @@ pub use approval_gate::{ApprovalDecision, ApprovalGate};
 pub use plans_panel::{OpenAgentChatSession, PlansPanel, TogglePlansPanel};
 pub use review_packet::ReviewPacket;
 pub use agent_view::{AgentViewItem, OpenAgentView, open_agent_view};
+pub use manager_surface::{ManagerSurface, OpenManagerSurface, open_manager_surface};
 pub use context_service::{ContextHandle, ContextService, get_context_handle};
 pub use dispatch::{DispatchTask, TaskDispatchModal};
 pub use hq_state::HqState;
@@ -50,6 +52,8 @@ pub fn init(cx: &mut App) {
     RunningAgents::init_global(cx);
     // Initialize the activity bus so agent_ui can write live tool activity.
     activity_bus::init(cx);
+    // Register Postman panel keyboard shortcuts.
+    postman_request_item::register_keybindings(cx);
 
     // Initialize ContextService for each new workspace.
     cx.observe_new(|workspace: &mut Workspace, _, cx| {
@@ -118,6 +122,9 @@ pub fn init(cx: &mut App) {
             });
             workspace.register_action(|workspace, _: &OpenAgentOffice, window, cx| {
                 open_agent_office(workspace, window, cx);
+            });
+            workspace.register_action(|workspace, _: &OpenManagerSurface, window, cx| {
+                open_manager_surface(workspace, window, cx);
             });
 
             // Show a toast when an agent exits.

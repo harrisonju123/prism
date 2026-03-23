@@ -11,7 +11,7 @@ use crate::{
     UpdateMissionTool, UpdateRiskTool, SubmitQuestionsTool, WebSearchTool,
     PostmanClient, PostmanGetCollectionTool, PostmanGetEnvironmentTool,
     PostmanListCollectionsTool, PostmanListEnvironmentsTool, PostmanRunRequestTool,
-    decide_permission_from_settings,
+    PostmanTestEndpointTool, decide_permission_from_settings,
 };
 use crate::compression::ContextCompressor;
 use crate::guardrails::{Guardrails, has_completion_signals, is_read_only_tool};
@@ -1727,7 +1727,8 @@ impl Thread {
                     self.add_tool(PostmanGetCollectionTool::new(client.clone()));
                     self.add_tool(PostmanListEnvironmentsTool::new(client.clone()));
                     self.add_tool(PostmanGetEnvironmentTool::new(client.clone()));
-                    self.add_tool(PostmanRunRequestTool::new(client));
+                    self.add_tool(PostmanRunRequestTool::new(client.clone()));
+                    self.add_tool(PostmanTestEndpointTool::new(client));
                 }
             }
         }
