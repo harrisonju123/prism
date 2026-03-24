@@ -19,7 +19,7 @@ jobs:
   build-macos:
     name: Build macOS (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 180
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
